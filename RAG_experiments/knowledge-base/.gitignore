@@ -1,0 +1,5 @@
+chroma_db/
+.env
+__pycache__/
+*.pyc
+docs/ric_anna_convo.pdf
