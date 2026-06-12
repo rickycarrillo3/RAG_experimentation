@@ -3,7 +3,9 @@
 **/chroma_db/
 # BM25 indexes contain user document text
 **/bm25_indexes/
-# Raw PDFs (may be copyrighted or personal)
+# PDFs anywhere in the repo (copyrighted textbooks or personal documents)
+**/*.pdf
+# Raw PDF staging dir
 **/docs/raw/
 # Nougat-extracted markdown (derived from private PDFs)
 **/docs/extracted/
