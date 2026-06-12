@@ -1,1 +1,57 @@
+# ── User data — never commit ───────────────────────────────────────────────────
+# ChromaDB stores embedded document content (user private data)
+**/chroma_db/
+# BM25 indexes contain user document text
+**/bm25_indexes/
+# Raw PDFs (may be copyrighted or personal)
+**/docs/raw/
+# Nougat-extracted markdown (derived from private PDFs)
+**/docs/extracted/
+# Any pickle files (may contain serialized user data)
+**/*.pkl
+
+# ── Secrets & config ───────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.yaml
+secrets.json
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ── Model cache (large, not source code) ───────────────────────────────────────
+**/.cache/
+**/model_cache/
+**/*.bin
+**/*.safetensors
+**/*.gguf
+
+# ── OS & editor ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Docs placeholder — keep the empty dirs in git ─────────────────────────────
+!**/docs/.gitkeep
+!**/docs/raw/.gitkeep
+!**/docs/extracted/.gitkeep
+
+# ── Plan file (local only) ─────────────────────────────────────────────────────
 build_plan.md
