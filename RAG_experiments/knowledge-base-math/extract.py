@@ -62,11 +62,10 @@ def extract_pymupdf(pdf_path: str, out_dir: str) -> str:
     return out_path
 
 
-def extract(pdf_path: str, force_pymupdf: bool = False) -> str:
+def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR) -> str:
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    out_dir = EXTRACTED_DIR
 
     if force_pymupdf:
         print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
