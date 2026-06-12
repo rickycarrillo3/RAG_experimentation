@@ -5,8 +5,8 @@
 ## Part 1: Faster, Cheaper Retrieval Alternatives
 
 The slowness and cost in standard RAG retrieval usually comes from two things:
-1. **Embedding inference at query time** — running a neural network every time someone asks a question
-2. **Large vector index search** — scanning many high-dimensional vectors
+1. **Embedding inference at query time** — running a neural network every time someone asks a question (geenrating query embedding)
+2. **Large vector index search** — scanning many high-dimensional vectors (comparing query embedding to vector db)
 
 Here are the main alternatives, ordered from cheapest/fastest to more capable.
 
