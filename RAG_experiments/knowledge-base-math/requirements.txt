@@ -1,0 +1,13 @@
+nougat-ocr
+pymupdf4llm
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-chroma
+langchain-ollama
+chromadb
+rank-bm25
+sentence-transformers
+gradio
+torch
