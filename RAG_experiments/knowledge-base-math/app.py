@@ -136,9 +136,13 @@ def handle_upload(pdf_file, username: str) -> str:
 def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
     username = username.strip().lower()
     if not username:
-        return "", history + [[message, "Please enter your name first."]]
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": "Please enter your name first."})
+        return "", history
     if not _has_index(username):
-        return "", history + [[message, f"No documents found for '{username}'. Please upload a PDF first."]]
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": f"No documents found for '{username}'. Please upload a PDF first."})
+        return "", history
     if not message.strip():
         return "", history
 
@@ -159,7 +163,9 @@ def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
     except Exception as e:
         full_answer = f"Error: {e}"
 
-    return "", history + [[message, full_answer]]
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": full_answer})
+    return "", history
 
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
@@ -179,7 +185,7 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(height=500, latex_delimiters=[
+            chatbot = gr.Chatbot(height=500, type="messages", latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},
