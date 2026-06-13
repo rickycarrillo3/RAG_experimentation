@@ -29,7 +29,7 @@ from ingest import build_bm25, build_chroma, load_mmd_files
 CHROMA_DIR = "chroma_db"
 BM25_DIR = "bm25_indexes"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-OLLAMA_MODEL = "deepseek-math:7b-instruct"
+OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
 TOP_K = 10
 TOP_N = 5
 RRF_K = 60

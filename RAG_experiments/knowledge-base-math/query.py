@@ -25,7 +25,7 @@ from rank_bm25 import BM25Okapi
 CHROMA_DIR = "chroma_db"
 BM25_DIR = "bm25_indexes"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-OLLAMA_MODEL = "deepseek-math:7b-instruct"
+OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
 TOP_K = 10   # candidates from each retriever
 TOP_N = 5    # final chunks passed to LLM after RRF
 RRF_K = 60   # RRF smoothing constant
