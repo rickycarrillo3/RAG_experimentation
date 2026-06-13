@@ -150,14 +150,15 @@ def _format_history(history: list) -> str:
     return "\n".join(lines) if lines else "None yet."
 
 
-def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
+def handle_chat(message: str, history: list, clean_history: list, username: str) -> tuple[str, list, list]:
     username = username.strip().lower()
     if not username:
-        return "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")]
+        display = history + [_msg("user", message), _msg("assistant", "Please enter your name first.")]
+        return "", display, clean_history
     if not message.strip():
-        return "", history
+        return "", history, clean_history
 
-    chat_history = _format_history(history)
+    chat_history = _format_history(clean_history)
     sources_text = ""
 
     try:
@@ -172,21 +173,27 @@ def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
                 for doc, score in results
             )
         else:
-            context = ""
+            context = "No documents uploaded yet. Answer from your own expertise."
 
         answer = chain.invoke({"context": context, "history": chat_history, "input": message})
         full_answer = answer + sources_text
 
     except Exception as e:
-        full_answer = f"Error: {e}"
+        answer = f"Error: {e}"
+        full_answer = answer
 
-    return "", history + [_msg("user", message), _msg("assistant", full_answer)]
+    # clean_history stores only the plain answer (no sources) for LLM context
+    new_clean = clean_history + [_msg("user", message), _msg("assistant", answer)]
+    new_display = history + [_msg("user", message), _msg("assistant", full_answer)]
+    return "", new_display, new_clean
 
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
 with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
+
+    clean_history_state = gr.State([])  # LLM-facing history, no sources noise
 
     with gr.Row():
         username_box = gr.Textbox(label="Your name", placeholder="e.g. alice", scale=1)
@@ -210,8 +217,8 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
             send_btn = gr.Button("Send", variant="primary")
 
     upload_btn.click(handle_upload, inputs=[upload_box, username_box], outputs=upload_status)
-    send_btn.click(handle_chat, inputs=[msg_box, chatbot, username_box], outputs=[msg_box, chatbot])
-    msg_box.submit(handle_chat, inputs=[msg_box, chatbot, username_box], outputs=[msg_box, chatbot])
+    send_btn.click(handle_chat, inputs=[msg_box, chatbot, clean_history_state, username_box], outputs=[msg_box, chatbot, clean_history_state])
+    msg_box.submit(handle_chat, inputs=[msg_box, chatbot, clean_history_state, username_box], outputs=[msg_box, chatbot, clean_history_state])
 
 
 if __name__ == "__main__":
