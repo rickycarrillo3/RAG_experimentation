@@ -133,16 +133,16 @@ def handle_upload(pdf_file, username: str) -> str:
         return f"Ingestion failed: {e}"
 
 
+def _msg(role: str, content: str) -> dict:
+    return {"role": role, "content": content}
+
+
 def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
     username = username.strip().lower()
     if not username:
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": "Please enter your name first."})
-        return "", history
+        return "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")]
     if not _has_index(username):
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": f"No documents found for '{username}'. Please upload a PDF first."})
-        return "", history
+        return "", history + [_msg("user", message), _msg("assistant", f"No documents found for '{username}'. Please upload a PDF first.")]
     if not message.strip():
         return "", history
 
@@ -163,9 +163,7 @@ def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
     except Exception as e:
         full_answer = f"Error: {e}"
 
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": full_answer})
-    return "", history
+    return "", history + [_msg("user", message), _msg("assistant", full_answer)]
 
 
 # ── UI layout ──────────────────────────────────────────────────────────────────

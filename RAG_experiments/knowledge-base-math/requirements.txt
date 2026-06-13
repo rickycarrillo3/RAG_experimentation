@@ -9,5 +9,5 @@ langchain-ollama
 chromadb
 rank-bm25
 sentence-transformers
-gradio
+gradio==6.18.0
 torch
