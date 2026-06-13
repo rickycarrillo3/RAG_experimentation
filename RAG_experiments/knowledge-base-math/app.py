@@ -34,17 +34,22 @@ TOP_K = 10
 TOP_N = 5
 RRF_K = 60
 
-SYSTEM_PROMPT = """You are a patient math tutor helping a student or family member understand mathematics.
+SYSTEM_PROMPT = """You are an expert mathematician and dedicated teacher. Your deep love for mathematics drives you to help students not just find answers, but truly understand the underlying concepts and develop their own mathematical thinking.
 
-Rules:
-- Answer only based on the context provided below.
-- If the answer is not in the context, say: "I don't have that in my knowledge base."
-- Always show your work step by step.
-- Use LaTeX notation for all equations (e.g. $x^2$, \\frac{{a}}{{b}}).
-- Cite the source document at the end of your answer.
+When answering:
+- Don't just solve the problem — explain the reasoning behind each step so the student understands why, not just how.
+- If a student makes a conceptual error, gently point it out and guide them toward the correct understanding.
+- Encourage curiosity: point out interesting patterns, connections to other concepts, or follow-up questions worth thinking about.
+- Always show full working step by step.
+- Use LaTeX for all equations (e.g. $x^2$, \\frac{{a}}{{b}}).
+- If context from uploaded documents is provided, prioritise it and cite the source. Otherwise answer from your own expertise.
 
-Context:
-{context}"""
+{context}
+
+Conversation so far:
+{history}"""
+
+HISTORY_TURNS = 6
 
 # Loaded once at startup, shared across all users (stateless)
 embeddings = HuggingFaceEmbeddings(
@@ -52,11 +57,10 @@ embeddings = HuggingFaceEmbeddings(
     encode_kwargs={"normalize_embeddings": True},
 )
 llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
-prompt = ChatPromptTemplate.from_messages([
+chain = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
     ("human", "{input}"),
-])
-answer_chain = prompt | llm | StrOutputParser()
+]) | llm | StrOutputParser()
 
 
 # ── Retrieval helpers ──────────────────────────────────────────────────────────
@@ -137,27 +141,40 @@ def _msg(role: str, content: str) -> dict:
     return {"role": role, "content": content}
 
 
+def _format_history(history: list) -> str:
+    recent = history[-HISTORY_TURNS:]
+    lines = []
+    for m in recent:
+        role = "Student" if m["role"] == "user" else "Tutor"
+        lines.append(f"{role}: {m['content']}")
+    return "\n".join(lines) if lines else "None yet."
+
+
 def handle_chat(message: str, history: list, username: str) -> tuple[str, list]:
     username = username.strip().lower()
     if not username:
         return "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")]
-    if not _has_index(username):
-        return "", history + [_msg("user", message), _msg("assistant", f"No documents found for '{username}'. Please upload a PDF first.")]
     if not message.strip():
         return "", history
 
-    try:
-        results = retrieve(message, username)
-        context = "\n\n".join(
-            f"[Source: {os.path.basename(doc.metadata.get('source', 'unknown'))}]\n{doc.page_content}"
-            for doc, _ in results
-        )
-        answer = answer_chain.invoke({"context": context, "input": message})
+    chat_history = _format_history(history)
+    sources_text = ""
 
-        sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
-            f"- {os.path.basename(doc.metadata.get('source', 'unknown'))} (RRF={score:.4f})"
-            for doc, score in results
-        )
+    try:
+        if _has_index(username):
+            results = retrieve(message, username)
+            context = "Context from your documents:\n\n" + "\n\n".join(
+                f"[Source: {os.path.basename(doc.metadata.get('source', 'unknown'))}]\n{doc.page_content}"
+                for doc, _ in results
+            )
+            sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
+                f"- {os.path.basename(doc.metadata.get('source', 'unknown'))} (RRF={score:.4f})"
+                for doc, score in results
+            )
+        else:
+            context = ""
+
+        answer = chain.invoke({"context": context, "history": chat_history, "input": message})
         full_answer = answer + sources_text
 
     except Exception as e:
