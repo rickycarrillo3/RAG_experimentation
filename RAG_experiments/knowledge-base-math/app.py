@@ -190,7 +190,7 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="Math Tutor") as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
 
     clean_history_state = gr.State([])  # LLM-facing history, no sources noise
@@ -207,7 +207,7 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(height=500, type="messages", latex_delimiters=[
+            chatbot = gr.Chatbot(height=500, latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},
@@ -222,4 +222,4 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
 
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    app.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft())
