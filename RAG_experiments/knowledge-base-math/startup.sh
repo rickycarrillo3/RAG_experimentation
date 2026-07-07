@@ -17,7 +17,5 @@ else
 fi
 
 # ── App ───────────────────────────────────────────────────────────────────────
-cd /workspace/RAG_experimentation/RAG_experiments/knowledge-base-math
-
 echo "Starting app..."
 python app.py

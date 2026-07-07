@@ -32,7 +32,8 @@ OLLAMA_MODELS=/workspace/ollama-models
 ## Every Session
 
 ```bash
-bash /workspace/RAG_experimentation/RAG_experiments/knowledge-base-math/startup.sh
+cd /workspace/RAG_experimentation/RAG_experiments/knowledge-base-math
+bash startup.sh
 ```
 
 Then open the public URL in your browser:
