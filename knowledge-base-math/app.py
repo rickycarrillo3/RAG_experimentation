@@ -22,6 +22,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 from extract import extract
 from ingest import build_bm25, build_chroma, load_mmd_files
@@ -29,8 +30,10 @@ from ingest import build_bm25, build_chroma, load_mmd_files
 CHROMA_DIR = "chroma_db"
 BM25_DIR = "bm25_indexes"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
 TOP_K = 10
+RERANK_TOP_C = 20  # candidate pool taken from RRF and fed to the reranker
 TOP_N = 5
 RRF_K = 60
 
@@ -57,6 +60,7 @@ embeddings = HuggingFaceEmbeddings(
     encode_kwargs={"normalize_embeddings": True},
 )
 llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
+reranker = CrossEncoder(RERANK_MODEL)
 chain = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
     ("human", "{input}"),
@@ -91,6 +95,21 @@ def _rrf(ranked_lists: list[list[Document]], k: int = RRF_K) -> list[tuple[Docum
     return [(doc_map[key], scores[key]) for key in sorted_keys]
 
 
+def _rerank(query: str, candidates: list[tuple[Document, float]], top_n: int = TOP_N) -> list[tuple[Document, float]]:
+    """Rescore RRF candidates with the cross-encoder and keep the top_n.
+
+    The cross-encoder reads each (query, chunk) pair together in a single
+    forward pass and emits a relevance logit; we sort by that and truncate.
+    """
+    if not candidates:
+        return []
+    pairs = [(query, doc.page_content) for doc, _ in candidates]
+    scores = reranker.predict(pairs)
+    reranked = sorted(zip((doc for doc, _ in candidates), scores),
+                      key=lambda x: x[1], reverse=True)
+    return [(doc, float(score)) for doc, score in reranked[:top_n]]
+
+
 def retrieve(query: str, user: str) -> list[tuple[Document, float]]:
     bm25, chunks = _load_bm25(user)
     bm25_scores = bm25.get_scores(query.split())
@@ -101,7 +120,7 @@ def retrieve(query: str, user: str) -> list[tuple[Document, float]]:
     dense_results = store.similarity_search(query, k=TOP_K)
 
     merged = _rrf([bm25_results, dense_results])
-    return merged[:TOP_N]
+    return _rerank(query, merged[:RERANK_TOP_C], TOP_N)
 
 
 # ── Gradio handlers ────────────────────────────────────────────────────────────
@@ -169,7 +188,7 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
                 for doc, _ in results
             )
             sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
-                f"- {os.path.basename(doc.metadata.get('source', 'unknown'))} (RRF={score:.4f})"
+                f"- {os.path.basename(doc.metadata.get('source', 'unknown'))} (rerank={score:.4f})"
                 for doc, score in results
             )
         else:
