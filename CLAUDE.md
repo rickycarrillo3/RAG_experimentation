@@ -52,20 +52,21 @@ There is no automated test suite/linter configured — `test_chat.py` is a manua
 
 ## Architecture
 
-Pipeline: PDF → `extract.py` → `.mmd` → `ingest.py` → per-user BM25 + Chroma indexes → `query.py`/`app.py` → hybrid retrieval + RRF → LLM answer.
+Pipeline: PDF → `extract.py` → `.mmd` → `ingest.py` → per-user BM25 + Chroma indexes → `query.py`/`app.py` → hybrid retrieval + RRF → cross-encoder rerank → LLM answer.
 
 - **extract.py** — PDF → `.mmd` (Markdown+LaTeX). Samples the first few pages for LaTeX signals (`\frac`, `\int`, `$$`, etc.) to decide the extractor: `marker-pdf` for math-heavy PDFs (proper Markdown+LaTeX via the Surya models), falling back to `pymupdf4llm` on Marker failure or for non-math PDFs. Marker downloads its models to the HuggingFace cache on first run (GPU-fast, CPU-slow-but-correct). Output goes to `docs/extracted/`.
 - **ingest.py** — chunks `.mmd` files (`RecursiveCharacterTextSplitter`, chunk_size=400/overlap=80) and builds two indexes per user: a BM25 pickle (`bm25_indexes/user_<name>.pkl`, contains `{"bm25": BM25Okapi, "chunks": [...]}`) and a Chroma collection (`chroma_db/`, collection name `user_<name>`).
-- **query.py** — CLI for hybrid retrieval: BM25 top-10 + dense top-10 (`BAAI/bge-small-en-v1.5` embeddings) merged via Reciprocal Rank Fusion (RRF, k=60), top 5 chunks passed to the LLM as context.
-- **app.py** — Gradio 6.18 web UI (port 7860). Reimplements the retrieval/RRF logic from `query.py` inline rather than importing it (only `extract`, `build_bm25`, `build_chroma`, `load_mmd_files` are imported from `extract.py`/`ingest.py`). Per-user isolation is by username string (lowercased, no auth) — each user gets an isolated BM25 pickle and Chroma collection. Falls back to answering from the model's own knowledge if a user has no uploaded documents yet. Keeps a separate "clean" conversation history (sources stripped) for LLM context, distinct from the display history shown in the chatbot.
+- **query.py** — CLI for hybrid retrieval: BM25 top-10 + dense top-10 (`BAAI/bge-small-en-v1.5` embeddings) merged via Reciprocal Rank Fusion (RRF, k=60); the RRF top-20 candidate pool is then rescored by a cross-encoder reranker (`BAAI/bge-reranker-v2-m3`) and the top 5 passed to the LLM as context. `--no-rerank` falls back to RRF-only order (for A/B comparison), mirroring `--no-bm25`/`--no-dense`.
+- **app.py** — Gradio 6.18 web UI (port 7860). Reimplements the retrieval/RRF/rerank logic from `query.py` inline rather than importing it (only `extract`, `build_bm25`, `build_chroma`, `load_mmd_files` are imported from `extract.py`/`ingest.py`); the reranker is loaded once at module level like `embeddings`/`llm`. Per-user isolation is by username string (lowercased, no auth) — each user gets an isolated BM25 pickle and Chroma collection. Falls back to answering from the model's own knowledge if a user has no uploaded documents yet. Keeps a separate "clean" conversation history (sources stripped) for LLM context, distinct from the display history shown in the chatbot.
 - **test_chat.py** — ingests a fixed test doc for a `test` user and drops into the same interactive CLI loop as `query.py`, for manual end-to-end verification.
 
-Note: retrieval/RRF logic is duplicated between `query.py` and `app.py` rather than shared — keep both in sync when changing retrieval behavior (e.g. `TOP_K`, `TOP_N`, `RRF_K`, chunking params).
+Note: retrieval logic (search, RRF, rerank) is duplicated between `query.py` and `app.py` rather than shared — keep both in sync when changing retrieval behavior (e.g. `TOP_K`, `TOP_N`, `RRF_K`, `RERANK_MODEL`, `RERANK_TOP_C`, chunking params). This duplication has now grown to three stages; it should be extracted into a shared `retrieval.py` module imported by both files.
 
 ## Model & infra
 
 - LLM: `t1c/deepseek-math-7b-rl:Q4` served via Ollama.
 - Embeddings: `BAAI/bge-small-en-v1.5` (HuggingFace, normalized).
+- Reranker: `BAAI/bge-reranker-v2-m3` cross-encoder via `sentence_transformers.CrossEncoder` (~2.2GB, downloads to the HF cache on first use — keep the HF cache on `/workspace` on the pod so it survives restarts).
 - Designed to run on a RunPod GPU pod; everything must survive on `/workspace` (persistent volume) between pod restarts, including `OLLAMA_MODELS`.
 
 ## Conventions / constraints

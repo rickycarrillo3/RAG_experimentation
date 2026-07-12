@@ -21,14 +21,17 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 CHROMA_DIR = "chroma_db"
 BM25_DIR = "bm25_indexes"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
-TOP_K = 10   # candidates from each retriever
-TOP_N = 5    # final chunks passed to LLM after RRF
-RRF_K = 60   # RRF smoothing constant
+TOP_K = 10        # candidates from each retriever
+RERANK_TOP_C = 20 # candidate pool taken from RRF and fed to the reranker
+TOP_N = 5         # final chunks passed to LLM after rerank
+RRF_K = 60        # RRF smoothing constant
 
 SYSTEM_PROMPT = """You are a patient math tutor helping a student or family member understand mathematics.
 
@@ -86,12 +89,38 @@ def reciprocal_rank_fusion(ranked_lists: list[list[Document]], k: int = RRF_K) -
     return [(doc_map[key], scores[key]) for key in sorted_keys]
 
 
+def load_reranker() -> CrossEncoder:
+    return CrossEncoder(RERANK_MODEL)
+
+
+def rerank(
+    query: str,
+    candidates: list[tuple[Document, float]],
+    reranker: CrossEncoder,
+    top_n: int = TOP_N,
+) -> list[tuple[Document, float]]:
+    """Rescore RRF candidates with the cross-encoder and keep the top_n.
+
+    The cross-encoder reads each (query, chunk) pair together in a single
+    forward pass and emits a relevance logit; we sort by that and truncate.
+    """
+    if not candidates:
+        return []
+    pairs = [(query, doc.page_content) for doc, _ in candidates]
+    scores = reranker.predict(pairs)
+    reranked = sorted(zip((doc for doc, _ in candidates), scores),
+                      key=lambda x: x[1], reverse=True)
+    return [(doc, float(score)) for doc, score in reranked[:top_n]]
+
+
 def retrieve(
     query: str,
     user: str,
     embeddings,
     use_bm25: bool = True,
     use_dense: bool = True,
+    reranker: CrossEncoder | None = None,
+    use_rerank: bool = True,
 ) -> list[tuple[Document, float]]:
     ranked_lists = []
 
@@ -109,6 +138,9 @@ def retrieve(
         raise ValueError("At least one of --no-bm25 or --no-dense must be left enabled.")
 
     merged = reciprocal_rank_fusion(ranked_lists)
+
+    if use_rerank and reranker is not None:
+        return rerank(query, merged[:RERANK_TOP_C], reranker, top_n=TOP_N)
     return merged[:TOP_N]
 
 
@@ -132,13 +164,15 @@ def format_context(results: list[tuple[Document, float]]) -> str:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def print_retrieved(results: list[tuple[Document, float]]) -> None:
+def print_retrieved(results: list[tuple[Document, float]], reranked: bool = True) -> None:
+    label = "reranked" if reranked else "RRF merged"
+    score_label = "rerank" if reranked else "RRF"
     print(f"\n{'─'*60}")
-    print(f"Retrieved {len(results)} chunks (RRF merged):")
+    print(f"Retrieved {len(results)} chunks ({label}):")
     for i, (doc, score) in enumerate(results, 1):
         source = os.path.basename(doc.metadata.get("source", "unknown"))
         preview = doc.page_content[:150].replace("\n", " ")
-        print(f"\n  [{i}] RRF={score:.4f} | {source}")
+        print(f"\n  [{i}] {score_label}={score:.4f} | {source}")
         print(f"      {preview}...")
     print(f"{'─'*60}\n")
 
@@ -149,6 +183,7 @@ def main():
     parser.add_argument("--retrieval-only", action="store_true", help="Print retrieved chunks only, skip LLM")
     parser.add_argument("--no-bm25", action="store_true", help="Disable BM25 (dense only)")
     parser.add_argument("--no-dense", action="store_true", help="Disable dense search (BM25 only)")
+    parser.add_argument("--no-rerank", action="store_true", help="Disable cross-encoder rerank (RRF order only)")
     args = parser.parse_args()
 
     print(f"Loading embedding model '{EMBED_MODEL}'...")
@@ -156,6 +191,11 @@ def main():
         model_name=EMBED_MODEL,
         encode_kwargs={"normalize_embeddings": True},
     )
+
+    reranker = None
+    if not args.no_rerank:
+        print(f"Loading reranker model '{RERANK_MODEL}'...")
+        reranker = load_reranker()
 
     llm = None
     answer_chain = None
@@ -167,7 +207,8 @@ def main():
     mode = "retrieval-only" if args.retrieval_only else "full pipeline"
     bm25_status = "off" if args.no_bm25 else "on"
     dense_status = "off" if args.no_dense else "on"
-    print(f"\nReady [{mode}] | BM25: {bm25_status} | Dense: {dense_status}")
+    rerank_status = "off" if args.no_rerank else "on"
+    print(f"\nReady [{mode}] | BM25: {bm25_status} | Dense: {dense_status} | Rerank: {rerank_status}")
     print("Type your question (or 'quit' to exit).\n")
 
     while True:
@@ -184,12 +225,14 @@ def main():
                 embeddings=embeddings,
                 use_bm25=not args.no_bm25,
                 use_dense=not args.no_dense,
+                reranker=reranker,
+                use_rerank=not args.no_rerank,
             )
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
             break
 
-        print_retrieved(results)
+        print_retrieved(results, reranked=not args.no_rerank)
 
         if args.retrieval_only:
             continue
