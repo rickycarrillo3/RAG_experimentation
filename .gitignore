@@ -58,3 +58,4 @@ Thumbs.db
 # ── Plan file (local only) ─────────────────────────────────────────────────────
 build_plan.md
 math_chat_keys/
+.claude/
