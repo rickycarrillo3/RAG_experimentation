@@ -35,6 +35,22 @@ def load_mmd_files(paths: list[str]) -> list[Document]:
     return documents
 
 
+def assign_chunk_ids(chunks: list[Document]) -> list[Document]:
+    """Stamp a deterministic `<source>::<n>` id onto each chunk.
+
+    The eval gold set labels questions by chunk id, so ids must be reproducible: the
+    same .mmd re-ingested must yield the same ids, or every gold label silently rots.
+    Counting per source (not globally) keeps ids stable when an unrelated file is added.
+    """
+    counters: dict[str, int] = {}
+    for chunk in chunks:
+        source = os.path.basename(chunk.metadata.get("source", "unknown"))
+        n = counters.get(source, 0)
+        chunk.metadata["chunk_id"] = f"{source}::{n}"
+        counters[source] = n + 1
+    return chunks
+
+
 def build_bm25(chunks: list[Document], user: str) -> str:
     tokenized = [doc.page_content.split() for doc in chunks]
     bm25 = BM25Okapi(tokenized)
@@ -82,7 +98,7 @@ def ingest(user: str, inputs: list[str]) -> None:
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
     )
-    chunks = splitter.split_documents(documents)
+    chunks = assign_chunk_ids(splitter.split_documents(documents))
     print(f"Split into {len(chunks)} chunks (size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP}).")
 
     print(f"Building BM25 index for user '{user}'...")

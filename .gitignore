@@ -58,3 +58,5 @@ Thumbs.db
 # ── Plan file (local only) ─────────────────────────────────────────────────────
 build_plan.md
 math_chat_keys/
+# Eval gold sets + results embed user document text (private, like docs/ and chroma_db/)
+knowledge-base-math/eval/
