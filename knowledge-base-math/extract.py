@@ -1,8 +1,9 @@
 """
 extract.py - PDF extraction for math documents.
 
-Uses Nougat for math-heavy PDFs (produces proper LaTeX).
-Falls back to pymupdf4llm for non-math or lightweight PDFs.
+Uses Marker for math-heavy PDFs (produces proper Markdown + LaTeX).
+Falls back to pymupdf4llm for non-math or lightweight PDFs, and also if
+Marker fails for any reason.
 
 Usage:
     python extract.py docs/raw/textbook.pdf
@@ -11,7 +12,6 @@ Usage:
 
 import argparse
 import os
-import subprocess
 import sys
 import pymupdf4llm
 
@@ -31,22 +31,28 @@ def _has_math(pdf_path: str, sample_pages: int = 5) -> bool:
     return any(pattern in sample for pattern in LATEX_PATTERNS)
 
 
-def extract_nougat(pdf_path: str, out_dir: str) -> str:
-    """Run Nougat on a PDF and return the path to the .mmd output file."""
+def extract_marker(pdf_path: str, out_dir: str) -> str:
+    """Run Marker on a PDF and return the path to the .mmd output file.
+
+    Marker converts the PDF to Markdown with LaTeX-faithful equations. Models
+    are downloaded to the HuggingFace cache on first run and reused thereafter;
+    on a GPU pod this is fast, on CPU it is slow but correct.
+    """
+    # Imported lazily so --force-pymupdf runs don't pay Marker's heavy import.
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+    from marker.output import text_from_rendered
+
     os.makedirs(out_dir, exist_ok=True)
-    result = subprocess.run(
-        ["nougat", pdf_path, "-o", out_dir, "--no-skipping"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Nougat failed:\n{result.stderr}")
+    converter = PdfConverter(artifact_dict=create_model_dict())
+    rendered = converter(pdf_path)
+    text, _, _ = text_from_rendered(rendered)
 
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
-    mmd_path = os.path.join(out_dir, f"{stem}.mmd")
-    if not os.path.exists(mmd_path):
-        raise FileNotFoundError(f"Nougat ran but {mmd_path} was not created.")
-    return mmd_path
+    out_path = os.path.join(out_dir, f"{stem}.mmd")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return out_path
 
 
 def extract_pymupdf(pdf_path: str, out_dir: str) -> str:
@@ -77,13 +83,13 @@ def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED
     is_math = _has_math(pdf_path)
 
     if is_math:
-        print(f"Math detected — using Nougat for proper LaTeX extraction.")
+        print(f"Math detected — using Marker for proper LaTeX extraction.")
         try:
-            out_path = extract_nougat(pdf_path, out_dir)
+            out_path = extract_marker(pdf_path, out_dir)
             print(f"Saved to {out_path}")
             return out_path
-        except (RuntimeError, FileNotFoundError) as e:
-            print(f"Nougat failed ({e}), falling back to pymupdf4llm.")
+        except Exception as e:
+            print(f"Marker failed ({e}), falling back to pymupdf4llm.")
 
     print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
     out_path = extract_pymupdf(pdf_path, out_dir)
@@ -94,7 +100,7 @@ def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract PDF to markdown for RAG ingestion.")
     parser.add_argument("pdf", help="Path to the PDF file")
-    parser.add_argument("--force-pymupdf", action="store_true", help="Skip Nougat, use pymupdf4llm directly")
+    parser.add_argument("--force-pymupdf", action="store_true", help="Skip Marker, use pymupdf4llm directly")
     args = parser.parse_args()
 
     try:

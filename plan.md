@@ -17,8 +17,10 @@ example matching the student's exact problem.
 ### Current (hybrid) vs. reranking — the difference
 
 - **Hybrid/RRF (now):** two cheap retrievers each rank candidates independently; RRF
-  fuses them by rank arithmetic. Nothing ever reads the query *against* a chunk. Fast,
-  no query-time model cost, but coarse.
+  fuses them by rank arithmetic. No model ever encodes the query and a chunk
+  **together**: dense retrieval compares two embeddings each produced in isolation, and
+  BM25 just counts word overlap — nothing attends across the query–chunk pair. Fast, no
+  joint query-time model, but coarse.
 - **Reranking (added):** a **cross-encoder** takes `(query, chunk)` **together** in one
   forward pass and outputs a true relevance score, attending across the pair. Far more
   accurate, but too expensive to run on the whole corpus — so it only rescores a

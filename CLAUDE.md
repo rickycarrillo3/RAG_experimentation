@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 # Extract a PDF to .mmd (Markdown+LaTeX)
 python extract.py docs/raw/textbook.pdf
-python extract.py docs/raw/textbook.pdf --force-pymupdf   # skip Nougat
+python extract.py docs/raw/textbook.pdf --force-pymupdf   # skip Marker
 
 # Ingest .mmd file(s) into a user's BM25 + Chroma indexes
 python ingest.py --user alice docs/extracted/textbook.mmd
@@ -54,7 +54,8 @@ There is no automated test suite/linter configured — `test_chat.py` is a manua
 
 Pipeline: PDF → `extract.py` → `.mmd` → `ingest.py` → per-user BM25 + Chroma indexes → `query.py`/`app.py` → hybrid retrieval + RRF → cross-encoder rerank → LLM answer.
 
-- **extract.py** — PDF → `.mmd` (Markdown+LaTeX). Samples the first few pages for LaTeX signals (`\frac`, `\int`, `$$`, etc.) to decide the extractor: `nougat-ocr` for math-heavy PDFs (proper LaTeX output), falling back to `pymupdf4llm` on Nougat failure or for non-math PDFs. Output goes to `docs/extracted/`.
+- **extract.py** — PDF → `.mmd` (Markdown+LaTeX). Samples the first few pages to decide the extractor: `marker-pdf` for math-heavy PDFs (proper Markdown+LaTeX via the Surya models), falling back to `pymupdf4llm` on Marker failure or for non-math PDFs. Marker downloads its models to the HuggingFace cache on first run (GPU-fast, CPU-slow-but-correct). Output goes to `docs/extracted/`.
+  - **⚠️ DO NOT detect math by grepping for LaTeX (`\frac`, `$$`, `\int`, …) in `pymupdf4llm` output — this mistake has been made repeatedly.** `pymupdf4llm` output contains **NO LaTeX whatsoever**; it renders equations as Unicode glyphs (`γ`, `≡`, `∫`, `∂`, sub/superscripts). Any LaTeX-pattern regex over a pymupdf sample matches nothing, so it silently classifies every math PDF as "not math" and routes it to the wrong (pymupdf) extractor. Math detection on a pymupdf sample must key off **Unicode math glyphs** (or a real layout/OCR signal) — never LaTeX tokens. LaTeX only exists downstream, in Marker's output.
 - **ingest.py** — chunks `.mmd` files (`RecursiveCharacterTextSplitter`, chunk_size=400/overlap=80) and builds two indexes per user: a BM25 pickle (`bm25_indexes/user_<name>.pkl`, contains `{"bm25": BM25Okapi, "chunks": [...]}`) and a Chroma collection (`chroma_db/`, collection name `user_<name>`).
 - **query.py** — CLI for hybrid retrieval: BM25 top-10 + dense top-10 (`BAAI/bge-small-en-v1.5` embeddings) merged via Reciprocal Rank Fusion (RRF, k=60); the RRF top-20 candidate pool is then rescored by a cross-encoder reranker (`BAAI/bge-reranker-v2-m3`) and the top 5 passed to the LLM as context. `--no-rerank` falls back to RRF-only order (for A/B comparison), mirroring `--no-bm25`/`--no-dense`.
 - **app.py** — Gradio 6.18 web UI (port 7860). Reimplements the retrieval/RRF/rerank logic from `query.py` inline rather than importing it (only `extract`, `build_bm25`, `build_chroma`, `load_mmd_files` are imported from `extract.py`/`ingest.py`); the reranker is loaded once at module level like `embeddings`/`llm`. Per-user isolation is by username string (lowercased, no auth) — each user gets an isolated BM25 pickle and Chroma collection. Falls back to answering from the model's own knowledge if a user has no uploaded documents yet. Keeps a separate "clean" conversation history (sources stripped) for LLM context, distinct from the display history shown in the chatbot.
@@ -75,4 +76,4 @@ Note: retrieval logic (search, RRF, rerank) is duplicated between `query.py` and
 - Math retrieval quality (notation, proofs, formulas) is a primary concern — consider math-aware chunking/embeddings over generic RAG defaults.
 - User wants the option to fine-tune models themselves (embedding and/or generation LLM) down the line.
 - Multi-user isolation is per-username directory/collection naming, not real auth — keep this in mind before suggesting security-sensitive changes.
-- `chroma_db/`, `bm25_indexes/`, PDFs, and Nougat-extracted `.mmd` files under `docs/raw`/`docs/extracted` are all gitignored (private user document data) — don't try to commit them.
+- `chroma_db/`, `bm25_indexes/`, PDFs, and extracted `.mmd` files under `docs/raw`/`docs/extracted` are all gitignored (private user document data) — don't try to commit them.

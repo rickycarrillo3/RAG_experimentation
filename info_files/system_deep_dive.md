@@ -36,7 +36,7 @@ You're already using `all-MiniLM-L6-v2` in your baseline experiments and `AnReu/
 - bge-small was trained specifically for retrieval using contrastive learning on (query, passage) pairs, which is exactly what we need.
 - You'd need a math fine-tune of bge-small to get the best of both worlds — which is exactly what Phase 5 of the plan covers.
 
-**The honest limitation:** bge-small still doesn't understand LaTeX natively. `\frac{d}{dx}[\sin x]` and "the derivative of sine" might not be close in its vector space. This is why Nougat matters — converting equations to both LaTeX AND surrounding plain text gives the embedding model something it can actually work with.
+**The honest limitation:** bge-small still doesn't understand LaTeX natively. `\frac{d}{dx}[\sin x]` and "the derivative of sine" might not be close in its vector space. This is why Marker matters — converting equations to faithful LaTeX alongside the surrounding plain text gives the embedding model something it can actually work with.
 
 ---
 
@@ -86,7 +86,7 @@ The only real alternative worth considering is **learned fusion** — training a
 
 | Step | Cost | Notes |
 |---|---|---|
-| Nougat PDF extraction | GPU time only | ~5–10 min per 300-page textbook on GPU |
+| Marker PDF extraction | GPU time only | ~5–10 min per 300-page textbook on GPU |
 | bge-small embedding | CPU time only | ~1–2 min per 300-page textbook on CPU |
 | BM25 index build | CPU time only | <5 seconds |
 | ChromaDB write | Disk only | Negligible |
@@ -132,10 +132,10 @@ When using Modal or RunPod serverless, the first query after idle spins up a new
 
 **Mitigation:** Keep-warm pinging (send a dummy request every few minutes to keep the container alive). Fine for a family tool.
 
-### Bottleneck 3: Nougat ingestion speed
-Nougat runs at roughly 1 page/second on a GPU, 0.05 pages/second on CPU. A 400-page calculus textbook = ~7 minutes on GPU, ~2 hours on CPU.
+### Bottleneck 3: Marker ingestion speed
+Marker runs its Surya models roughly 1 page/second on a GPU, far slower on CPU. A 400-page calculus textbook = ~7 minutes on GPU, a couple of hours on CPU.
 
-**Mitigation:** Always run Nougat on a GPU. This is the one task that genuinely needs it. Rent for one hour, extract all your textbooks, done.
+**Mitigation:** Always run Marker on a GPU. This is the one task that genuinely needs it. Rent for one hour, extract all your textbooks, done.
 
 ### Bottleneck 4: ChromaDB at scale
 ChromaDB is great up to ~100k chunks (a few hundred textbooks). Beyond that, exact nearest neighbor search slows down noticeably.
@@ -171,7 +171,7 @@ With streaming enabled, the user sees the first token in ~1–2 seconds and the 
 |---|---|---|
 | Slow first answer | Serverless cold start (~10–15s extra) | Keep-warm ping, or accept it |
 | Wrong answer despite correct retrieval | DeepSeek-Math hallucinating on complex proofs | Add `"show your work step by step"` in system prompt |
-| Retrieved chunks missing the equation | pymupdf4llm extracted garbage LaTeX | Nougat fixes this |
+| Retrieved chunks missing the equation | pymupdf4llm extracted garbage LaTeX | Marker fixes this |
 | Retrieval returns irrelevant chunks | Query phrasing doesn't match chunk text | HyDE or query expansion (Phase 5) |
 | Gradio UI slow to load | Initial model loading into VRAM | Load once at startup, keep in memory |
 | Out of context window | Too many chunks passed to LLM | Keep top-5 after RRF, not top-10 |

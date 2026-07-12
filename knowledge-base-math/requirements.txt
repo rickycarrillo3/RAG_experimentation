@@ -1,4 +1,4 @@
-nougat-ocr
+marker-pdf
 pymupdf4llm
 langchain-core
 langchain-community
