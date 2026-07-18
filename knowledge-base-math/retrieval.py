@@ -93,20 +93,31 @@ def dense_search(query: str, store: Chroma, k: int) -> list[Document]:
 
 
 def reciprocal_rank_fusion(
-    ranked_lists: list[list[Document]], k: int = RRF_K
+    ranked_lists: list[list[Document]],
+    k: int = RRF_K,
+    weights: list[float] | None = None,
 ) -> list[tuple[Document, float]]:
-    """Fuse ranked lists by rank position only: score = sum of 1/(k + rank).
+    """Fuse ranked lists by rank position only: score = sum of w * 1/(k + rank).
 
     Note this deliberately ignores each retriever's own score — RRF is ordinal.
     Discarding that magnitude is precisely the weakness the reranker exists to fix.
+
+    `weights` (one per ranked list, default all 1.0) lets a weaker retriever be
+    down-weighted rather than dropped outright — worth testing when one retriever is
+    measurably dragging the fusion below its better input.
     """
+    if weights is None:
+        weights = [1.0] * len(ranked_lists)
+    if len(weights) != len(ranked_lists):
+        raise ValueError(f"Got {len(weights)} weights for {len(ranked_lists)} ranked lists.")
+
     scores: dict[str, float] = defaultdict(float)
     doc_map: dict[str, Document] = {}
 
-    for ranked_list in ranked_lists:
+    for weight, ranked_list in zip(weights, ranked_lists):
         for rank, doc in enumerate(ranked_list, start=1):
             key = doc.page_content[:120]
-            scores[key] += 1 / (k + rank)
+            scores[key] += weight * (1 / (k + rank))
             doc_map[key] = doc
 
     sorted_keys = sorted(scores, key=lambda x: scores[x], reverse=True)
@@ -167,6 +178,7 @@ def retrieve_detailed(
     top_n: int = TOP_N,
     top_k: int = TOP_K,
     rerank_top_c: int = RERANK_TOP_C,
+    rrf_weights: list[float] | None = None,
     bm25_index: tuple[BM25Okapi, list[Document]] | None = None,
     store: Chroma | None = None,
 ) -> RetrievalResult:
@@ -198,7 +210,7 @@ def retrieve_detailed(
         raise ValueError("At least one of BM25 / dense retrieval must be enabled.")
 
     t0 = time.perf_counter()
-    merged = reciprocal_rank_fusion(ranked_lists)
+    merged = reciprocal_rank_fusion(ranked_lists, weights=rrf_weights)
     timings["rrf"] = time.perf_counter() - t0
 
     candidates = merged[:rerank_top_c]

@@ -5,9 +5,12 @@ Runs a gold set (from make_evalset.py) against one or more retrieval configs and
 recall / MRR / nDCG, per-stage latency, and peak VRAM. The question it exists to answer:
 does the cross-encoder reranker actually earn the 2.2GB it costs?
 
-    python eval.py --user test --config hybrid+rerank
-    python eval.py --user test --all                    # sweep every config, print table
-    python eval.py --user test --all --answers          # also score end-to-end answers (slow)
+    python eval.py --user calctest --config hybrid+rerank
+    python eval.py --user calctest --all                  # sweep every config
+    python eval.py --user calctest --all --answers        # also judge answers (slow)
+
+Every run prints a GOLD SET HEALTH header first, on purpose: a recall number is only as
+trustworthy as the exam that produced it, and these questions are machine-generated.
 
 Protocol, caveats, and how to read the output: EVALUATION.md
 """
@@ -16,6 +19,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import time
 
@@ -23,7 +27,6 @@ from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-import retrieval
 from query import SYSTEM_PROMPT
 from retrieval import (
     OLLAMA_MODEL,
@@ -42,20 +45,24 @@ EVAL_DIR = "eval"
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")
 JUDGE_MODEL = "qwen2:7b"  # NOT the generator — a model grading its own output is not evidence
 
-# Each config is a set of kwargs for retrieve_detailed. Every one is a real question:
-#   bm25/dense      - is hybrid even beating its own parts?
-#   hybrid          - the system BEFORE reranking. The number to beat.
-#   hybrid+rerank   - the system as it ships today.
-#   pool variants   - is a 20-candidate pool the right size?
-# Note top_k caps the pool: RRF emits at most top_k*2 candidates, so widening
-# rerank_top_c without raising top_k does nothing at all.
+# Each config is a set of kwargs for retrieve_detailed.
+#   bm25/dense       - is hybrid even beating its own parts?
+#   hybrid           - the system BEFORE reranking. The number to beat.
+#   hybrid+rerank    - the system as it ships today.
+#   dense+rerank     - does BM25 contribute anything once a reranker exists?
+#   hybrid_bm25_lite - down-weight BM25 in the fusion rather than dropping it.
+#   pool variants    - is a 20-candidate pool the right size?
+# top_k caps the pool: RRF emits at most top_k*2 candidates, so raising rerank_top_c
+# without raising top_k is a silent no-op.
 CONFIGS: dict[str, dict] = {
-    "bm25":            dict(use_bm25=True,  use_dense=False, use_rerank=False),
-    "dense":           dict(use_bm25=False, use_dense=True,  use_rerank=False),
-    "hybrid":          dict(use_bm25=True,  use_dense=True,  use_rerank=False),
-    "hybrid+rerank":   dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=TOP_K, rerank_top_c=RERANK_TOP_C),
-    "rerank_pool10":   dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=5,     rerank_top_c=10),
-    "rerank_pool50":   dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=25,    rerank_top_c=50),
+    "bm25":             dict(use_bm25=True,  use_dense=False, use_rerank=False),
+    "dense":            dict(use_bm25=False, use_dense=True,  use_rerank=False),
+    "hybrid":           dict(use_bm25=True,  use_dense=True,  use_rerank=False),
+    "hybrid+rerank":    dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=TOP_K, rerank_top_c=RERANK_TOP_C),
+    "dense+rerank":     dict(use_bm25=False, use_dense=True,  use_rerank=True,  top_k=TOP_K, rerank_top_c=RERANK_TOP_C),
+    "hybrid_bm25_lite": dict(use_bm25=True,  use_dense=True,  use_rerank=True,  rrf_weights=[0.3, 1.0]),
+    "rerank_pool10":    dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=5,  rerank_top_c=10),
+    "rerank_pool50":    dict(use_bm25=True,  use_dense=True,  use_rerank=True,  top_k=25, rerank_top_c=50),
 }
 
 JUDGE_PROMPT = """You are grading a math tutor's answer for factual correctness.
@@ -82,12 +89,32 @@ Grade the answer 1-5 on whether it is factually correct and supported by the ref
 Output ONLY the single digit. No explanation."""
 
 
-# ── Metrics ───────────────────────────────────────────────────────────────────
+# ── Gold matching ─────────────────────────────────────────────────────────────
 
-def gold_rank(ranked: list, gold_id: str) -> int | None:
-    """1-indexed rank of the gold chunk in a ranked list, or None if absent."""
+def neighbours(gold_id: str) -> set[str]:
+    """The gold chunk plus its immediate neighbours (`<source>::<n>` ± 1).
+
+    Chunking at 400 chars with 80 overlap means an answer routinely straddles two
+    chunks. Under strict matching, a config that retrieves the adjacent half of the
+    same worked example scores a total miss — which understates recall and can rank
+    configs wrongly. `soft` credits the neighbours; `strict` does not. We report both,
+    because a large gap between them is itself a finding — about chunking, not retrieval.
+    """
+    m = re.match(r"^(.*)::(\d+)$", gold_id)
+    if not m:
+        return {gold_id}
+    source, n = m.group(1), int(m.group(2))
+    ids = {gold_id}
+    if n > 0:
+        ids.add(f"{source}::{n - 1}")
+    ids.add(f"{source}::{n + 1}")
+    return ids
+
+
+def rank_of(ranked: list, targets: set[str]) -> int | None:
+    """1-indexed rank of the first chunk in `ranked` that is in `targets`."""
     for i, (doc, _) in enumerate(ranked, start=1):
-        if chunk_id(doc) == gold_id:
+        if chunk_id(doc) in targets:
             return i
     return None
 
@@ -118,6 +145,28 @@ def load_goldset(path: str) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def print_goldset_health(goldset: list[dict], path: str) -> None:
+    """Never let a recall number be read without the quality of the exam beside it."""
+    n = len(goldset)
+    leaks = [g.get("leak_score") for g in goldset if g.get("leak_score") is not None]
+    n_math = sum(1 for g in goldset if g.get("is_math"))
+
+    print(f"\n{'═' * 64}")
+    print(f"GOLD SET HEALTH — {path}")
+    print(f"  questions: {n}   math-bearing: {n_math}")
+    if leaks:
+        mean_leak = sum(leaks) / len(leaks)
+        high = sum(1 for x in leaks if x >= 0.6)
+        print(f"  mean leak score: {mean_leak:.2f}   high-leak (>=0.60): {high}/{len(leaks)}")
+        if mean_leak >= 0.4 or high > n * 0.15:
+            print("  ⚠ LEAKY. Questions reuse their chunk's wording, which flatters BM25 and")
+            print("    understates the reranker. Trust the DELTAS between configs, not the")
+            print("    absolute scores. Clean eval/goldset_review.md.")
+    else:
+        print("  leak scores absent (gold set predates the leakage filter) — regenerate it.")
+    print(f"{'═' * 64}")
+
+
 def run_config(
     name: str,
     goldset: list[dict],
@@ -128,13 +177,16 @@ def run_config(
     store,
     answer_chain=None,
     judge=None,
-) -> dict:
+) -> tuple[dict, list[dict]]:
     cfg = CONFIGS[name]
-    ranks: list[int | None] = []
+    strict_ranks: list[int | None] = []
+    soft_ranks: list[int | None] = []
     in_pool: list[bool] = []
+    pool_sizes: list[int] = []
     stage_times: dict[str, list[float]] = {}
     judge_scores: list[int] = []
     gen_times: list[float] = []
+    failures: list[dict] = []
 
     for item in goldset:
         result = retrieve_detailed(
@@ -148,11 +200,31 @@ def run_config(
         )
 
         gold = item["gold_chunk_id"]
-        ranks.append(gold_rank(result.ranked, gold))
-        in_pool.append(gold_rank(result.candidates, gold) is not None)
+        s_rank = rank_of(result.ranked, {gold})
+        soft_rank = rank_of(result.ranked, neighbours(gold))
+        strict_ranks.append(s_rank)
+        soft_ranks.append(soft_rank)
+        in_pool.append(rank_of(result.candidates, {gold}) is not None)
+        pool_sizes.append(len(result.candidates))
 
         for stage, secs in result.timings.items():
             stage_times.setdefault(stage, []).append(secs)
+
+        # Aggregates say THAT something is wrong; this says WHAT.
+        if s_rank is None or s_rank > 5:
+            failures.append({
+                "q": item["q"],
+                "gold_chunk_id": gold,
+                "gold_rank": s_rank,
+                "gold_rank_soft": soft_rank,
+                "gold_in_pool": in_pool[-1],
+                "leak_score": item.get("leak_score"),
+                "retrieved_instead": [
+                    {"chunk_id": chunk_id(d), "score": round(s, 4),
+                     "preview": d.page_content[:120].replace("\n", " ")}
+                    for d, s in result.final
+                ],
+            })
 
         if answer_chain is not None and judge is not None:
             t0 = time.perf_counter()
@@ -171,17 +243,19 @@ def run_config(
             if digits:
                 judge_scores.append(max(1, min(5, int(digits[0]))))
 
-    n = len(ranks)
-    found = [r for r in ranks if r is not None]
+    n = len(strict_ranks)
+    found = [r for r in strict_ranks if r is not None]
 
     metrics = {
         "config": name,
         "n": n,
-        "recall@1": sum(1 for r in ranks if r == 1) / n,
-        "recall@5": sum(1 for r in ranks if r is not None and r <= 5) / n,
+        "pool_size": round(statistics.mean(pool_sizes), 1),
+        "recall@1": sum(1 for r in strict_ranks if r == 1) / n,
+        "recall@5": sum(1 for r in strict_ranks if r is not None and r <= 5) / n,
+        "recall@5_soft": sum(1 for r in soft_ranks if r is not None and r <= 5) / n,
         "recall@pool": sum(in_pool) / n,
         "mrr": sum(1.0 / r for r in found) / n,
-        "ndcg@5": sum(ndcg_at_k(r, 5) for r in ranks) / n,
+        "ndcg@5": sum(ndcg_at_k(r, 5) for r in strict_ranks) / n,
         "latency_ms": {
             stage: round(statistics.mean(times) * 1000, 2)
             for stage, times in stage_times.items()
@@ -198,13 +272,14 @@ def run_config(
     if vram is not None:
         metrics["peak_vram_gb"] = round(vram, 2)
 
-    return metrics
+    return metrics, failures
 
 
 def print_table(results: list[dict]) -> None:
     has_answers = any("answer_score_1to5" in r for r in results)
 
-    header = f"{'config':<16} {'R@1':>6} {'R@5':>6} {'R@pool':>7} {'MRR':>6} {'nDCG@5':>7} {'retr ms':>8}"
+    header = (f"{'config':<18} {'pool':>5} {'R@1':>6} {'R@5':>6} {'R@5soft':>8} "
+              f"{'R@pool':>7} {'MRR':>6} {'nDCG@5':>7} {'retr ms':>8}")
     if has_answers:
         header += f" {'answer':>7}"
     print("\n" + header)
@@ -212,9 +287,9 @@ def print_table(results: list[dict]) -> None:
 
     for r in results:
         line = (
-            f"{r['config']:<16} "
-            f"{r['recall@1']:>6.2f} {r['recall@5']:>6.2f} {r['recall@pool']:>7.2f} "
-            f"{r['mrr']:>6.3f} {r['ndcg@5']:>7.3f} "
+            f"{r['config']:<18} {r['pool_size']:>5.0f} "
+            f"{r['recall@1']:>6.2f} {r['recall@5']:>6.2f} {r['recall@5_soft']:>8.2f} "
+            f"{r['recall@pool']:>7.2f} {r['mrr']:>6.3f} {r['ndcg@5']:>7.3f} "
             f"{r['latency_ms']['retrieval_total']:>8.1f}"
         )
         if has_answers:
@@ -222,22 +297,35 @@ def print_table(results: list[dict]) -> None:
             line += f" {score:>7.2f}" if score is not None else f" {'—':>7}"
         print(line)
 
-    print("\nR@pool = was the gold chunk in the candidate pool the reranker saw at all?")
-    print("If R@pool is low, the reranker cannot help — the miss happened upstream, in")
-    print("retrieval or chunking. Reranking can only reorder what BM25/dense already found.")
+    print("\nR@5soft credits an adjacent chunk (gold ±1) — chunks overlap, so an answer often")
+    print("  straddles two. A big gap vs R@5 is a CHUNKING problem, not a retrieval one.")
+    print("R@pool = was the gold chunk in the candidate pool the reranker saw at all? If this")
+    print("  is low, reranking cannot help — the miss happened upstream. Pool sizes differ by")
+    print("  config (single-retriever configs have half the candidates), hence the pool column.")
 
-    base = next((r for r in results if r["config"] == "hybrid"), None)
-    rr = next((r for r in results if r["config"] == "hybrid+rerank"), None)
+    by = {r["config"]: r for r in results}
+
+    base, rr = by.get("hybrid"), by.get("hybrid+rerank")
     if base and rr:
-        d_r5 = rr["recall@5"] - base["recall@5"]
-        d_mrr = rr["mrr"] - base["mrr"]
-        cost = rr["latency_ms"].get("rerank", 0.0)
+        d5 = rr["recall@5"] - base["recall@5"]
+        dm = rr["mrr"] - base["mrr"]
         print(f"\nVERDICT — reranker vs plain hybrid:")
-        print(f"  recall@5 {base['recall@5']:.2f} → {rr['recall@5']:.2f}  ({d_r5:+.2f})")
-        print(f"  MRR      {base['mrr']:.3f} → {rr['mrr']:.3f}  ({d_mrr:+.3f})")
-        print(f"  cost     +{cost:.0f} ms/query, +2.2GB VRAM & disk")
-        if d_r5 <= 0 and d_mrr <= 0.01:
-            print("  → Not paying for itself on this gold set. Drop it, or fix retrieval first.")
+        print(f"  recall@5 {base['recall@5']:.2f} → {rr['recall@5']:.2f}  ({d5:+.2f})")
+        print(f"  MRR      {base['mrr']:.3f} → {rr['mrr']:.3f}  ({dm:+.3f})")
+        print(f"  cost     +{rr['latency_ms'].get('rerank', 0):.0f} ms/query, +2.2GB VRAM & disk")
+        if d5 <= 0 and dm <= 0.01:
+            print("  → Not paying for itself. Drop it, or fix retrieval first.")
+
+    dr = by.get("dense+rerank")
+    if rr and dr:
+        d5 = rr["recall@5"] - dr["recall@5"]
+        print(f"\nDOES BM25 EARN ITS PLACE? hybrid+rerank vs dense+rerank:")
+        print(f"  recall@5 {dr['recall@5']:.2f} (dense only) → {rr['recall@5']:.2f} (with BM25)  ({d5:+.2f})")
+        if d5 < 0:
+            print("  → BM25 is HURTING. It is dragging the fusion below dense alone. Consider")
+            print("    dropping it, or see hybrid_bm25_lite (down-weighted) below.")
+        elif d5 == 0:
+            print("  → BM25 adds nothing here. It is free to run, but it is not helping either.")
 
 
 def main():
@@ -258,9 +346,9 @@ def main():
             parser.error(f"Unknown config '{name}'. Choose from: {', '.join(CONFIGS)}")
 
     goldset = load_goldset(args.goldset)
-    print(f"Gold set: {len(goldset)} questions from {args.goldset}")
+    print_goldset_health(goldset, args.goldset)
 
-    print("Loading embedding model...")
+    print("\nLoading embedding model...")
     embeddings = load_embeddings()
     print("Loading reranker...")
     reranker = load_reranker()
@@ -285,17 +373,20 @@ def main():
     for name in names:
         print(f"\nRunning config '{name}'...")
         t0 = time.perf_counter()
-        metrics = run_config(
+        metrics, failures = run_config(
             name, goldset, args.user, embeddings, reranker,
             bm25_index, store, answer_chain, judge,
         )
         metrics["wall_clock_s"] = round(time.perf_counter() - t0, 1)
         results.append(metrics)
 
-        out_path = os.path.join(EVAL_DIR, f"results_{name.replace('+', '_')}.json")
-        with open(out_path, "w", encoding="utf-8") as f:
+        slug = name.replace("+", "_")
+        with open(os.path.join(EVAL_DIR, f"results_{slug}.json"), "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2)
-        print(f"  done in {metrics['wall_clock_s']}s → {out_path}")
+        with open(os.path.join(EVAL_DIR, f"failures_{slug}.json"), "w", encoding="utf-8") as f:
+            json.dump(failures, f, indent=2, ensure_ascii=False)
+        print(f"  done in {metrics['wall_clock_s']}s → eval/results_{slug}.json "
+              f"({len(failures)} misses → eval/failures_{slug}.json)")
 
     print_table(results)
 

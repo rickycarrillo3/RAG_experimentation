@@ -83,24 +83,60 @@ Built by `make_evalset.py`:
 We use an instruct model rather than `deepseek-math-7b-rl` on purpose: DeepSeek-Math is a
 *solver*, not an instruction-follower, and writes poor questions.
 
-### The step you must not skip
+### Leakage — the central weakness, and the two defences against it
 
-**The generated file is a draft. Read it.** Delete or rewrite every question that parrots the
-chunk's wording.
+Questions generated *from* a chunk inherit that chunk's vocabulary. A question that reuses the
+chunk's rare terms is trivially findable by **BM25** — which makes lexical retrieval look far
+better than it is, and makes the reranker look useless by comparison. Real family questions
+("how do I do the one with the squiggly line") share almost no vocabulary with the target chunk.
 
-This is the protocol's central weakness and it should be stated plainly: questions generated
-*from* a chunk inherit that chunk's vocabulary. A question that reuses the chunk's rare terms is
-trivially findable by **BM25** — which will make lexical retrieval look far better than it is,
-and make the reranker look useless by comparison. Real family questions ("how do I do the one
-with the squiggly line") share almost no vocabulary with the target chunk.
+This is not hypothetical. The **first, unfiltered** gold set measured:
+
+| | v1 (unfiltered) |
+|---|---|
+| mean question→chunk word overlap | **0.43** |
+| questions with ≥60% overlap | **18/50** |
+| chunk-referential ("this benchmark", "as shown in the middle plots") | **10/50** |
+
+Its worst entry — *"What do the straight orange lines in the top row of plots represent?"* — was a
+**figure-caption question that no retrieval system should be expected to answer.** It was scored
+as a fair test.
+
+`make_evalset.py` now defends on two fronts, because they catch different failures:
+
+**1. An eligibility gate on the *chunk* (`is_answerable`).** Some chunks cannot yield a fair
+question at all: figure captions, reference lists, bare number tables, symbol soup. These are
+rejected before generation. No prompt can rescue a bad target — the "orange lines" question was
+unfixable because the *chunk* was never a legitimate answer to anything.
+
+**2. A leakage filter on the *question*, with retries.** Each generated question is scored:
+
+```
+leak_score = |question words ∩ chunk words| / |question words|     (stopwords stripped)
+```
+
+Rejected if `leak_score ≥ 0.6`, or if it matches a referential-phrase regex ("this passage",
+"as shown", "the top row"). On rejection it is **regenerated** (up to 3 attempts) with a stricter
+prompt that quotes the offending attempt back. Still failing → the chunk is dropped.
+
+Each record carries its `leak_score`, `model`, and `prompt_version`, so a future run can tell
+whether a score moved because the *system* changed or because the *exam* changed.
+
+### The step you still must not skip
+
+**The filtered file is still a draft.** `make_evalset.py` writes `eval/goldset_review.md` —
+every question with its chunk, **sorted worst-leakage-first**. Read it and rewrite anything that
+still reads like a lookup key rather than a student's question. Twenty minutes, targeted at the
+worst cases.
 
 Two consequences, and they set how you're allowed to read the output:
 
-- **Absolute scores are optimistic.** Do not quote recall@5 as "the system's accuracy."
-- **Deltas between configs are the signal**, because every config is handicapped identically.
+- **Absolute scores are optimistic** until that pass is done. Don't quote recall@5 as "the
+  system's accuracy."
+- **Deltas between configs are the signal**, because every config sits the same exam.
 
-The 20 minutes spent rewriting questions into natural student phrasing is what makes the
-absolute numbers mean anything. If you skip it, only trust the deltas.
+Every `eval.py` run prints a **GOLD SET HEALTH** header (n, mean leak score, high-leak count) so
+a recall number can never be read without the quality of the exam beside it.
 
 ---
 
@@ -112,11 +148,21 @@ absolute numbers mean anything. If you skip it, only trust the deltas.
 |---|---|
 | **recall@1** | Was the gold chunk the single best hit? |
 | **recall@5** | Did the gold chunk reach the LLM at all? (top-5 is what gets sent) |
+| **recall@5_soft** | Same, but an *adjacent* chunk (gold ± 1) also counts |
 | **recall@pool** | Was the gold chunk in the candidate pool the reranker even saw? |
 | **MRR** | How high did it rank? (1/rank, averaged) |
 | **nDCG@5** | Rank-sensitive: catches "found it, but demoted it to #5" |
 
 **recall@5 is the headline** — it is literally "did the model get the information it needed."
+
+**recall@5_soft exists because chunks overlap.** At 400 chars with 80 overlap, an answer routinely
+straddles two chunks. Under strict matching, a config that retrieves *the adjacent half of the
+same worked example* scores a total miss — which understates recall and can rank configs wrongly.
+Soft matching credits the neighbours.
+
+Report both, and read the **gap** between them: a large `recall@5_soft − recall@5` means retrieval
+is finding the right *region* and chunking is splitting the answer badly. That is a **chunking**
+finding (ROADMAP §3), not a retrieval one, and no reranker will fix it.
 
 **recall@pool is the diagnostic, and it's the one people forget.** The reranker can only reorder
 what BM25 and dense retrieval already found. If the gold chunk isn't in the pool, reranking
@@ -136,11 +182,24 @@ blaming (or crediting) the wrong stage.
 | `dense` | bi-encoder baseline |
 | `hybrid` | RRF, **no reranker** — *the number to beat* |
 | `hybrid+rerank` | the system as it ships today |
+| `dense+rerank` | **does BM25 contribute anything once a reranker exists?** |
+| `hybrid_bm25_lite` | down-weight BM25 in the fusion (RRF weights `[0.3, 1.0]`) rather than dropping it |
 | `rerank_pool10` / `rerank_pool50` | is a 20-candidate pool the right size? |
 
 Note `top_k` bounds everything: RRF can only emit up to `top_k × 2` candidates, so raising
 `rerank_top_c` beyond that does nothing. The pool variants raise `top_k` accordingly — this is
 easy to get wrong and produces a "no effect" result that is really a no-op.
+
+`pool_size` is printed per config because it is **not comparable across configs**: a single-
+retriever config has half the candidates of a hybrid one, so its `recall@pool` is measured over a
+smaller pool.
+
+### Failure dump
+
+Every run writes `eval/failures_<config>.json`: each missed question, where the gold chunk
+*actually* ranked (or that it was absent from the pool entirely), its leak score, and what was
+retrieved instead. Aggregate metrics tell you **that** something is wrong; this tells you **what**.
+Without it, every debugging round restarts from zero.
 
 ### Answer quality (end-to-end, `--answers`)
 
@@ -230,10 +289,19 @@ enough to justify carrying the model at all."**
 
 ---
 
-## 7. First baseline run
+## 7. Baseline runs
 
-50 questions, `sample.mmd` (arXiv Double-DQN paper, 219 chunks), gold set **not yet hand-cleaned**,
-run on a Mac CPU. Treat as a shakedown of the harness, not the system's real scores.
+### v1 — SUPERSEDED, kept as a cautionary record
+
+50 questions, `sample.mmd` (arXiv Double-DQN paper, 219 chunks), **unfiltered** gold set, Mac CPU.
+
+**Do not cite these numbers.** Two independent flaws, both since fixed:
+- **Wrong corpus.** An ML research paper — prose, benchmark tables, figures. Almost no worked
+  examples, theorems, or proofs. Not the retrieval problem this system exists to solve.
+- **Leaky gold set** (mean leak 0.43; 18/50 above 0.60), which systematically *flatters BM25* and
+  *understates the reranker*.
+
+Kept because it shows what an un-audited eval looks like when it is confidently wrong.
 
 | config | R@1 | R@5 | R@pool | MRR | nDCG@5 | retrieval ms |
 |---|---|---|---|---|---|---|
@@ -268,6 +336,52 @@ relative to a ~5s generation.
 leakage §3 predicts — questions like "What are the average scores for each game in this benchmark?"
 refer to the chunk rather than standing alone. Clean the gold set before treating any of these
 absolute numbers as the system's accuracy.
+
+### v2 — current baseline (calculus slice, clean gold set), Mac CPU
+
+34 questions over a ~10-page slice of **OpenStax Calculus Vol 1** (§3.6 Chain Rule),
+`calculus_chainrule.mmd`, **66 chunks**. Gold set auto-filtered by the §3 leakage defences:
+**mean `leak_score` 0.15** (down from 0.43), no referential or figure-caption questions. Not yet
+hand-cleaned, but already an honest exam — cite these, not v1. This is the **control** the GPU
+parity run compares against.
+
+| config | pool | R@1 | R@5 | R@5 soft | R@pool | MRR | nDCG@5 |
+|---|---|---|---|---|---|---|---|
+| bm25 | 10 | 0.24 | 0.56 | 0.68 | 0.71 | 0.37 | 0.40 |
+| dense | 10 | 0.44 | 0.82 | 0.88 | 0.88 | 0.61 | 0.66 |
+| hybrid | 16.5 | 0.44 | 0.82 | 0.91 | 0.94 | 0.60 | 0.64 |
+| dense+rerank | 10 | 0.59 | 0.85 | 0.94 | 0.88 | 0.71 | 0.75 |
+| **hybrid+rerank** | 16.5 | **0.59** | **0.88** | 0.94 | 0.94 | **0.72** | 0.76 |
+| hybrid_bm25_lite | 16.5 | 0.59 | 0.88 | 0.94 | 0.94 | 0.72 | 0.76 |
+| rerank_pool10 (top_k=5) | 8.6 | 0.56 | 0.91 | 0.94 | 0.91 | 0.70 | 0.75 |
+| **rerank_pool50 (top_k=25)** | 36.2 | 0.59 | **0.91** | 0.94 | **0.97** | **0.74** | **0.78** |
+
+Three findings, two of which **reverse or refine** what v1 (the leaky RL-paper eval) claimed:
+
+1. **The reranker is confirmed.** hybrid → hybrid+rerank lifts R@1 `0.44 → 0.59`, R@5
+   `0.82 → 0.88`, MRR `0.599 → 0.723`. Same story as v1, now on an honest exam. Keep the model.
+
+2. **BM25 is vindicated — v1's "BM25 hurts" finding does NOT replicate.** With a reranker present,
+   `hybrid+rerank` (R@5 `0.88`, R@pool `0.94`) **beats** `dense+rerank` (`0.85`, `0.88`): BM25 pulls
+   gold chunks into the pool that dense alone misses (R@pool `0.94 > 0.88`), and the reranker then
+   promotes them. v1 measured the opposite because a leaky gold set is exactly the case that should
+   flatter BM25 — yet here, on the *clean* set, BM25 helps. Down-weighting it (`hybrid_bm25_lite`,
+   RRF weights `[0.3, 1.0]`) is **identical** to full weight — no reason to touch the fusion.
+
+3. **A chunking gap is now visible.** hybrid R@5 `0.82` vs R@5 **soft** `0.91` — a 9-point jump
+   from counting the adjacent chunk as a hit. That gap is the answer being split across a
+   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (ROADMAP §3),
+   surfaced only because the harness now reports soft matching.
+
+**Inconclusive on this corpus:** the `top_k` pool-size win looked huge in v1 but does **not**
+replicate cleanly here — `rerank_pool10` and `rerank_pool50` tie on R@5 (`0.91`), though pool50
+still edges R@pool (`0.97 > 0.91`) and MRR (`0.74 > 0.70`). On a 66-chunk haystack this is within
+noise. **Re-measure on a larger corpus before raising the `top_k` default** (deferred).
+
+**Read the deltas, not the absolutes.** 66 chunks is a small, easy haystack, so recall is
+flattering across the board; the *differences* between configs are the trustworthy signal.
+Latency is omitted from this table on purpose — it was CPU-bound and the two pool configs ran
+under background load, so their reranker times are not comparable. See §6 for GPU expectations.
 
 ---
 
