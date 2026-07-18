@@ -79,6 +79,7 @@ Note: retrieval logic used to be duplicated between `query.py` and `app.py`. It 
 - LLM: `t1c/deepseek-math-7b-rl:Q4` served via Ollama.
 - Embeddings: `BAAI/bge-small-en-v1.5` (HuggingFace, normalized).
 - Reranker: `BAAI/bge-reranker-v2-m3` cross-encoder via `sentence_transformers.CrossEncoder` (~2.2GB, downloads to the HF cache on first use — keep the HF cache on `/workspace` on the pod so it survives restarts).
+- Eval-only model: `qwen2:7b` (Ollama) — used by `make_evalset.py` as the *instruct* question-writer and by `eval.py` as the LLM-as-judge. Deliberately **not** deepseek-math (a solver, not a writer; and a model must not grade its own output). Only needed when running the eval harness, not the serving pipeline — `ollama pull qwen2:7b`.
 - Designed to run on a RunPod GPU pod; everything must survive on `/workspace` (persistent volume) between pod restarts, including `OLLAMA_MODELS`.
 
 ## Conventions / constraints
