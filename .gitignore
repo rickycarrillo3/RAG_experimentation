@@ -59,5 +59,7 @@ Thumbs.db
 build_plan.md
 math_chat_keys/
 .claude/
-# Eval gold sets + results embed user document text (private, like docs/ and chroma_db/)
-knowledge-base-math/eval/
+# Eval run outputs (results_*, failures_*, sweep_results) embed user document text and are
+# machine-specific — keep ignored. Track only the curated gold set (goldset.jsonl).
+knowledge-base-math/eval/*
+!knowledge-base-math/eval/goldset.jsonl
