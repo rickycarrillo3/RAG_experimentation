@@ -49,7 +49,7 @@ Then open the public URL in your browser:
 ## GPU eval run
 
 This reruns the eval harness on the GPU as a **parity check** against the Mac baseline in
-`EVALUATION.md §7` (does the pod reproduce the numbers, and how fast), plus `--answers`
+`evaluation/EVALUATION.md §7` (does the pod reproduce the numbers, and how fast), plus `--answers`
 (LLM-judged end-to-end answers — too slow on CPU, affordable on GPU).
 
 ```bash
@@ -64,11 +64,11 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 The reranker (`CrossEncoder`), the HF embeddings, and Marker all auto-detect CUDA — no flags
 needed. If this prints `False`, stop and fix the pod, or every stage silently runs on CPU.
 
-**2. Get the corpus + gold set onto the pod out-of-band.** Both `docs/extracted/` and `eval/` are
-**gitignored** (they embed private document text), so they do **not** arrive via `git pull`.
-Upload these two files with the RunPod file uploader (or `scp`) into the matching paths:
+**2. Get the corpus onto the pod out-of-band.** The curated gold set
+(`knowledge-base-math/evaluation/goldset.jsonl`) is **tracked**, so it arrives with `git pull`.
+The extracted `.mmd` under `docs/extracted/` is **gitignored** (it embeds private document text),
+so it does **not** — upload it with the RunPod file uploader (or `scp`) into the matching path:
 - `knowledge-base-math/docs/extracted/calculus_chainrule.mmd`
-- `knowledge-base-math/eval/goldset.jsonl`
 
 > ⚠️ This is what makes it a *parity* run against the identical exam. Do **not** re-extract the PDF
 > or regenerate the gold set on the pod — a fresh extraction shifts chunk boundaries, the
@@ -80,10 +80,17 @@ Upload these two files with the RunPod file uploader (or `scp`) into the matchin
 **3. Ingest and run the full sweep with answer judging:**
 ```bash
 python ingest.py --user calctest docs/extracted/calculus_chainrule.mmd
-python eval.py --user calctest --all --answers
+python evaluation/eval.py --user calctest --all --answers
 ```
 
-**4. Read the results.** Per-config `results_*.json` + `failures_*.json` land in `eval/`. Compare
+**Or just run `evaluation/eval.sh`**, which wraps steps 1–3 (GPU check → data check → prefetch →
+the embedding × chunking sweep, with an optional answer-judged run):
+```bash
+bash evaluation/eval.sh              # GPU checks + the 9-combo latency/quality sweep
+bash evaluation/eval.sh --answers    # also ingest + eval.py --all --answers (Ollama-judged)
+```
+
+**4. Read the results.** Per-config `results_*.json` + `failures_*.json` land in `evaluation/results/`. Compare
 recall@1/@5/@pool, MRR, nDCG against the §7 Mac table — they should match within noise; a real
 divergence points at an env or model-version difference, not the pipeline. The new
 `answer_score_1to5` field (1–5, judged by `qwen2:7b`) is the end-to-end answer quality per config.

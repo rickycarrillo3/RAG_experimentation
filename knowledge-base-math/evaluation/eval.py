@@ -5,9 +5,10 @@ Runs a gold set (from make_evalset.py) against one or more retrieval configs and
 recall / MRR / nDCG, per-stage latency, and peak VRAM. The question it exists to answer:
 does the cross-encoder reranker actually earn the 2.2GB it costs?
 
-    python eval.py --user calctest --config hybrid+rerank
-    python eval.py --user calctest --all                  # sweep every config
-    python eval.py --user calctest --all --answers        # also judge answers (slow)
+    (run from knowledge-base-math/, so the indexes and gold set resolve)
+    python evaluation/eval.py --user calctest --config hybrid+rerank
+    python evaluation/eval.py --user calctest --all                  # sweep every config
+    python evaluation/eval.py --user calctest --all --answers        # also judge answers (slow)
 
 Every run prints a GOLD SET HEALTH header first, on purpose: a recall number is only as
 trustworthy as the exam that produced it, and these questions are machine-generated.
@@ -21,7 +22,11 @@ import math
 import os
 import re
 import statistics
+import sys
 import time
+
+# This lives in evaluation/; the pipeline modules (retrieval, query, …) are one level up.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
@@ -29,6 +34,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from query import SYSTEM_PROMPT
 from retrieval import (
+    EMBED_MODEL,
     OLLAMA_MODEL,
     RERANK_TOP_C,
     TOP_K,
@@ -41,7 +47,8 @@ from retrieval import (
     retrieve_detailed,
 )
 
-EVAL_DIR = "eval"
+EVAL_DIR = "evaluation"                             # gold set + review live here
+RESULTS_DIR = os.path.join(EVAL_DIR, "results")     # machine-specific run outputs
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")
 JUDGE_MODEL = "qwen2:7b"  # NOT the generator — a model grading its own output is not evidence
 
@@ -119,6 +126,37 @@ def rank_of(ranked: list, targets: set[str]) -> int | None:
     return None
 
 
+# Overlap matching — needed because chunk ids are NOT comparable across chunking
+# strategies. A retrieved chunk counts as the gold hit when it *contains* enough of
+# the gold passage's tokens, so the same frozen gold set scores every chunking fairly.
+OVERLAP_STRICT = 0.7   # the retrieved chunk holds ≥70% of the gold passage's tokens
+OVERLAP_SOFT = 0.5     # partial: the answer straddles two chunks (the eqaware failure mode)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokens(text: str) -> set[str]:
+    """Lowercase alphanumeric token set. Drops LaTeX punctuation so raw `$\\theta$` and a
+    normalized `θ`/`theta` both reduce to comparable content tokens."""
+    return set(_TOKEN_RE.findall(text.lower()))
+
+
+def overlap_containment(gold_text: str, chunk_text: str) -> float:
+    """Fraction of the gold passage's tokens present in `chunk_text` (0..1)."""
+    gold = _tokens(gold_text)
+    if not gold:
+        return 0.0
+    return len(gold & _tokens(chunk_text)) / len(gold)
+
+
+def rank_of_overlap(ranked: list, gold_text: str, threshold: float) -> int | None:
+    """1-indexed rank of the first chunk whose token-containment of gold ≥ threshold."""
+    for i, (doc, _) in enumerate(ranked, start=1):
+        if overlap_containment(gold_text, doc.page_content) >= threshold:
+            return i
+    return None
+
+
 def ndcg_at_k(rank: int | None, k: int = 5) -> float:
     """With exactly one relevant document, IDCG is 1, so nDCG@k = 1/log2(rank+1)."""
     if rank is None or rank > k:
@@ -161,7 +199,7 @@ def print_goldset_health(goldset: list[dict], path: str) -> None:
         if mean_leak >= 0.4 or high > n * 0.15:
             print("  ⚠ LEAKY. Questions reuse their chunk's wording, which flatters BM25 and")
             print("    understates the reranker. Trust the DELTAS between configs, not the")
-            print("    absolute scores. Clean eval/goldset_review.md.")
+            print("    absolute scores. Clean evaluation/goldset_review.md.")
     else:
         print("  leak scores absent (gold set predates the leakage filter) — regenerate it.")
     print(f"{'═' * 64}")
@@ -177,6 +215,7 @@ def run_config(
     store,
     answer_chain=None,
     judge=None,
+    match: str = "overlap",
 ) -> tuple[dict, list[dict]]:
     cfg = CONFIGS[name]
     strict_ranks: list[int | None] = []
@@ -200,11 +239,18 @@ def run_config(
         )
 
         gold = item["gold_chunk_id"]
-        s_rank = rank_of(result.ranked, {gold})
-        soft_rank = rank_of(result.ranked, neighbours(gold))
+        if match == "overlap":
+            gold_text = item["chunk_text"]
+            s_rank = rank_of_overlap(result.ranked, gold_text, OVERLAP_STRICT)
+            soft_rank = rank_of_overlap(result.ranked, gold_text, OVERLAP_SOFT)
+            pooled = rank_of_overlap(result.candidates, gold_text, OVERLAP_STRICT) is not None
+        else:
+            s_rank = rank_of(result.ranked, {gold})
+            soft_rank = rank_of(result.ranked, neighbours(gold))
+            pooled = rank_of(result.candidates, {gold}) is not None
         strict_ranks.append(s_rank)
         soft_ranks.append(soft_rank)
-        in_pool.append(rank_of(result.candidates, {gold}) is not None)
+        in_pool.append(pooled)
         pool_sizes.append(len(result.candidates))
 
         for stage, secs in result.timings.items():
@@ -248,6 +294,7 @@ def run_config(
 
     metrics = {
         "config": name,
+        "match": match,
         "n": n,
         "pool_size": round(statistics.mean(pool_sizes), 1),
         "recall@1": sum(1 for r in strict_ranks if r == 1) / n,
@@ -336,6 +383,13 @@ def main():
     parser.add_argument("--answers", action="store_true", help="Also generate + judge answers (slow)")
     parser.add_argument("--goldset", default=GOLDSET_PATH)
     parser.add_argument("--judge-model", default=JUDGE_MODEL)
+    parser.add_argument("--match", choices=["overlap", "id"], default="overlap",
+                        help="How a retrieval counts as the gold hit. 'overlap' (default) is "
+                             "chunking-invariant; 'id' matches exact chunk ids (same-chunking only).")
+    parser.add_argument("--embed-model", default=EMBED_MODEL,
+                        help="Embedding model the target index was built with (must match).")
+    parser.add_argument("--normalize-latex", action="store_true",
+                        help="Query-side LaTeX normalization; must match how the index was built.")
     args = parser.parse_args()
 
     if not args.all and not args.config:
@@ -348,8 +402,8 @@ def main():
     goldset = load_goldset(args.goldset)
     print_goldset_health(goldset, args.goldset)
 
-    print("\nLoading embedding model...")
-    embeddings = load_embeddings()
+    print(f"\nLoading embedding model '{args.embed_model}' (normalize_latex={args.normalize_latex})...")
+    embeddings = load_embeddings(args.embed_model, normalize_latex=args.normalize_latex)
     print("Loading reranker...")
     reranker = load_reranker()
 
@@ -368,25 +422,25 @@ def main():
             model=args.judge_model, temperature=0, num_predict=5
         ) | StrOutputParser()
 
-    os.makedirs(EVAL_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     results = []
     for name in names:
         print(f"\nRunning config '{name}'...")
         t0 = time.perf_counter()
         metrics, failures = run_config(
             name, goldset, args.user, embeddings, reranker,
-            bm25_index, store, answer_chain, judge,
+            bm25_index, store, answer_chain, judge, match=args.match,
         )
         metrics["wall_clock_s"] = round(time.perf_counter() - t0, 1)
         results.append(metrics)
 
         slug = name.replace("+", "_")
-        with open(os.path.join(EVAL_DIR, f"results_{slug}.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(RESULTS_DIR, f"results_{slug}.json"), "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2)
-        with open(os.path.join(EVAL_DIR, f"failures_{slug}.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(RESULTS_DIR, f"failures_{slug}.json"), "w", encoding="utf-8") as f:
             json.dump(failures, f, indent=2, ensure_ascii=False)
-        print(f"  done in {metrics['wall_clock_s']}s → eval/results_{slug}.json "
-              f"({len(failures)} misses → eval/failures_{slug}.json)")
+        print(f"  done in {metrics['wall_clock_s']}s → {RESULTS_DIR}/results_{slug}.json "
+              f"({len(failures)} misses → {RESULTS_DIR}/failures_{slug}.json)")
 
     print_table(results)
 

@@ -9,5 +9,6 @@ langchain-ollama
 chromadb
 rank-bm25
 sentence-transformers
+pylatexenc
 gradio==6.18.0
 torch

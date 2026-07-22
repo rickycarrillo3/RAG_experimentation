@@ -68,7 +68,7 @@ rather than the pipeline itself will drift from what you ship and quietly start 
 
 ## 3. The gold set
 
-**`eval/goldset.jsonl` — 50 records of `question → the chunk that should be retrieved`.**
+**`evaluation/goldset.jsonl` — records of `question → the chunk that should be retrieved`.**
 
 Built by `make_evalset.py`:
 
@@ -124,7 +124,7 @@ whether a score moved because the *system* changed or because the *exam* changed
 
 ### The step you still must not skip
 
-**The filtered file is still a draft.** `make_evalset.py` writes `eval/goldset_review.md` —
+**The filtered file is still a draft.** `make_evalset.py` writes `evaluation/goldset_review.md` —
 every question with its chunk, **sorted worst-leakage-first**. Read it and rewrite anything that
 still reads like a lookup key rather than a student's question. Twenty minutes, targeted at the
 worst cases.
@@ -196,7 +196,7 @@ smaller pool.
 
 ### Failure dump
 
-Every run writes `eval/failures_<config>.json`: each missed question, where the gold chunk
+Every run writes `evaluation/results/failures_<config>.json`: each missed question, where the gold chunk
 *actually* ranked (or that it was absent from the pool entirely), its leak score, and what was
 retrieved instead. Aggregate metrics tell you **that** something is wrong; this tells you **what**.
 Without it, every debugging round restarts from zero.
@@ -227,15 +227,15 @@ cd knowledge-base-math && source venv/bin/activate
 python ingest.py --user test docs/extracted/textbook.mmd
 
 # 2. Build the gold set — THEN READ AND CLEAN IT (see §3)
-python make_evalset.py --user test --n 50
+python evaluation/make_evalset.py --user test --n 50
 
 # 3. Measure
-python eval.py --user test --all              # full sweep + verdict table
-python eval.py --user test --all --answers    # also score answers end-to-end (slow)
+python evaluation/eval.py --user test --all              # full sweep + verdict table
+python evaluation/eval.py --user test --all --answers    # also score answers end-to-end (slow)
 ```
 
-Results land in `eval/results_<config>.json`, plus a printed comparison table and an explicit
-reranker verdict.
+Results land in `evaluation/results/results_<config>.json`, plus a printed comparison table and an
+explicit reranker verdict.
 
 **Keep the gold set fixed** while comparing configs. Regenerating it between runs changes the
 exam, not the student — and any comparison across different gold sets is meaningless.
@@ -382,6 +382,62 @@ noise. **Re-measure on a larger corpus before raising the `top_k` default** (def
 flattering across the board; the *differences* between configs are the trustworthy signal.
 Latency is omitted from this table on purpose — it was CPU-bound and the two pool configs ran
 under background load, so their reranker times are not comparable. See §6 for GPU expectations.
+
+### Experiment — embedding × chunking sweep (2026-07-21, Mac CPU, cleaned 19-Q gold set)
+
+Question: we embed LaTeX equations and plain prose with the *same* generic English model
+(`bge-small-en-v1.5`), whose tokenizer has never meaningfully seen LaTeX. Does a
+LaTeX-tolerant embedder and/or equation-aware chunking retrieve math better? Run it yourself:
+
+```bash
+python evaluation/embed_chunk_sweep.py     # 9 indexes × {dense, hybrid+rerank}
+```
+
+3 chunkers × 3 embedders, the curated **19-question** calculus gold set (pruned from 34 to the
+unambiguous questions), overlap matching (§4). `dense` isolates the embedding; `hybrid+rerank`
+is what ships. `dense` ms = query-embed latency. (An earlier run on the noisier 34-question set
+showed the same ordering with lower absolutes — cleaning the exam widened the bge-m3 gap.)
+
+| chunker | embed | config | R@5 | R@5soft | R@pool | MRR | dense ms |
+|---|---|---|---|---|---|---|---|
+| baseline | bge-small | dense | 0.84 | 0.89 | 1.00 | 0.704 | 24 |
+| baseline | **bge-m3** | dense | **0.95** | 0.95 | 1.00 | **0.787** | 84 |
+| baseline | **bge-m3+norm** | dense | 0.95 | 0.95 | 1.00 | **0.876** | 57 |
+| baseline | bge-small | hybrid+rerank | 1.00 | 1.00 | 1.00 | 0.866 | — |
+| baseline | bge-m3 | hybrid+rerank | 1.00 | 1.00 | 1.00 | **0.886** | — |
+| baseline | bge-m3+norm | hybrid+rerank | 1.00 | 1.00 | 1.00 | 0.882 | — |
+| eqaware | bge-m3 | hybrid+rerank | 0.89 | 0.95 | 0.95 | 0.841 | — |
+| eqaware_context | bge-m3 | hybrid+rerank | 0.89 | 0.95 | 0.95 | 0.783 | — |
+
+**Findings (directional — n=19, one doc: trust deltas and MRR, not the binary near-ceilings):**
+
+1. **bge-m3 clearly beats bge-small on *dense* retrieval** — the axis that isolates the embedder.
+   R@5 0.84→0.95, MRR 0.704→0.787, R@pool 0.91→1.00. Cleaning the gold set *widened* the gap
+   (it was 0.82→0.88 at n=34), so the LaTeX-tokenizer hypothesis holds more strongly.
+   **Recommend switching the dense embedder to `bge-m3`.**
+2. **The reranker hides the embedder's weakness — completely, here.** After `hybrid+rerank` all
+   three embedders reach **R@5 1.00 / R@pool 1.00**; only MRR still separates them (m3 best at
+   0.886). So the bge-m3 upgrade matters most *pre-rerank* — dense-only deployments and a
+   perfect candidate pool — while the cross-encoder already recovers bge-small on the shipping path.
+3. **pylatexenc normalization sharpens *ranking*, and more than before.** Same R@5 as raw bge-m3,
+   but the best dense MRR on the board (0.787→**0.876**, a bigger jump than the 34-Q run's
+   0.694→0.748). The gain still washes out after reranking and it adds CPU-bound query latency
+   (high variance, up to ~350–600 ms on some rows — pylatexenc runs on CPU and won't benefit from
+   the pod GPU). **Worth it specifically for dense-only ranking quality.**
+4. **Latency is the tradeoff.** Query-embed: bge-small ~15–24 ms → bge-m3 ~84–310 ms →
+   +norm ~57–600 ms (very noisy on CPU); index build 3 s → 10–26 s. Mac-CPU numbers; the embed
+   gap shrinks on the target GPU, but pylatexenc's does not.
+5. **This sweep still cannot fairly rank the chunkers.** The gold `chunk_text` *is* a baseline
+   chunk, so baseline scores containment 1.0 for free while eqaware/eqaware_context reshape
+   boundaries and lose *strict* overlap — baseline looks best on R@5 but the gap closes on
+   **R@5soft** (eqaware ties it). eqaware provably keeps every equation intact (0 splits vs
+   baseline's) and is at worst neutral. **To settle chunking, rebuild the gold set labeled by
+   answer-span containment**, not whole-baseline-chunk overlap.
+
+> **On n=19:** many cells are at or near 1.00, which is partly small-sample ceiling — each
+> question is worth ~5.3 points, so R@5 1.00 vs 0.95 is a *single*-question difference. Read the
+> continuous **MRR** column (which has headroom) over the binary recalls, and treat the absolute
+> recalls as "no obvious failures on this small clean set," not "solved."
 
 ---
 

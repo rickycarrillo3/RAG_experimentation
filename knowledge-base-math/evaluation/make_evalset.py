@@ -5,8 +5,9 @@ Samples answerable chunks from a user's index, asks an instruct model to write t
 question a student would ask that each chunk answers, and rejects questions that leak
 the chunk's own wording.
 
-    python make_evalset.py --user calctest --n 50
-    python make_evalset.py --user calctest --n 50 --model qwen2:7b
+    (run from knowledge-base-math/)
+    python evaluation/make_evalset.py --user calctest --n 50
+    python evaluation/make_evalset.py --user calctest --n 50 --model qwen2:7b
 
 Why the filtering exists
 ------------------------
@@ -23,7 +24,7 @@ Two defences, because they catch different failures:
      retrieval system should be expected to answer. No prompt can fix a bad target.
   2. A leakage filter on the QUESTION, with retries.
 
-Output is still a DRAFT: read eval/goldset_review.md (worst offenders first) before
+Output is still a DRAFT: read evaluation/goldset_review.md (worst offenders first) before
 trusting the numbers. See EVALUATION.md.
 """
 
@@ -32,12 +33,16 @@ import json
 import os
 import random
 import re
+import sys
+
+# This lives in evaluation/; the pipeline modules (retrieval, …) are one level up.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_ollama import ChatOllama
 
 from retrieval import chunk_id, load_bm25
 
-EVAL_DIR = "eval"
+EVAL_DIR = "evaluation"
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")
 REVIEW_PATH = os.path.join(EVAL_DIR, "goldset_review.md")
 QUESTION_MODEL = "qwen2:7b"  # an *instruct* model; deepseek-math is a solver, not a writer

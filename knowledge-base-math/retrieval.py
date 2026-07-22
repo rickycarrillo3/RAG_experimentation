@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
@@ -69,11 +70,34 @@ def load_chroma(user: str, embeddings) -> Chroma:
     )
 
 
-def load_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL,
+class NormalizingEmbeddings(Embeddings):
+    """Wrap an embedder so text is LaTeX-normalized before it is encoded.
+
+    Only the *vectors* see normalized text; page_content stays raw everywhere else.
+    Because ingest and query both go through load_embeddings, the query is normalized
+    with exactly the same function the documents were — no divergent second path.
+    """
+
+    def __init__(self, base: Embeddings, normalize):
+        self.base = base
+        self.normalize = normalize
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.base.embed_documents([self.normalize(t) for t in texts])
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.base.embed_query(self.normalize(text))
+
+
+def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False) -> Embeddings:
+    base = HuggingFaceEmbeddings(
+        model_name=model_name,
         encode_kwargs={"normalize_embeddings": True},
     )
+    if normalize_latex:
+        from latex_norm import normalize_latex as _normalize
+        return NormalizingEmbeddings(base, _normalize)
+    return base
 
 
 def load_reranker() -> CrossEncoder:

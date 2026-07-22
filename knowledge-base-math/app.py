@@ -16,13 +16,10 @@ from langchain_core.documents import Document
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from extract import extract
+from chunking import split_baseline
 from ingest import (
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
-    assign_chunk_ids,
     build_bm25,
     build_chroma,
     load_mmd_files,
@@ -84,11 +81,7 @@ def handle_upload(pdf_file, username: str) -> str:
             mmd_path = extract(pdf_file.name, out_dir=mmd_out_dir)
 
             docs = load_mmd_files([mmd_path])
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=CHUNK_SIZE,
-                chunk_overlap=CHUNK_OVERLAP,
-            )
-            chunks = assign_chunk_ids(splitter.split_documents(docs))
+            chunks = split_baseline(docs)
 
             # Merge with existing BM25 index if user already has one
             if _has_index(username):
