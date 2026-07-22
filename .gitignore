@@ -59,3 +59,9 @@ Thumbs.db
 build_plan.md
 math_chat_keys/
 .claude/
+# Evaluation: track the scripts + the curated gold set (evaluation/goldset.jsonl); ignore
+# machine-specific run outputs (evaluation/results/) and the raw/working gold-set files,
+# which embed user document text.
+knowledge-base-math/evaluation/results/
+knowledge-base-math/evaluation/goldset.raw.jsonl
+knowledge-base-math/evaluation/goldset_review.md

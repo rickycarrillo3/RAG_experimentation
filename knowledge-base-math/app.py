@@ -9,33 +9,23 @@ Each user logs in with a username — their documents are fully isolated.
 """
 
 import os
-import pickle
 import tempfile
-from collections import defaultdict
 
 import gradio as gr
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
 
 from extract import extract
-from ingest import build_bm25, build_chroma, load_mmd_files
-
-CHROMA_DIR = "chroma_db"
-BM25_DIR = "bm25_indexes"
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
-TOP_K = 10
-RERANK_TOP_C = 20  # candidate pool taken from RRF and fed to the reranker
-TOP_N = 5
-RRF_K = 60
+from chunking import split_baseline
+from ingest import (
+    build_bm25,
+    build_chroma,
+    load_mmd_files,
+)
+import retrieval
+from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 
 SYSTEM_PROMPT = """You are an expert mathematician and dedicated teacher. Your deep love for mathematics drives you to help students not just find answers, but truly understand the underlying concepts and develop their own mathematical thinking.
 
@@ -55,72 +45,25 @@ Conversation so far:
 HISTORY_TURNS = 6
 
 # Loaded once at startup, shared across all users (stateless)
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBED_MODEL,
-    encode_kwargs={"normalize_embeddings": True},
-)
+embeddings = load_embeddings()
 llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
-reranker = CrossEncoder(RERANK_MODEL)
+reranker = load_reranker()
 chain = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
     ("human", "{input}"),
 ]) | llm | StrOutputParser()
 
 
-# ── Retrieval helpers ──────────────────────────────────────────────────────────
-
-def _bm25_path(user: str) -> str:
-    return os.path.join(BM25_DIR, f"user_{user}.pkl")
-
+# ── Retrieval ──────────────────────────────────────────────────────────────────
+# The pipeline itself (BM25 + dense → RRF → cross-encoder) lives in retrieval.py,
+# shared with query.py and eval.py. Only the UI-specific bits are here.
 
 def _has_index(user: str) -> bool:
-    return os.path.exists(_bm25_path(user))
-
-
-def _load_bm25(user: str) -> tuple[BM25Okapi, list[Document]]:
-    with open(_bm25_path(user), "rb") as f:
-        data = pickle.load(f)
-    return data["bm25"], data["chunks"]
-
-
-def _rrf(ranked_lists: list[list[Document]], k: int = RRF_K) -> list[tuple[Document, float]]:
-    scores: dict[str, float] = defaultdict(float)
-    doc_map: dict[str, Document] = {}
-    for ranked_list in ranked_lists:
-        for rank, doc in enumerate(ranked_list, start=1):
-            key = doc.page_content[:120]
-            scores[key] += 1 / (k + rank)
-            doc_map[key] = doc
-    sorted_keys = sorted(scores, key=lambda x: scores[x], reverse=True)
-    return [(doc_map[key], scores[key]) for key in sorted_keys]
-
-
-def _rerank(query: str, candidates: list[tuple[Document, float]], top_n: int = TOP_N) -> list[tuple[Document, float]]:
-    """Rescore RRF candidates with the cross-encoder and keep the top_n.
-
-    The cross-encoder reads each (query, chunk) pair together in a single
-    forward pass and emits a relevance logit; we sort by that and truncate.
-    """
-    if not candidates:
-        return []
-    pairs = [(query, doc.page_content) for doc, _ in candidates]
-    scores = reranker.predict(pairs)
-    reranked = sorted(zip((doc for doc, _ in candidates), scores),
-                      key=lambda x: x[1], reverse=True)
-    return [(doc, float(score)) for doc, score in reranked[:top_n]]
+    return os.path.exists(os.path.join(BM25_DIR, f"user_{user}.pkl"))
 
 
 def retrieve(query: str, user: str) -> list[tuple[Document, float]]:
-    bm25, chunks = _load_bm25(user)
-    bm25_scores = bm25.get_scores(query.split())
-    top_idx = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:TOP_K]
-    bm25_results = [chunks[i] for i in top_idx]
-
-    store = Chroma(collection_name=f"user_{user}", embedding_function=embeddings, persist_directory=CHROMA_DIR)
-    dense_results = store.similarity_search(query, k=TOP_K)
-
-    merged = _rrf([bm25_results, dense_results])
-    return _rerank(query, merged[:RERANK_TOP_C], TOP_N)
+    return retrieval.retrieve(query, user, embeddings, reranker=reranker)
 
 
 # ── Gradio handlers ────────────────────────────────────────────────────────────
@@ -138,14 +81,12 @@ def handle_upload(pdf_file, username: str) -> str:
             mmd_path = extract(pdf_file.name, out_dir=mmd_out_dir)
 
             docs = load_mmd_files([mmd_path])
-            splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=80)
-            chunks = splitter.split_documents(docs)
+            chunks = split_baseline(docs)
 
             # Merge with existing BM25 index if user already has one
             if _has_index(username):
-                with open(_bm25_path(username), "rb") as f:
-                    existing = pickle.load(f)
-                chunks = existing["chunks"] + chunks
+                _, existing_chunks = retrieval.load_bm25(username)
+                chunks = existing_chunks + chunks
 
             build_bm25(chunks, username)
             build_chroma(chunks, username, embeddings)

@@ -1,8 +1,11 @@
 #!/bin/bash
 set -e
 
-# ── Ollama ────────────────────────────────────────────────────────────────────
+# ── Model caches (persistent volume, survive pod restarts) ─────────────────────
 export OLLAMA_MODELS=/workspace/ollama-models
+export HF_HOME=/workspace/.cache/huggingface   # Surya/Marker, reranker, embeddings
+
+# ── Ollama ────────────────────────────────────────────────────────────────────
 
 echo "Starting Ollama..."
 if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then

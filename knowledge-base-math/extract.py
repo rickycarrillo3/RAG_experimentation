@@ -1,9 +1,17 @@
 """
 extract.py - PDF extraction for math documents.
 
-Uses Marker for math-heavy PDFs (produces proper Markdown + LaTeX).
-Falls back to pymupdf4llm for non-math or lightweight PDFs, and also if
-Marker fails for any reason.
+Marker is the default: it is the only extractor here that produces faithful LaTeX,
+and this is a math RAG system. pymupdf4llm is used only when explicitly asked for
+(--force-pymupdf) or as a fallback when Marker fails.
+
+There is deliberately NO math auto-detection. The old `_has_math()` sampled the PDF
+with pymupdf4llm and grepped the text for LaTeX tokens (`\frac`, `$$`, …), which
+cannot work: pymupdf4llm never emits LaTeX. Measured on OpenStax Calculus Vol 1 —
+a *calculus textbook* — that check finds zero LaTeX tokens and routes the document
+to the wrong extractor. Unicode-glyph detection fails on the same document too,
+because the equations are embedded images that pymupdf hands to Tesseract. You
+cannot tell whether a PDF contains math by reading text that has already lost it.
 
 Usage:
     python extract.py docs/raw/textbook.pdf
@@ -17,18 +25,6 @@ import pymupdf4llm
 
 
 EXTRACTED_DIR = "docs/extracted"
-LATEX_PATTERNS = [
-    r"\frac", r"\sum", r"\int", r"\sqrt", r"\begin{",
-    r"\alpha", r"\beta", r"\theta", r"\pi", r"\infty",
-    r"$$", r"\leq", r"\geq", r"\nabla", r"\partial",
-]
-
-
-def _has_math(pdf_path: str, sample_pages: int = 5) -> bool:
-    """Sample the first few pages with pymupdf4llm and check for LaTeX signals."""
-    pages = pymupdf4llm.to_markdown(pdf_path, page_chunks=True)
-    sample = " ".join(p["text"] for p in pages[:sample_pages])
-    return any(pattern in sample for pattern in LATEX_PATTERNS)
 
 
 def extract_marker(pdf_path: str, out_dir: str) -> str:
@@ -73,23 +69,16 @@ def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
 
-    if force_pymupdf:
-        print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
-        out_path = extract_pymupdf(pdf_path, out_dir)
-        print(f"Saved to {out_path}")
-        return out_path
-
-    print(f"Sampling PDF to detect math content...")
-    is_math = _has_math(pdf_path)
-
-    if is_math:
-        print(f"Math detected — using Marker for proper LaTeX extraction.")
+    if not force_pymupdf:
+        print(f"[marker] Extracting {os.path.basename(pdf_path)} (LaTeX-faithful; slow on CPU)...")
         try:
             out_path = extract_marker(pdf_path, out_dir)
             print(f"Saved to {out_path}")
             return out_path
         except Exception as e:
-            print(f"Marker failed ({e}), falling back to pymupdf4llm.")
+            # pymupdf flattens equations, so this is a degraded result, not an equivalent one.
+            print(f"WARNING: Marker failed ({e}).")
+            print("Falling back to pymupdf4llm — EQUATIONS WILL BE MANGLED. Re-run once Marker works.")
 
     print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
     out_path = extract_pymupdf(pdf_path, out_dir)
