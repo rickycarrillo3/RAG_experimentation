@@ -13,7 +13,15 @@ import sys
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from ingest import ingest
-from query import retrieve, build_answer_chain, format_context, print_retrieved, OLLAMA_MODEL
+from query import (
+    KEEP_ALIVE,
+    NUM_PREDICT,
+    OLLAMA_MODEL,
+    build_answer_chain,
+    format_context,
+    print_retrieved,
+    retrieve,
+)
 from langchain_ollama import ChatOllama
 
 TEST_USER = "test"
@@ -52,7 +60,12 @@ def main():
     answer_chain = None
     if not args.retrieval_only:
         print(f"Connecting to Ollama ({OLLAMA_MODEL})...")
-        llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
+        llm = ChatOllama(
+            model=OLLAMA_MODEL,
+            temperature=0,
+            num_predict=NUM_PREDICT,
+            keep_alive=KEEP_ALIVE,
+        )
         answer_chain = build_answer_chain(llm)
 
     history = []
@@ -74,13 +87,16 @@ def main():
 
         context = format_context(results)
         chat_history = _format_history(history)
-        answer = answer_chain.invoke({
+        print("\nTutor: ", end="", flush=True)
+        answer = ""
+        for token in answer_chain.stream({
             "context": f"Context from your documents:\n\n{context}" if context else "",
             "history": chat_history,
             "input": question,
-        })
-
-        print(f"\nTutor: {answer}\n")
+        }):
+            answer += token
+            print(token, end="", flush=True)
+        print("\n")
         history.append((question, answer))
 
 

@@ -30,17 +30,25 @@ from retrieval import (
     retrieve,
 )
 
+# The static rules stay in the system message and the per-query context moves to the
+# human message, so Ollama's prompt-prefix KV cache survives from one question to the
+# next instead of being invalidated at the first token of a fresh context. See LATENCY.md.
 SYSTEM_PROMPT = """You are a patient math tutor helping a student or family member understand mathematics.
 
 Rules:
 - Answer only based on the context provided below.
 - If the answer is not in the context, say: "I don't have that in my knowledge base."
-- Always show your work step by step.
+- Show your work step by step, but keep the answer proportionate to the question — stop once it is answered.
 - Use LaTeX notation for all equations (e.g. $x^2$, \\frac{{a}}{{b}}).
-- Cite the source document at the end of your answer.
+- Cite the source document at the end of your answer."""
 
-Context:
-{context}"""
+HUMAN_PROMPT = """Context:
+{context}
+
+Question: {input}"""
+
+NUM_PREDICT = 350   # decode dominates query latency; 1024 just let the solver ramble
+KEEP_ALIVE = "30m"  # keep the model resident between questions (default unloads after 5 min)
 
 
 # ── Generation ────────────────────────────────────────────────────────────────
@@ -48,7 +56,7 @@ Context:
 def build_answer_chain(llm):
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
-        ("human", "{input}"),
+        ("human", HUMAN_PROMPT),
     ])
     return prompt | llm | StrOutputParser()
 
@@ -88,7 +96,12 @@ def main():
     answer_chain = None
     if not args.retrieval_only:
         print(f"Connecting to Ollama model '{OLLAMA_MODEL}'...")
-        llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
+        llm = ChatOllama(
+            model=OLLAMA_MODEL,
+            temperature=0,
+            num_predict=NUM_PREDICT,
+            keep_alive=KEEP_ALIVE,
+        )
         answer_chain = build_answer_chain(llm)
 
     mode = "retrieval-only" if args.retrieval_only else "full pipeline"
@@ -125,10 +138,12 @@ def main():
             continue
 
         context = format_context(results)
-        answer = answer_chain.invoke({"context": context, "input": question})
+        # Stream: print tokens as they decode rather than blocking for the whole answer.
+        print("Answer:")
+        for token in answer_chain.stream({"context": context, "input": question}):
+            print(token, end="", flush=True)
         sources = {os.path.basename(doc.metadata.get("source", "unknown")) for doc, _ in results}
-        print(f"Answer:\n{answer}")
-        print(f"\nSources: {', '.join(sources)}\n")
+        print(f"\n\nSources: {', '.join(sources)}\n")
 
 
 if __name__ == "__main__":

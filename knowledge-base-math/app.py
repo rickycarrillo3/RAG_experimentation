@@ -27,30 +27,51 @@ from ingest import (
 import retrieval
 from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 
+# Prompt order is load-bearing for latency: static text → history → context → question.
+# Ollama caches the KV of the longest common prompt *prefix* between consecutive requests.
+# Everything up to the first token that changes is free; everything after it is re-prefilled.
+# The static block never changes and `history` only ever grows by appending, so both stay
+# cached across turns. `context` is fresh every query, which is exactly why it must come
+# last — it lives in the human message, after the system message. Putting it before the
+# history (as this file used to) invalidated the cache at token ~150 and re-prefilled the
+# whole ~3.4k-token prompt every single turn. See LATENCY.md.
 SYSTEM_PROMPT = """You are an expert mathematician and dedicated teacher. Your deep love for mathematics drives you to help students not just find answers, but truly understand the underlying concepts and develop their own mathematical thinking.
 
 When answering:
 - Don't just solve the problem — explain the reasoning behind each step so the student understands why, not just how.
 - If a student makes a conceptual error, gently point it out and guide them toward the correct understanding.
 - Encourage curiosity: point out interesting patterns, connections to other concepts, or follow-up questions worth thinking about.
-- Always show full working step by step.
+- Show your working step by step, but match the length of the answer to the question: a conceptual "why" question wants a short, clear explanation, not a full derivation. Stop once the student has what they asked for.
 - Use LaTeX for all equations (e.g. $x^2$, \\frac{{a}}{{b}}).
 - If context from uploaded documents is provided, prioritise it and cite the source. Otherwise answer from your own expertise.
-
-{context}
 
 Conversation so far:
 {history}"""
 
-HISTORY_TURNS = 6
+HUMAN_PROMPT = """{context}
+
+Question: {input}"""
+
+# History is trimmed in blocks, not one message at a time — see _history_window().
+# These count *messages* (a turn is two: student + tutor).
+HISTORY_KEEP = 8    # smallest the window is ever trimmed back to
+HISTORY_BLOCK = 8   # the window start only ever moves in steps of this
+
+NUM_PREDICT = 350   # decode is ~60% of query latency and the solver will fill whatever it is given
+KEEP_ALIVE = "30m"  # else Ollama unloads after 5 min idle and the next question pays a cold load
 
 # Loaded once at startup, shared across all users (stateless)
 embeddings = load_embeddings()
-llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024)
+llm = ChatOllama(
+    model=OLLAMA_MODEL,
+    temperature=0,
+    num_predict=NUM_PREDICT,
+    keep_alive=KEEP_ALIVE,
+)
 reranker = load_reranker()
 chain = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("human", "{input}"),
+    ("human", HUMAN_PROMPT),
 ]) | llm | StrOutputParser()
 
 
@@ -101,26 +122,64 @@ def _msg(role: str, content: str) -> dict:
     return {"role": role, "content": content}
 
 
+def _history_window(history: list) -> list:
+    """The slice of history sent to the model, trimmed in blocks rather than per turn.
+
+    A plain `history[-N:]` sliding window drops the oldest message on *every* turn once
+    it is full. That shifts the start of the history block, which is the one thing the
+    prompt KV cache cannot survive (the cache only reuses a common *prefix*), so every
+    turn would pay a full re-prefill — measured at 13.4s by turn 5.
+
+    Trimming to a block boundary instead means the window start only moves once every
+    HISTORY_BLOCK messages. In between, history grows purely by appending and stays
+    cached. The cost is that we sometimes carry a few more messages than the minimum,
+    which is cheap: those tokens are cached, the alternative is recomputing all of them.
+
+    There is deliberately no separate "max length" constant. Until history reaches
+    HISTORY_KEEP + HISTORY_BLOCK messages the division below is 0, so the window starts
+    at 0 and keeps everything — the "grow freely at first" behaviour falls out of the
+    arithmetic. Adding a max that disagreed with this grid only made the first trim
+    lurch twice in consecutive turns.
+
+    max(0, ...) guards Python's floor division on negatives: (2 - 8) // 8 == -1, and a
+    negative start would silently index from the end and restore per-turn sliding.
+    """
+    start = max(0, ((len(history) - HISTORY_KEEP) // HISTORY_BLOCK) * HISTORY_BLOCK)
+    return history[start:]
+
+
 def _format_history(history: list) -> str:
-    recent = history[-HISTORY_TURNS:]
     lines = []
-    for m in recent:
+    for m in _history_window(history):
         role = "Student" if m["role"] == "user" else "Tutor"
         lines.append(f"{role}: {m['content']}")
     return "\n".join(lines) if lines else "None yet."
 
 
-def handle_chat(message: str, history: list, clean_history: list, username: str) -> tuple[str, list, list]:
+def handle_chat(message: str, history: list, clean_history: list, username: str):
+    """Stream one answer, yielding (cleared input, display history, clean history).
+
+    A generator rather than a plain function: a full answer takes tens of seconds to
+    decode, and waiting for all of it before painting anything is the single largest
+    contributor to *perceived* latency. Streaming shows the first words in ~1s instead.
+    Gradio treats a yielded tuple exactly like a returned one and repaints per yield.
+    """
     username = username.strip().lower()
     if not username:
-        display = history + [_msg("user", message), _msg("assistant", "Please enter your name first.")]
-        return "", display, clean_history
+        yield "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")], clean_history
+        return
     if not message.strip():
-        return "", history, clean_history
+        yield "", history, clean_history
+        return
 
     chat_history = _format_history(clean_history)
-    sources_text = ""
+    base = history + [_msg("user", message)]
 
+    # Paint the question and a placeholder before retrieval, so the UI reacts immediately.
+    yield "", base + [_msg("assistant", "_Searching your documents…_")], clean_history
+
+    answer = ""
+    sources_text = ""
     try:
         if _has_index(username):
             results = retrieve(message, username)
@@ -135,17 +194,18 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
         else:
             context = "No documents uploaded yet. Answer from your own expertise."
 
-        answer = chain.invoke({"context": context, "history": chat_history, "input": message})
-        full_answer = answer + sources_text
+        for token in chain.stream({"context": context, "history": chat_history, "input": message}):
+            answer += token
+            yield "", base + [_msg("assistant", answer)], clean_history
 
     except Exception as e:
         answer = f"Error: {e}"
-        full_answer = answer
+        sources_text = ""
 
+    full_answer = answer + sources_text
     # clean_history stores only the plain answer (no sources) for LLM context
     new_clean = clean_history + [_msg("user", message), _msg("assistant", answer)]
-    new_display = history + [_msg("user", message), _msg("assistant", full_answer)]
-    return "", new_display, new_clean
+    yield "", base + [_msg("assistant", full_answer)], new_clean
 
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
