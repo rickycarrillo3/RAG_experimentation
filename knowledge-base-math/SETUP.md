@@ -43,6 +43,14 @@ ollama serve &
 sleep 3
 ollama pull t1c/deepseek-math-7b-rl:Q4   # generator (~4.5GB)
 ollama pull qwen2:7b                     # eval only: gold-set author + answer judge
+
+# ── HuggingFace models (~6GB cold) ────────────────────────────────────────────
+# Worth doing explicitly here rather than letting it happen mid-use. The embedder
+# and reranker would download at app startup anyway; Marker's models would NOT —
+# they wait until the first PDF upload, where a multi-GB download surfaces to
+# whoever uploaded it as "Ingestion failed". startup.sh runs this too, so this is
+# really just to pay the cost now, on a volume you're already watching.
+python prefetch_models.py
 ```
 
 ### Set these in the RunPod dashboard → your pod → **Environment Variables**
@@ -67,12 +75,18 @@ bash startup.sh
 ```
 
 `startup.sh` checks the GPU, warns if there's no login configured, starts Ollama (pulling
-the generator if the volume is cold), then serves the app. Options:
+the generator if the volume is cold), warms the HuggingFace models, then serves the app.
+Options:
 
 ```bash
-bash startup.sh --allow-cpu   # start without CUDA (local dry-run; slow)
-bash startup.sh --no-pull     # skip the Ollama model check for a faster restart
+bash startup.sh --allow-cpu     # start without CUDA (local dry-run; slow)
+bash startup.sh --no-pull       # skip the Ollama model check for a faster restart
+bash startup.sh --no-prefetch   # skip the HuggingFace warm-up
 ```
+
+On a warm volume the prefetch is a few seconds. On a cold one it is where the ~6GB
+download happens — deliberately, before the app accepts its first question, rather than
+in front of a family member mid-upload.
 
 Then: RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`, and log
 in with an `APP_AUTH` account.

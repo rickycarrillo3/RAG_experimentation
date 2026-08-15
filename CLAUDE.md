@@ -40,6 +40,10 @@ python evaluation/eval.py --user alice --all            # sweep configs: recall@
 python evaluation/eval.py --user alice --all --answers  # also LLM-judge the end-to-end answers (slow)
 python evaluation/embed_chunk_sweep.py                  # 3 chunkers × 3 embedders → evaluation/results/sweep_results.json
 
+# Pre-download all HuggingFace models (embedder + reranker + Marker/surya, ~6GB cold)
+python prefetch_models.py
+python prefetch_models.py --skip-marker   # query-only; skips the ~3-4GB extraction models
+
 # End-to-end smoke test: ingests docs/extracted/test.mmd for a "test" user, then interactive CLI chat
 python test_chat.py
 python test_chat.py --retrieval-only
@@ -81,6 +85,7 @@ Pipeline: PDF → `extract.py` → `.mmd` → `ingest.py` → per-user BM25 + Ch
 - **evaluation/eval.sh** — pod runner that wraps the GPU eval: CUDA check → data check → **prefetch all models before any testing** → the sweep, with an optional `--answers` run. See `SETUP.md § GPU eval run`.
 - **evaluation/EVALUATION.md** — the evaluation protocol: what's measured, why, the gold-set caveats, cost expectations, and how to act on the numbers. **Read before changing retrieval.**
 - **LATENCY.md** — where query time actually goes (generation is ~95%, retrieval ~4%), the fixes applied, and the measurements behind them. **Read before editing `SYSTEM_PROMPT` in `app.py`/`query.py`:** the prompt order is load-bearing — static text → history → context → question — because Ollama only reuses the KV cache of a common prompt *prefix*. Putting per-query context before stable content silently re-prefills the whole prompt every turn.
+- **prefetch_models.py** — downloads every HuggingFace model the app needs, before anyone uses it. Exists because the three model sets are fetched at wildly different moments: the embedder (~130MB) and reranker (~2.2GB) load at `app.py` *import*, so a cold cache just makes startup look hung — but **Marker/surya (~3-4GB) is built inside `extract_marker()` and therefore does not download until the first PDF upload**, where `handle_upload`'s `except` reports the stall as a generic `Ingestion failed: <e>`. Fetches through the pipeline's own loaders, so it pulls exactly the files that will be used and doubles as a "do these load here?" check. Called by `startup.sh` (stage 4, skippable with `--no-prefetch`) and by `evaluation/eval.sh` with `--skip-marker` — **one prefetch implementation; don't reintroduce an inline copy in a shell script.**
 - **test_chat.py** — ingests a fixed test doc for a `test` user and drops into the same interactive CLI loop as `query.py`, for manual end-to-end verification.
 
 Note: retrieval logic used to be duplicated between `query.py` and `app.py`. It is now shared via `retrieval.py` — **do not reintroduce a second copy.** An `eval.py` that measures a reimplementation of the pipeline rather than the pipeline itself will drift from what ships and quietly start lying.
