@@ -229,7 +229,17 @@ with gr.Blocks(title="Math Tutor") as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(height=500, latex_delimiters=[
+            # type="messages" is required, not cosmetic: handle_chat yields
+            # {"role": ..., "content": ...} dicts, and Gradio 5 still defaults to the
+            # legacy 'tuples' format, which rejects them outright ("Data incompatible
+            # with tuples format").
+            #
+            # This line is Gradio-5-specific and pins the file to requirements.txt:
+            # Gradio 6 did not merely default `type` to 'messages', it REMOVED the
+            # parameter, so this raises TypeError there. If the gradio pin is ever
+            # raised back to 6.x, delete this argument — the dict format is 6's only
+            # behaviour, so nothing else has to change.
+            chatbot = gr.Chatbot(height=500, type="messages", latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},

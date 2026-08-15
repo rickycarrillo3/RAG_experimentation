@@ -27,7 +27,7 @@ cd $WORKSPACE/RAG_experimentation/knowledge-base-math
 # ── Python deps ───────────────────────────────────────────────────────────────
 python -m venv venv          # optional; skip to use the pod's system python
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt   # fully pinned; see the header of that file
 
 # ── Confirm torch still sees the GPU AFTER installing ─────────────────────────
 # requirements.txt lists a bare `torch`. On most RunPod images pip keeps the CUDA
@@ -162,7 +162,28 @@ pull never touches them.
 
 ---
 
-## 7. Troubleshooting
+## 7. Syncing an existing local venv
+
+`requirements.txt` is now pinned, and the pin moves **gradio from 6.18 to 5.50** (the
+reason is in that file's header — Gradio 6 and `marker-pdf` cannot coexist). A venv
+created before this change still has gradio 6.18, where `app.py` now fails with
+`Chatbot.__init__() got an unexpected keyword argument 'type'`. Sync it:
+
+```bash
+cd knowledge-base-math
+source venv/bin/activate
+pip install -r requirements.txt
+pip check          # should print "No broken requirements found."
+```
+
+`pip check` is worth running once: the pre-pin environment reported
+`gradio 6.18.0 has requirement huggingface-hub<2.0,>=1.2.0, but you have 0.36.2` — an
+inconsistent install that pip's resolver would never produce from scratch, which is
+exactly what pinning is meant to prevent.
+
+---
+
+## 8. Troubleshooting
 
 **"REQUIRE_GPU=1 but torch.cuda.is_available() is False"** — the pod has no GPU attached, or
 pip installed a CPU-only torch. See the reinstall command in §1.
@@ -181,3 +202,10 @@ Python buffers the diagnostics until the process exits.
 
 **Can't reach the app** — `APP_HOST` must stay `0.0.0.0` for RunPod's HTTP proxy to reach
 it; `127.0.0.1` will bind successfully and be unreachable from outside.
+
+**`Chatbot.__init__() got an unexpected keyword argument 'type'`** — the environment has
+gradio 6.x but the code targets the pinned 5.50. See §7.
+
+**`ResolutionImpossible` when installing** — something has been added or bumped that
+re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the
+`requirements.txt` header before loosening a pin to make the error go away.
