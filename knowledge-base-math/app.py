@@ -26,6 +26,7 @@ from ingest import (
 )
 import retrieval
 from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
+from config import APP_HOST, APP_PORT, OLLAMA_BASE_URL, app_auth
 
 # Prompt order is load-bearing for latency: static text → history → context → question.
 # Ollama caches the KV of the longest common prompt *prefix* between consecutive requests.
@@ -64,6 +65,7 @@ KEEP_ALIVE = "30m"  # else Ollama unloads after 5 min idle and the next question
 embeddings = load_embeddings()
 llm = ChatOllama(
     model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=NUM_PREDICT,
     keep_alive=KEEP_ALIVE,
@@ -227,7 +229,17 @@ with gr.Blocks(title="Math Tutor") as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(height=500, latex_delimiters=[
+            # type="messages" is required, not cosmetic: handle_chat yields
+            # {"role": ..., "content": ...} dicts, and Gradio 5 still defaults to the
+            # legacy 'tuples' format, which rejects them outright ("Data incompatible
+            # with tuples format").
+            #
+            # This line is Gradio-5-specific and pins the file to requirements.txt:
+            # Gradio 6 did not merely default `type` to 'messages', it REMOVED the
+            # parameter, so this raises TypeError there. If the gradio pin is ever
+            # raised back to 6.x, delete this argument — the dict format is 6's only
+            # behaviour, so nothing else has to change.
+            chatbot = gr.Chatbot(height=500, type="messages", latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},
@@ -242,4 +254,22 @@ with gr.Blocks(title="Math Tutor") as app:
 
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft())
+    # 0.0.0.0 is required for the pod's HTTP proxy to reach the app at all, which also
+    # means the port is open to anyone who has the pod URL. APP_AUTH puts a login in
+    # front of it; the warning below exists because an unauthenticated public URL is
+    # easy to create by accident and impossible to notice from inside the app.
+    auth = app_auth()
+    if auth:
+        print(f"[app] Login required — {len(auth)} account(s) configured via APP_AUTH.")
+    else:
+        print("[app] ⚠ No APP_AUTH set: anyone with the URL can use this app and read "
+              "any user's documents. Set APP_AUTH='name:password' before exposing it.")
+    print(f"[app] Serving on {APP_HOST}:{APP_PORT}  (Ollama at {OLLAMA_BASE_URL})")
+
+    app.launch(
+        server_name=APP_HOST,
+        server_port=APP_PORT,
+        share=False,
+        auth=auth,
+        theme=gr.themes.Soft(),
+    )

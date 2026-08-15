@@ -25,8 +25,11 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 
-CHROMA_DIR = "chroma_db"
-BM25_DIR = "bm25_indexes"
+# Index locations come from config.py so they can be moved onto a pod's persistent
+# volume without a code change. Re-exported here because app.py and eval.py import
+# them from this module — there must stay exactly one definition (see ingest.py).
+from config import BM25_DIR, CHROMA_DIR, resolve_device  # noqa: F401  (re-export)
+
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
@@ -90,8 +93,13 @@ class NormalizingEmbeddings(Embeddings):
 
 
 def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False) -> Embeddings:
+    # device is pinned only when CUDA is present; otherwise the key is omitted entirely
+    # so sentence-transformers keeps auto-detecting (MPS on the Mac, CPU elsewhere).
+    device = resolve_device()
+    model_kwargs = {"device": device} if device else {}
     base = HuggingFaceEmbeddings(
         model_name=model_name,
+        model_kwargs=model_kwargs,
         encode_kwargs={"normalize_embeddings": True},
     )
     if normalize_latex:
@@ -101,7 +109,7 @@ def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False
 
 
 def load_reranker() -> CrossEncoder:
-    return CrossEncoder(RERANK_MODEL)
+    return CrossEncoder(RERANK_MODEL, device=resolve_device())
 
 
 # ── Stages ────────────────────────────────────────────────────────────────────
