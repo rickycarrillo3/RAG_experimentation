@@ -1,112 +1,183 @@
-# RunPod Setup Guide
+# Running on a Remote GPU Pod (RunPod)
 
-Run these commands **once** after creating your pod. Everything goes to `/workspace` so it survives restarts.
+The app is machine-independent; what changes between your Mac and a rented GPU box is
+**where things are stored**, **where Ollama is**, and **who can connect**. All three are
+environment variables (see `config.py`) — there is no code to edit when you move.
+
+The single rule that governs everything below: **a pod's container filesystem is wiped on
+restart, only `/workspace` survives.** Anything expensive to rebuild (model caches) or
+impossible to rebuild (the family's uploaded documents) must live on `/workspace`.
 
 ---
 
-## One-Time Workspace Setup
+## 1. One-time pod setup
 
 ```bash
-# 1. Pin BOTH model caches to the persistent volume (so they survive pod restarts)
-export OLLAMA_MODELS=/workspace/ollama-models
-export HF_HOME=/workspace/.cache/huggingface   # Surya (Marker) ~3-4GB + reranker 2.2GB + embeddings
+# ── Caches and data on the persistent volume ──────────────────────────────────
+export WORKSPACE=/workspace
+export OLLAMA_MODELS=$WORKSPACE/ollama-models          # Ollama models (~5-10GB)
+export HF_HOME=$WORKSPACE/.cache/huggingface           # Marker ~3-4GB + reranker 2.2GB + embedder
+export DATA_DIR=$WORKSPACE/kb-data                     # chroma_db/ + bm25_indexes/ (user documents)
 
-# 2. Clone the repo
-git clone https://github.com/rickycarrillo3/RAG_experimentation.git /workspace/RAG_experimentation
-# Until the eval-harness PR is merged to main, check out its branch:
-cd /workspace/RAG_experimentation && git checkout worktree-rag-eval-harness
+# ── Code ──────────────────────────────────────────────────────────────────────
+git clone https://github.com/rickycarrillo3/RAG_experimentation.git $WORKSPACE/RAG_experimentation
+cd $WORKSPACE/RAG_experimentation/knowledge-base-math
+# main is current — no branch checkout needed.
 
-# 3. Install Python dependencies
-pip install -r /workspace/RAG_experimentation/knowledge-base-math/requirements.txt
+# ── Python deps ───────────────────────────────────────────────────────────────
+python -m venv venv          # optional; skip to use the pod's system python
+source venv/bin/activate
+pip install -r requirements.txt
 
-# 4. Start Ollama and pull BOTH models
+# ── Confirm torch still sees the GPU AFTER installing ─────────────────────────
+# requirements.txt lists a bare `torch`. On most RunPod images pip keeps the CUDA
+# build, but an image with a pinned torch can end up downgraded by this install.
+# This is the one check worth doing by hand; `startup.sh` also enforces it.
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+#   → True 12.x       good
+#   → False None      CPU-only wheel: reinstall from the CUDA index, e.g.
+#                     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
+
+# ── Models ────────────────────────────────────────────────────────────────────
 ollama serve &
 sleep 3
 ollama pull t1c/deepseek-math-7b-rl:Q4   # generator (~4.5GB)
-ollama pull qwen2:7b                       # gold-set author + answer judge (make_evalset.py / eval --answers)
+ollama pull qwen2:7b                     # eval only: gold-set author + answer judge
 ```
 
-Add BOTH to your pod's **Environment Variables** in the RunPod dashboard so every session finds the caches:
-```
-OLLAMA_MODELS=/workspace/ollama-models
-HF_HOME=/workspace/.cache/huggingface
-```
+### Set these in the RunPod dashboard → your pod → **Environment Variables**
+
+So every future session inherits them without re-exporting:
+
+| Variable | Value | Why |
+|---|---|---|
+| `OLLAMA_MODELS` | `/workspace/ollama-models` | else a ~5GB re-pull every restart |
+| `HF_HOME` | `/workspace/.cache/huggingface` | else a ~6GB re-download every restart |
+| `DATA_DIR` | `/workspace/kb-data` | **else every uploaded document is lost on restart** |
+| `APP_AUTH` | `alice:somepassword,bob:another` | else the pod URL is open to anyone who has it |
+| `REQUIRE_GPU` | `1` | turns a silent CPU fallback into a startup error |
 
 ---
 
-## Every Session
+## 2. Every session
 
 ```bash
 cd /workspace/RAG_experimentation/knowledge-base-math
 bash startup.sh
 ```
 
-Then open the public URL in your browser:
-- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`
+`startup.sh` checks the GPU, warns if there's no login configured, starts Ollama (pulling
+the generator if the volume is cold), then serves the app. Options:
+
+```bash
+bash startup.sh --allow-cpu   # start without CUDA (local dry-run; slow)
+bash startup.sh --no-pull     # skip the Ollama model check for a faster restart
+```
+
+Then: RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`, and log
+in with an `APP_AUTH` account.
 
 ---
 
-## GPU eval run
+## 3. What the environment variables do
 
-This reruns the eval harness on the GPU as a **parity check** against the Mac baseline in
-`evaluation/EVALUATION.md §7` (does the pod reproduce the numbers, and how fast), plus `--answers`
-(LLM-judged end-to-end answers — too slow on CPU, affordable on GPU).
+All defined in `config.py`; every default reproduces the original local-Mac behaviour, so
+nothing changes until you set one.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DATA_DIR` | `.` | base dir for `chroma_db/` and `bm25_indexes/` |
+| `CHROMA_DIR` / `BM25_DIR` | `$DATA_DIR/...` | override either index path outright |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | point the app at an Ollama on another host |
+| `APP_HOST` / `APP_PORT` | `0.0.0.0` / `7860` | bind address and port |
+| `APP_AUTH` | unset (no login) | `user:pass` pairs, comma-separated |
+| `REQUIRE_GPU` | unset | `1` = refuse to start without CUDA |
+
+**On `APP_AUTH`:** it is a front door lock, not real authentication. It controls *access to
+the app*. Behind it, users are still just lowercased strings typed into a textbox — anyone
+who logs in can read any user's documents by typing their name. Fine for family; not fine
+for a link shared more widely.
+
+---
+
+## 4. Moving your existing documents to the pod
+
+`chroma_db/` and `bm25_indexes/` are gitignored (private document text), so they do **not**
+arrive with `git pull`. Two options:
+
+**Re-ingest on the pod** (simplest, and faster on a GPU) — upload the PDFs or `.mmd` files,
+then:
+```bash
+python ingest.py --user alice docs/extracted/textbook.mmd
+```
+
+**Or copy the indexes up** and skip re-ingesting:
+```bash
+# from your Mac, into whatever DATA_DIR points at
+scp -r knowledge-base-math/chroma_db      pod:/workspace/kb-data/
+scp -r knowledge-base-math/bm25_indexes   pod:/workspace/kb-data/
+```
+The indexes are portable as long as the embedding model matches — an index built with
+`bge-small` must be queried with `bge-small`, or the vectors are meaningless.
+
+---
+
+## 5. GPU eval run
+
+A **parity check** against the Mac baseline in `evaluation/EVALUATION.md §7` (does the pod
+reproduce the numbers, and how fast), plus `--answers` (LLM-judged end-to-end answers — too
+slow on CPU, affordable on GPU).
+
+**Get the corpus onto the pod out-of-band.** The curated gold set
+(`evaluation/goldset.jsonl`) is **tracked** and arrives with `git pull`. The extracted
+`.mmd` under `docs/extracted/` is **gitignored** and does not — upload it with the RunPod
+file uploader or `scp` to the matching path:
+- `knowledge-base-math/docs/extracted/calculus_chainrule.mmd`
+
+> ⚠️ Do **not** re-extract the PDF or regenerate the gold set on the pod. A fresh extraction
+> shifts chunk boundaries, the `<source>::<n>` chunk_ids change, and every gold label
+> silently breaks. Uploading the same `.mmd` is what makes it a *parity* run against an
+> identical exam.
 
 ```bash
 cd /workspace/RAG_experimentation/knowledge-base-math
-source venv/bin/activate 2>/dev/null   # or use the pod's system python
-```
-
-**1. Confirm the GPU is actually visible** before anything expensive:
-```bash
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-```
-The reranker (`CrossEncoder`), the HF embeddings, and Marker all auto-detect CUDA — no flags
-needed. If this prints `False`, stop and fix the pod, or every stage silently runs on CPU.
-
-**2. Get the corpus onto the pod out-of-band.** The curated gold set
-(`knowledge-base-math/evaluation/goldset.jsonl`) is **tracked**, so it arrives with `git pull`.
-The extracted `.mmd` under `docs/extracted/` is **gitignored** (it embeds private document text),
-so it does **not** — upload it with the RunPod file uploader (or `scp`) into the matching path:
-- `knowledge-base-math/docs/extracted/calculus_chainrule.mmd`
-
-> ⚠️ This is what makes it a *parity* run against the identical exam. Do **not** re-extract the PDF
-> or regenerate the gold set on the pod — a fresh extraction shifts chunk boundaries, the
-> `<source>::<n>` chunk_ids change, and every gold label silently breaks.
-> (Optional side experiment: upload `docs/raw/calculus_chainrule.pdf` too and run
-> `python extract.py docs/raw/calculus_chainrule.pdf` just to *time* GPU Marker — but still eval
-> against the uploaded `.mmd`, not the pod's re-extraction.)
-
-**3. Ingest and run the full sweep with answer judging:**
-```bash
-python ingest.py --user calctest docs/extracted/calculus_chainrule.mmd
-python evaluation/eval.py --user calctest --all --answers
-```
-
-**Or just run `evaluation/eval.sh`**, which wraps steps 1–3 (GPU check → data check → prefetch →
-the embedding × chunking sweep, with an optional answer-judged run):
-```bash
-bash evaluation/eval.sh              # GPU checks + the 9-combo latency/quality sweep
+bash evaluation/eval.sh              # GPU check → data check → prefetch → 9-combo sweep
 bash evaluation/eval.sh --answers    # also ingest + eval.py --all --answers (Ollama-judged)
 ```
 
-**4. Read the results.** Per-config `results_*.json` + `failures_*.json` land in `evaluation/results/`. Compare
-recall@1/@5/@pool, MRR, nDCG against the §7 Mac table — they should match within noise; a real
-divergence points at an env or model-version difference, not the pipeline. The new
-`answer_score_1to5` field (1–5, judged by `qwen2:7b`) is the end-to-end answer quality per config.
-
-> The gold set is auto-filtered but not yet hand-cleaned (mean `leak_score` 0.15). The run is
-> valid as a parity check; `eval.py`'s health header prints the leak stats so the answer numbers
-> are read with that caveat.
+Results land in `evaluation/results/`. Compare recall@1/@5/@pool, MRR, nDCG against the §7
+Mac table — they should match within noise; a real divergence points at an env or
+model-version difference, not the pipeline. `answer_score_1to5` (judged by `qwen2:7b`) is
+end-to-end answer quality per config.
 
 ---
 
-## Updating the App
-
-When you push new code to GitHub, pull it on the pod:
+## 6. Updating the app
 
 ```bash
 cd /workspace/RAG_experimentation && git pull
 ```
+Then restart with `startup.sh`. Your indexes live in `DATA_DIR`, outside the repo, so a
+pull never touches them.
 
-Then restart the app with `startup.sh` as normal.
+---
+
+## 7. Troubleshooting
+
+**"REQUIRE_GPU=1 but torch.cuda.is_available() is False"** — the pod has no GPU attached, or
+pip installed a CPU-only torch. See the reinstall command in §1.
+
+**The app starts but answers are very slow** — check the startup log for
+`[config] CUDA available — pinning models to GPU: ...`. If it says "No CUDA device"
+instead, everything is running on CPU.
+
+**Uploaded documents disappeared after a restart** — `DATA_DIR` was not set, so the indexes
+were written to the container filesystem instead of `/workspace`. Set it in the dashboard
+env vars (§1) and re-ingest.
+
+**Nothing appears in the log file** — `startup.sh` exports `PYTHONUNBUFFERED=1` for exactly
+this reason; if you launch `python app.py` directly and redirect output, add it yourself or
+Python buffers the diagnostics until the process exits.
+
+**Can't reach the app** — `APP_HOST` must stay `0.0.0.0` for RunPod's HTTP proxy to reach
+it; `127.0.0.1` will bind successfully and be unreachable from outside.

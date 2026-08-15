@@ -25,10 +25,11 @@ from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 
 from chunking import CHUNKERS, assign_chunk_ids  # assign_chunk_ids re-exported for callers
-from retrieval import EMBED_MODEL, load_embeddings
-
-CHROMA_DIR = "chroma_db"
-BM25_DIR = "bm25_indexes"
+# BM25_DIR/CHROMA_DIR used to be re-declared here, a second copy of the same two paths.
+# They are now imported (evaluation/embed_chunk_sweep.py imports them *from this module*,
+# so the names must stay bound here) — one definition, in config.py, so pointing DATA_DIR
+# at a pod volume moves the indexes that ingest writes and the ones retrieval reads.
+from retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, load_embeddings  # noqa: F401  (re-export)
 
 
 def load_mmd_files(paths: list[str]) -> list[Document]:

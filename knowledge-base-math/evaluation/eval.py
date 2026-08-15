@@ -32,6 +32,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from config import OLLAMA_BASE_URL
 from query import SYSTEM_PROMPT
 from retrieval import (
     EMBED_MODEL,
@@ -417,9 +418,11 @@ def main():
         answer_chain = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
             ("human", "{input}"),
-        ]) | ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=1024) | StrOutputParser()
+        ]) | ChatOllama(
+            model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=1024
+        ) | StrOutputParser()
         judge = ChatPromptTemplate.from_template(JUDGE_PROMPT) | ChatOllama(
-            model=args.judge_model, temperature=0, num_predict=5
+            model=args.judge_model, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=5
         ) | StrOutputParser()
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
