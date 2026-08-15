@@ -3,9 +3,10 @@
 # startup.sh — start the math RAG web app on a remote GPU box (per session).
 #
 # Usage (from knowledge-base-math/, on the pod):
-#     bash startup.sh                # GPU-required (refuses to start on CPU)
-#     bash startup.sh --allow-cpu    # start anyway without CUDA (local dry-run)
-#     bash startup.sh --no-pull      # skip the ollama model check (faster restarts)
+#     bash startup.sh                 # GPU-required (refuses to start on CPU)
+#     bash startup.sh --allow-cpu     # start anyway without CUDA (local dry-run)
+#     bash startup.sh --no-pull       # skip the ollama model check (faster restarts)
+#     bash startup.sh --no-prefetch   # skip the HuggingFace model warm-up
 #
 # Overridable via env (defaults suit a RunPod pod with a /workspace volume):
 #     WORKSPACE       persistent volume root          (default: /workspace)
@@ -19,11 +20,13 @@ set -euo pipefail
 
 ALLOW_CPU=0
 DO_PULL=1
+DO_PREFETCH=1
 for arg in "$@"; do
   case "$arg" in
-    --allow-cpu) ALLOW_CPU=1 ;;
-    --no-pull)   DO_PULL=0 ;;
-    -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
+    --allow-cpu)   ALLOW_CPU=1 ;;
+    --no-pull)     DO_PULL=0 ;;
+    --no-prefetch) DO_PREFETCH=0 ;;
+    -h|--help)     sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -118,8 +121,24 @@ if [ "$DO_PULL" -eq 1 ]; then
   fi
 fi
 
-# ── 4. App ─────────────────────────────────────────────────────────────────────
-hr; echo "4. Starting app on port $APP_PORT  (indexes in $DATA_DIR)"
+# ── 4. HuggingFace models ──────────────────────────────────────────────────────
+# Warm the HF cache before serving. The embedder and reranker would download at
+# app.py import anyway (making startup look hung); Marker would not download until
+# the first PDF upload, surfacing a multi-GB fetch as an "Ingestion failed" error
+# in front of whoever uploaded it. Cheap no-op once the volume is warm.
+hr; echo "4. HuggingFace models (cache: $HF_HOME)"
+if [ "$DO_PREFETCH" -eq 1 ]; then
+  $PY prefetch_models.py || {
+    echo "   ✗ Prefetch reported failures — see above. Not starting the app."
+    echo "     Re-run with --no-prefetch to start anyway."
+    exit 1
+  }
+else
+  echo "   --no-prefetch: skipped."
+fi
+
+# ── 5. App ─────────────────────────────────────────────────────────────────────
+hr; echo "5. Starting app on port $APP_PORT  (indexes in $DATA_DIR)"
 echo "   RunPod dashboard → your pod → Connect → HTTP Service → port $APP_PORT"
 hr
 exec $PY app.py

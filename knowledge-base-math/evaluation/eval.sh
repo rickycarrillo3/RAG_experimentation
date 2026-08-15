@@ -107,16 +107,14 @@ fi
 
 if [ "${#EMBED_MODELS[@]}" -gt 0 ]; then
   echo "   HuggingFace (into HF_HOME=$HF_HOME):"
-  $PY - "${EMBED_MODELS[@]}" <<'PY'
-import sys, retrieval
-for m in dict.fromkeys(sys.argv[1:]):   # dedupe, keep order
-    print(f"     ↓ embedder {m}")
-    retrieval.load_embeddings(m)        # downloads only needed files; no-op if cached
-    print(f"       ok {m}")
-print(f"     ↓ reranker {retrieval.RERANK_MODEL}")
-retrieval.load_reranker()
-print(f"       ok {retrieval.RERANK_MODEL}")
-PY
+  # Delegated to prefetch_models.py rather than an inline heredoc, so the app's
+  # warm-up and the eval's warm-up cannot drift into fetching different things.
+  # --skip-marker: the eval runs against an already-extracted .mmd and must never
+  # re-extract (that shifts chunk_ids and breaks every gold label), so the ~3-4GB
+  # surya set is dead weight here.
+  PREFETCH_ARGS=()
+  for m in "${EMBED_MODELS[@]}"; do PREFETCH_ARGS+=(--embed-model "$m"); done
+  $PY prefetch_models.py --skip-marker "${PREFETCH_ARGS[@]}"
 fi
 
 # Ollama models — only the --answers run needs them; pull before testing, not during.
