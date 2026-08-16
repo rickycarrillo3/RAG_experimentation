@@ -212,7 +212,9 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="Math Tutor") as app:
+# theme belongs on Blocks, not launch(). Gradio 6 tolerated launch(theme=...);
+# Gradio 5 raises TypeError. Blocks(theme=...) is the documented spelling in both.
+with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
 
     clean_history_state = gr.State([])  # LLM-facing history, no sources noise
@@ -271,5 +273,4 @@ if __name__ == "__main__":
         server_port=APP_PORT,
         share=False,
         auth=auth,
-        theme=gr.themes.Soft(),
     )
