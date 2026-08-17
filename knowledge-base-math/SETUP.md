@@ -74,22 +74,16 @@ cd /workspace/RAG_experimentation/knowledge-base-math
 bash startup.sh
 ```
 
-`startup.sh` checks the GPU, warns if there's no login configured, starts Ollama (pulling
-the generator if the volume is cold), warms the HuggingFace models, then serves the app.
-Options:
+`startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
+Gradio client on 7860. Open the public URL in your browser:
+- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860` (UI) or `8000` (API, with `/docs`)
 
-```bash
-bash startup.sh --allow-cpu     # start without CUDA (local dry-run; slow)
-bash startup.sh --no-pull       # skip the Ollama model check for a faster restart
-bash startup.sh --no-prefetch   # skip the HuggingFace warm-up
-```
+> **Set `KBM_API_TOKEN` before exposing either port.** Without it the API is open and the
+> per-username "isolation" is just a guessable string — anyone who finds the host reads
+> every uploaded document. See `DEPLOYMENT.md §4`.
 
-On a warm volume the prefetch is a few seconds. On a cold one it is where the ~6GB
-download happens — deliberately, before the app accepts its first question, rather than
-in front of a family member mid-upload.
-
-Then: RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`, and log
-in with an `APP_AUTH` account.
+For hosting shape, cost, idle-stop and the full environment-variable table, see
+**`DEPLOYMENT.md`**.
 
 ---
 

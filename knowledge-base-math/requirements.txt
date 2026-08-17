@@ -1,73 +1,19 @@
-# Pinned so a fresh install on the pod reproduces a known-good environment. Unpinned,
-# two installs a month apart resolve differently — the class of bug that makes "works
-# on the Mac, breaks on the pod" expensive to chase, and that silently invalidates any
-# eval parity run, since evaluation/EVALUATION.md §7 only means something against a
-# known stack.
-#
-# Captured 2026-08-15 from the working venv, with gradio moved to 5.x (see below).
-# Verified to resolve clean-room: pip install --dry-run --ignore-installed -r this file.
-#
-# ── Why gradio is 5.x and not 6.x ─────────────────────────────────────────────
-# These three constraints have no common solution:
-#     marker-pdf 1.10.2  →  transformers <5.0.0
-#     transformers 4.x   →  huggingface-hub <1.0
-#     gradio 6.x         →  huggingface-hub >=1.2.0
-# The venv this was captured from had gradio 6.18.0 against huggingface-hub 0.36.2,
-# which `pip check` flags — it worked only because it was built incrementally into a
-# state pip's resolver will not reproduce. Something had to give, and it is gradio:
-# holding the ML stack still keeps extraction and retrieval behaviour identical, so
-# the recorded eval numbers stay comparable. Moving marker-pdf to 2.0 instead would
-# have bumped transformers to 5.x and surya to 0.22, changing the extraction engine —
-# which shifts chunk boundaries and breaks every gold label (see CLAUDE.md).
-#
-# The cost is one line in app.py: gr.Chatbot needs type="messages" on Gradio 5, where
-# the default is still the legacy tuple format and dict messages are rejected outright.
-# Note this couples app.py to the pin in one direction — Gradio 6 REMOVED the `type`
-# parameter rather than redefaulting it, so that line raises TypeError on 6.x. Raising
-# the gradio pin back to 6 means deleting the argument in the same commit.
-#
-# torch is pinned by version, not build: the version is platform-independent and pip
-# picks the CUDA wheel on Linux, CPU/MPS on macOS. If a pod image resolves a CPU-only
-# build, reinstall from the CUDA index — see SETUP.md §1.
-
-# ── Extraction ────────────────────────────────────────────────────────────────
-marker-pdf==1.10.2
-surya-ocr==0.17.1          # Marker's layout/OCR models; pinned because extraction
-                           # quality (and so chunk boundaries) depends on it
-pymupdf4llm==1.27.2.3
-
-# ── LangChain ─────────────────────────────────────────────────────────────────
-langchain-core==1.4.7
-langchain-community==0.4.2
-langchain-text-splitters==1.1.2
-langchain-huggingface==1.2.2
-langchain-chroma==1.1.0
-langchain-ollama==1.1.0
-
-# ── Retrieval ─────────────────────────────────────────────────────────────────
-chromadb==1.5.9
-rank-bm25==0.2.2
-sentence-transformers==5.5.1
-pylatexenc==2.10
-
-# ── Serving ───────────────────────────────────────────────────────────────────
-gradio==5.50.0
-
-# ── ML runtime ────────────────────────────────────────────────────────────────
-torch==2.13.0
-
-# ── Transitive pins ───────────────────────────────────────────────────────────
-# Not imported directly, but this is the trio that actually breaks this stack
-# across versions: it is how sentence-transformers and Marker load models, and the
-# huggingface-hub major is the exact axis the gradio conflict above turns on.
-# Left floating, the pins above buy much less than they appear to.
-transformers==4.57.6
-tokenizers==0.22.2
-huggingface-hub==0.36.2
-
-# numpy and pydantic are deliberately NOT pinned here. Both are already bounded by
-# gradio and langchain-core, and hand-pinning them to this venv's versions made the
-# set unresolvable (gradio 5.50 caps pydantic below the 2.13.4 installed here). An
-# over-tight pin that fails to install is worse than a floating one that resolves;
-# if either ever does break the stack, pin it then, to a version checked against
-# this file rather than against whatever happened to be on the Mac.
+marker-pdf
+pymupdf4llm
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-chroma
+langchain-ollama
+chromadb
+rank-bm25
+sentence-transformers
+pylatexenc
+gradio==6.18.0
+torch
+# API service
+fastapi
+uvicorn[standard]
+python-multipart   # required by FastAPI for the multipart /upload form
+httpx              # SSE client for app.py + Ollama health probe + RunPod stop call
