@@ -33,18 +33,35 @@ cd knowledge-base-math
 python -m venv venv          # optional; skip to use the pod's system python
 source venv/bin/activate
 
-# Install torch FIRST, from the CUDA index, then let requirements.txt see it satisfied.
-# requirements.txt lists a bare `torch`, so on its own it takes whatever PyPI's default
-# wheel is — which may or may not be the CUDA build you want.
-pip install torch --index-url https://download.pytorch.org/whl/cu130
+# ── Find out which CUDA the DRIVER supports. Do this before installing torch. ──
+# nvidia-smi is the only authority. The CUDA number in RunPod's pod listing is not the
+# driver's CUDA version and has been wrong by two major versions.
+nvidia-smi | head -3
+#   → "CUDA Version: 12.4"  means install a cu12x wheel, NOT cu130.
+
+# ── Deps, THEN torch. The order is deliberate. ────────────────────────────────
+# requirements.txt pulls marker-pdf, which pulls torchvision from PyPI. torchvision
+# ships compiled ops linked against one exact torch build, so a PyPI torchvision on top
+# of a CUDA-index torch breaks every import with "operator torchvision::nms does not
+# exist". Installing torch first therefore does NOT work — requirements.txt clobbers it.
+# Install requirements first and let the CUDA pair be the last write.
 pip install -r requirements.txt
+
+# Match the index to the driver from nvidia-smi above. cu128 for a 12.x driver:
+# any CUDA 12.x build runs on a driver supporting 12.0+, so 12.8 is fine on a 12.4
+# driver. A 13.x build is NOT — major versions are outside that guarantee.
+pip install --force-reinstall \
+    torch==2.11.0+cu128 torchvision==0.26.0+cu128 \
+    --index-url https://download.pytorch.org/whl/cu128
 
 # ── Confirm torch sees the GPU AFTER installing ───────────────────────────────
 # The one check worth doing by hand; startup.sh and REQUIRE_GPU also enforce it.
-python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-#   → True 13.0       good
-#   → False None      CPU-only wheel:
-#                     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu130
+python -c "import torch, torchvision; print(torch.cuda.is_available(), torch.version.cuda, torchvision.__version__)"
+#   → True 12.8 0.26.0+cu128      good
+#   → False None                  CPU-only wheel — reinstall from the CUDA index
+#   → False 13.0                  CUDA build NEWER than the driver — install a LOWER
+#                                 major version (see §8)
+pip check                         # must report no broken requirements
 
 # ── Models ────────────────────────────────────────────────────────────────────
 ollama serve &
@@ -63,19 +80,27 @@ python prefetch_models.py
 
 ### A note on the pod's CUDA version
 
-**A pod advertising CUDA 14.x is fine, and you do not want a "CUDA 14" build of torch.**
+**Trust `nvidia-smi` on the pod. Do not trust the CUDA number in RunPod's listing.**
 
-The number on the pod is its *driver/toolkit* version. NVIDIA's driver API is backward
-compatible — a newer driver runs binaries built against an older CUDA toolkit — so a
-CUDA 14.2 pod runs cu130 (and cu128, cu126) wheels normally. The failure mode people
-expect here is the reverse one: an *old* driver with a *new* toolkit.
+This was learned the expensive way: a pod listed as CUDA 14.2 reported
+`Driver Version: 550.127.05 / CUDA Version: 12.4` once running — two major versions
+lower. cu130 wheels installed cleanly, imported cleanly, and reported
+`torch.cuda.is_available() == False` with an idle A5000 sitting right there.
 
-There is no cu14 PyTorch build to find. `download.pytorch.org/whl/cu140/` returns 403;
-the newest published index is **cu130**. Verified available there for this project's
-Python: `torch 2.13.0+cu130`, `cp314`, `manylinux_2_28_x86_64`.
+The rule that actually governs it:
 
-So: install from the **cu130** index regardless of whether the pod says 13.x or 14.x, and
-judge the result by `torch.cuda.is_available()`, not by matching version numbers.
+- **Within a CUDA major version, compatibility is guaranteed.** Any 12.x build runs on a
+  driver supporting 12.0 or later (driver ≥ 525). So cu128 on a 12.4 driver is fine, and
+  you do not need to match minor versions.
+- **Across a major version, it is not.** A 13.x build on a 12.x driver fails — the driver
+  is older than the toolkit, which is the direction that does not work.
+
+So: read the driver's CUDA version off `nvidia-smi`, then pick the **highest published
+index sharing that major version** (12.4 driver → `cu128`). Judge the result by
+`torch.cuda.is_available()`, never by matching version numbers to a dashboard label.
+
+For the record, the cu14 question is moot: `download.pytorch.org/whl/cu140/` returns 403
+and the newest published index is cu130.
 
 ### Set these in the RunPod dashboard → your pod → **Environment Variables**
 
@@ -230,8 +255,30 @@ exactly what pinning is meant to prevent.
 
 ## 8. Troubleshooting
 
-**"REQUIRE_GPU=1 but torch.cuda.is_available() is False"** — the pod has no GPU attached, or
-pip installed a CPU-only torch. See the reinstall command in §1.
+**"REQUIRE_GPU=1 but torch.cuda.is_available() is False"** — three different causes, and
+`torch.version.cuda` tells them apart. Check it before reinstalling anything:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+nvidia-smi | head -3
+```
+
+| Printed | Meaning | Fix |
+|---|---|---|
+| `False None` | CPU-only wheel | reinstall from the CUDA index (§1) |
+| `False 13.0` | CUDA build **newer** than the driver | install a **lower** major version — see §1 |
+| `False 12.8` + `nvidia-smi` fails | no GPU in the container | wrong pod type, or GPU not attached |
+
+The middle row is the one that wastes time: the wheel is correct, `--force-reinstall`
+changes nothing, and `is_available()` returns False silently rather than raising.
+`python -c "import torch; torch.cuda.init()"` surfaces the real error.
+
+**`RuntimeError: operator torchvision::nms does not exist`** (or any traceback from
+`torchvision/_meta_registrations.py`) — torch and torchvision are from different builds.
+`pip list | grep -i torch` will show one with a `+cuXXX` suffix and one without; the bare
+one came from PyPI via `marker-pdf`. Uninstall both and reinstall as a pinned pair from
+one index (§1). `--force-reinstall` alone is not enough — uninstall first, or stale
+compiled objects survive.
 
 **The app starts but answers are very slow** — check the startup log for
 `[config] CUDA available — pinning models to GPU: ...`. If it says "No CUDA device"
