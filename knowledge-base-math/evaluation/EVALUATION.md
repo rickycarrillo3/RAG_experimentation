@@ -470,3 +470,242 @@ Each of these is a reason the eval is a *floor*, not a verdict on the product.
 
 The eval is also the training data for the embedding fine-tune (ROADMAP §6) — a contrastive
 fine-tune of `bge-small` needs exactly these `(question, correct chunk)` pairs.
+
+---
+
+## 10. Roadmap: making this harness able to *pick* components
+
+Everything above measures whether a change helped. It cannot yet answer the question the
+project actually needs answered: **which embedder, which reranker, which generator.**
+
+This section is the design for that, written to be handed to someone (or something) that
+has not been part of the conversation. It is a plan, not a record — nothing in §10 has
+been run yet. Sections 1–9 are the measured present; §10 is the intended next state.
+
+### 10.1 Why the current harness cannot rank components
+
+Not because the metrics are wrong. Because **the corpus is too small.**
+
+The gold set is 19 questions over `calculus_chainrule.mmd` — a ~10-page slice, **66
+chunks**. On a haystack that small almost everything succeeds, and §7 records the damage
+in its own words: the embedding sweep is flagged "directional," the `top_k` finding
+"does not replicate cleanly … within noise," and the chunker comparison "still cannot
+fairly rank the chunkers." Three separate questions went unanswered for the same reason.
+
+At n=19 each question is worth ~5.3 points, so `R@5 1.00` vs `0.95` is one question.
+Several cells sit at 1.00 with no headroom to move.
+
+**Fix the corpus before touching anything else.** No harness change compensates for an
+exam everyone passes.
+
+### 10.2 Prerequisite: a real corpus
+
+- Ingest **3–5 full textbooks** (OpenStax Calculus Vol 1–3, Algebra & Trig, Precalculus
+  are free and openly licensed, which fits the project's constraint). Target a few
+  thousand chunks, not 66.
+- Extract with Marker **on the GPU pod**, not a laptop: ~0.3–1 s/page on GPU versus a
+  measured ~11 min for 6 pages on Mac CPU. (Confirmed again during the API work: a
+  10-page PDF took ~40 min on CPU.)
+- **Freeze the `.mmd` files afterwards.** Chunk ids are `<source>::<n>`; re-extracting
+  shifts boundaries and silently invalidates every gold label. `SETUP.md` warns about
+  this for the parity run — it is now permanent.
+
+Expected effect: recall comes down off 1.00 and config differences exceed the noise
+floor. **If recall is still ~1.00 after this, the corpus is still too easy and component
+ranking is still unsafe.**
+
+### 10.3 Gold set v3 — 50 questions, stratified
+
+Extend `make_evalset.py`. **Keep all existing machinery**: the `is_answerable` chunk
+gate, the distinctive-word `leak_score` with retry, the referential-phrase regex, and
+`goldset_review.md` sorted worst-first. Those solved a real problem (§3) and none of it
+is superseded. Add:
+
+**Multi-document sampling** across the new corpus, so retrieval must discriminate between
+similar sections in *different* books — a case one document structurally cannot produce.
+
+**A `qtype` field, sampled to quota:**
+
+| `qtype` | n | What it tests |
+|---|---|---|
+| `worked_example` | ~15 | the case the system exists for |
+| `definition` | ~10 | conceptual prose retrieval |
+| `notation` | ~8 | symbol/formula lookup — where the LaTeX-vs-prose embedder question bites |
+| `multi_hop` | ~10 | **two gold chunks**; answerable only by combining them |
+| `no_answer` | ~7 | **no gold chunk**; material genuinely absent from the corpus |
+
+Two of these need schema changes, and both are load-bearing:
+
+- **`multi_hop` requires `gold_chunk_id` → `gold_chunk_ids: [...]`**, scored both all-of
+  and any-of. Every current label is a single chunk, which is *structurally incapable* of
+  measuring whether the pipeline assembles evidence across chunks.
+- **`no_answer` is scored inversely**: success is the system declining to answer from
+  documents. This slice is also what calibrates `KBM_RELEVANCE_FLOOR` (see §10.7).
+
+**The hand-cleaning pass in §3 is still mandatory.** Budget ~45 min for 50 questions.
+
+### 10.4 The principle: isolate one component at a time
+
+Each benchmark holds everything else fixed. All reuse `retrieval.retrieve_detailed()`
+(which already returns the pre-rerank pool, the full ranked list, and per-stage timings)
+and the `--match overlap` scorer.
+
+**1. Embedder — `eval_embedders.py`** (generalize `embed_chunk_sweep.py`)
+
+Isolating axis: **the `dense` config only.** §7 already found `hybrid+rerank` masks the
+embedder completely — all three candidates reached `R@5 1.00`. Measuring an embedder on
+the shipping path measures the reranker.
+
+Candidates beyond bge-small / bge-m3 / bge-m3+pylatexenc: `Qwen3-Embedding-0.6B`,
+`gte-modernbert-base`, `jina-embeddings-v3`, `nomic-embed-text-v2-moe`.
+
+Report dense R@5, R@5soft, R@pool, **MRR and nDCG (the columns with headroom)**, query
+latency, index build time, index size, VRAM — **broken out by `qtype`**. The `notation`
+slice is where a LaTeX-tolerant tokenizer should show up; the aggregate hides it.
+
+**2. Reranker — `eval_rerankers.py`** (new)
+
+Isolating axis: **fix the candidate pool, vary only the rescorer.** Generate the pool
+once per question, cache it, then score every reranker over the *identical* pool.
+Re-running retrieval per reranker measures retrieval noise instead.
+
+Candidates: `bge-reranker-v2-m3` (current), `bge-reranker-base`,
+`jina-reranker-v2-base-multilingual`, `mxbai-rerank-base-v2`, `Qwen3-Reranker-0.6B`, and
+**no reranker** as control.
+
+Report ΔMRR / ΔnDCG@5 / ΔR@1 **at fixed R@pool**, plus latency and VRAM. Keep §6's
+framing: not "is it fast enough" but "does it move ranking enough to justify 2.2GB."
+
+**3. Generator — `eval_generators.py`** (new; the real gap)
+
+Isolating axis: **fix the context, vary only the model.** Two conditions per question:
+
+- `oracle` — feed the gold chunk(s). Pure reasoning quality, retrieval removed.
+- `retrieved` — feed the real top-5. The shipping system.
+
+**The `oracle − retrieved` gap attributes end-to-end quality loss to retrieval versus
+generation** — nothing currently measures that.
+
+Candidates (ROADMAP §7): `deepseek-math-7b-rl:Q4` (current), the same at Q8,
+`Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. A/B **the prompt** as a variable too — ROADMAP §7
+notes it is unexamined and usually buys more than a model swap. When varying prompts,
+preserve the static → history → context → question order (`LATENCY.md`); a prompt A/B
+that reorders those blocks measures latency, not quality.
+
+> **This benchmark's winner constrains deployment.** `DEPLOYMENT.md` sizes the pod for a
+> 7B-class model on a 24GB card. If the winner needs more, the cost table must be redone.
+> Treat that as an exit criterion of the benchmark, not a detail.
+
+### 10.5 Standard reasoning benchmarks vs. this corpus — use both, for different things
+
+Public math benchmarks (GSM8K, MATH, TheoremQA, OlympiadBench, MMLU-STEM, MathQA) are the
+**right tool for the generator axis** and better than a bespoke set:
+
+- Standardized and comparable to published numbers — you inherit others' baselines.
+- **Verifiable answers** (numeric / exact-match), which removes the LLM judge from the
+  correctness axis entirely and with it the calibration problem in §10.6.
+
+They **cannot** measure the embedder or the reranker. They are closed-book: no corpus, no
+chunks, so recall@k / MRR / nDCG / recall@pool are undefined. There is no substitute for
+real documents on the retrieval axis.
+
+Two traps:
+
+- **GSM8K questions are self-contained by construction**, so retrieval contributes
+  nothing to them. Evaluating the *whole system* on GSM8K would show retrieval adding ~0
+  — an artifact of the benchmark, not a finding about the pipeline.
+- **Contamination.** GSM8K/MATH test items are widely present in modern training data,
+  and `deepseek-math-7b-rl` was RL-tuned on math and publishes numbers on them. Ranking
+  candidate generators on a contaminated set can measure memorization and systematically
+  favors whichever model saw the test data. Prefer newer or held-out sets (OlympiadBench,
+  recent AIME, TheoremQA) when the goal is *ranking models against each other*.
+
+**Division of labour: public benchmarks decide which generator; this corpus decides which
+embedder and reranker. Neither substitutes for the other.**
+
+### 10.6 Faithfulness — `eval_answers.py` (new)
+
+Replaces the single 1–5 correctness score with a claim-level measure. Scored on
+**`mode: "grounded"` answers only** (see §10.7).
+
+Judge splits the answer into atomic claims, labels each against the retrieved context:
+
+| Label | Meaning |
+|---|---|
+| `supported` | stated in the context |
+| `derived` | not stated, but follows from it by arithmetic/algebra |
+| `unsupported` | neither stated nor derivable — the hallucination case |
+| `contradicted` | conflicts with the context — the worst case |
+
+**`derived` is not optional.** A math tutor *must* go beyond its context — it performs
+arithmetic the chunk does not contain. A binary supported/unsupported metric penalizes
+exactly the behaviour the product exists for and would push the system toward useless
+quotation. `faithfulness = (supported + derived) / total`, reporting `contradicted`
+separately because one contradiction matters more than several unsupported asides.
+
+Alongside: **answer relevance** (does it answer the question, independent of grounding)
+and **abstention accuracy** on the `no_answer` slice.
+
+### 10.7 Judge calibration — `judge_calibration.py` (new)
+
+**The step that separates a benchmark from a vibe, and the one most likely to be skipped.**
+
+§4 already warns a 7B judge is "a noisy instrument … a smoke alarm." That warning is
+currently *unquantified* — nobody knows whether it is a smoke alarm or a random number
+generator.
+
+- Hand-label ~30 answers on the judge's own rubric.
+- Measure agreement: **Cohen's κ** for categorical labels, **Spearman** for 1–5 scores.
+- **Publish the agreement number next to every judged score in this file.** If κ is poor,
+  either upgrade the judge or demote judged metrics to regression-detection only and let
+  retrieval metrics carry the decisions.
+- The judge must stay a different model from the generator under test (§4). This matters
+  *more* now that generators are being compared.
+
+Note §10.5 reduces the blast radius: with verifiable-answer benchmarks carrying
+correctness, the judge is needed only for faithfulness and relevance.
+
+### 10.8 Dependency on answer provenance (already shipped)
+
+`api/` now labels every answer `grounded` or `general` (`api/chat.py:decide_mode`), and in
+`general` mode **the server prepends the marker itself** rather than asking the model to.
+Measured: instructed to emit that line, `deepseek-math-7b-rl` ignored it and answered
+directly — it is a solver, not an instruction-follower, exactly as §3 says.
+
+This is what makes faithfulness measurable at all. Without a trustworthy label, an answer
+grounded in documents and one confabulated from parametric memory are indistinguishable,
+and any faithfulness number is computed over a mixture of the two.
+
+**`KBM_RELEVANCE_FLOOR` is uncalibrated.** It is on a **sigmoid (0–1) scale**, not raw
+logits — `sentence_transformers.CrossEncoder` applies the model's activation and
+`bge-reranker-v2-m3` carries a Sigmoid. Observed: unrelated text ~1e-5–1.5e-3, weakly
+on-topic ~0.19, correct chunk ~0.94. Default is 0.01, a guess from a handful of pairs.
+**Sweep it against the `no_answer` slice and set it from data** before quoting any
+abstention number.
+
+### 10.9 Usage telemetry (already shipped)
+
+`telemetry.py` writes one JSONL record per query (hashed user, mode, retrieved chunk ids
+and scores, per-stage timings) plus `feedback` records keyed by `event_id`. It exists now
+because it **cannot be backfilled**. Two payoffs:
+
+1. **Real questions replace synthetic ones.** §8 names "LLM-generated questions are not
+   how your family talks" as a limitation this protocol cannot fix from the inside.
+   Logged questions are the fix — **gold set v4 should be drawn from them.**
+2. **Fine-tuning data.** Thumbs-up `(question, retrieved chunk)` pairs are exactly the
+   contrastive pairs the embedding fine-tune (ROADMAP §6) needs.
+
+### 10.10 Order of work
+
+1. **Corpus + pod.** Marker-extract the textbooks on GPU; freeze the `.mmd`. *Unblocks
+   everything else.*
+2. **Gold set v3.** Stratified, multi-hop and no-answer slices, hand-cleaned.
+3. **Component benchmarks, in this order** — embedder → reranker (over a pool built with
+   the winning embedder) → generator (retrieval fixed). Each one's output is the next
+   one's input; running them in parallel compares configurations that will never ship
+   together.
+4. **Faithfulness + judge calibration.** Calibrate *before* citing any judged number.
+5. **Re-run the §7 v2 baseline as a parity check** after harness changes. Those numbers
+   should reproduce within noise; a shift means the harness changed, not the system.
+
+Step 1 gates 2–4. Nothing in 2–4 is safe to interpret before step 1 lands.
