@@ -18,15 +18,9 @@
 #
 set -euo pipefail
 
-# ── Model caches (persistent volume, survive pod restarts) ─────────────────────
-export OLLAMA_MODELS=${OLLAMA_MODELS:-/workspace/ollama-models}
-export HF_HOME=${HF_HOME:-/workspace/.cache/huggingface}   # Surya/Marker, reranker, embeddings
-
-# ── Data (indexes, telemetry) on the persistent volume, not the container disk ──
-export KBM_DATA_DIR=${KBM_DATA_DIR:-/workspace/kbm-data}
-mkdir -p "$KBM_DATA_DIR"
-
-# The Gradio client needs the same token as the API it calls.
+# The Gradio client needs the same token as the API it calls. This is a *different*
+# lock from APP_AUTH: APP_AUTH gates the Gradio login page, KBM_API_TOKEN gates the API
+# behind it. A login page in front of an open API only protects the page.
 export KBM_API_TOKEN=${KBM_API_TOKEN:-}
 if [ -z "$KBM_API_TOKEN" ]; then
     echo "WARNING: KBM_API_TOKEN is unset — the API will be OPEN. See DEPLOYMENT.md §4." >&2

@@ -7,18 +7,20 @@ matter of environment variables rather than edited source.
 
 import os
 
+from config import DATA_DIR  # noqa: F401  (re-exported for callers)
+
+# NOTE: deployment knobs shared with the CLI and the Gradio client — DATA_DIR,
+# CHROMA_DIR, BM25_DIR, OLLAMA_BASE_URL, APP_HOST/PORT, APP_AUTH, REQUIRE_GPU — live in
+# config.py, NOT here. This module holds only what is specific to the HTTP service.
+# An earlier version of this file read its own `KBM_DATA_DIR`, which meant setting the
+# documented `DATA_DIR` moved the indexes for ingest and query but not for the API.
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 # A single shared secret, checked as `Authorization: Bearer <token>`. This is NOT
 # per-user auth — the per-username index isolation behind it is unchanged, and is
 # still just a string, not an identity. What this buys is the difference between
 # "private URL" and "readable by anything that finds the host".
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "").strip()
-
-# ── Storage ───────────────────────────────────────────────────────────────────
-# On the pod these point at the network volume so the corpus and indexes never
-# live on a personal disk. See retrieval.py, which reads the same variables — the
-# API must not introduce a second opinion about where the data is.
-DATA_DIR = os.environ.get("KBM_DATA_DIR", ".")
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 # Cross-encoder relevance floor. If the best retrieved chunk scores below this, the

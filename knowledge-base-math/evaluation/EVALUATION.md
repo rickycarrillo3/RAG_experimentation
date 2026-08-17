@@ -586,9 +586,14 @@ Isolating axis: **fix the context, vary only the model.** Two conditions per que
 **The `oracle − retrieved` gap attributes end-to-end quality loss to retrieval versus
 generation** — nothing currently measures that.
 
-Candidates (ROADMAP §7): `deepseek-math-7b-rl:Q4` (current), the same at Q8,
-`Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. A/B **the prompt** as a variable too — ROADMAP §7
-notes it is unexamined and usually buys more than a model swap. When varying prompts,
+Candidates: `deepseek-math-7b-rl:Q4` (current, set in `retrieval.py:OLLAMA_MODEL`), the
+same at Q8, `Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. Q4 quantization costs accuracy on
+exactly the multi-step arithmetic the model exists to do, so quantization is a candidate
+axis in its own right, not a fixed background condition.
+
+**A/B the prompt as a variable too.** `SYSTEM_PROMPTS` in `api/chat.py` has never been
+evaluated — it was written once and kept. Prompt changes routinely buy more than a model
+swap, and it is the cheapest axis here. When varying prompts,
 preserve the static → history → context → question order (`LATENCY.md`); a prompt A/B
 that reorders those blocks measures latency, not quality.
 
@@ -693,7 +698,9 @@ because it **cannot be backfilled**. Two payoffs:
    how your family talks" as a limitation this protocol cannot fix from the inside.
    Logged questions are the fix — **gold set v4 should be drawn from them.**
 2. **Fine-tuning data.** Thumbs-up `(question, retrieved chunk)` pairs are exactly the
-   contrastive pairs the embedding fine-tune (ROADMAP §6) needs.
+   contrastive pairs an embedding fine-tune needs. Fine-tuning `bge-small` (or whichever
+   embedder §10.4 selects) on real `(question, correct chunk)` pairs is far cheaper than
+   touching the 7B generator, and this log is where that training data comes from.
 
 ### 10.10 Order of work
 

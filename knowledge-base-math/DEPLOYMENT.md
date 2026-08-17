@@ -66,10 +66,17 @@ Three things are load-bearing:
 
 ## 3. Environment
 
+Deployment knobs shared with the CLI and the Gradio client live in **`config.py`**
+(`DATA_DIR`, `CHROMA_DIR`, `BM25_DIR`, `OLLAMA_BASE_URL`, `APP_HOST`, `APP_PORT`,
+`APP_AUTH`, `REQUIRE_GPU`). `api/settings.py` holds only what is specific to the HTTP
+service. Do not add a second name for the same thing in both — see `SETUP.md §3`.
+
 | Variable | Purpose |
 |---|---|
-| `KBM_API_TOKEN` | **Required in any deployment.** Shared secret; the API is fully open without it. |
-| `KBM_DATA_DIR` | Root for `chroma_db/`, `bm25_indexes/`, `telemetry/`. Set to `/workspace` on the pod. |
+| `KBM_API_TOKEN` | **Required in any deployment.** Bearer secret for the API; fully open without it. |
+| `APP_AUTH` | **Required in any deployment.** `user:pass` pairs gating the Gradio login page. A *different* lock from `KBM_API_TOKEN` — see §4. |
+| `DATA_DIR` | Root for `chroma_db/`, `bm25_indexes/`, `telemetry/`. Set to `/workspace/kb-data` on the pod. |
+| `REQUIRE_GPU` | `1` turns a silent CPU fallback — which looks exactly like success, only 10–40× slower — into a startup error. |
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
@@ -94,10 +101,17 @@ Per-user isolation is a **lowercased username string**, with no verification
 authenticate anyone. On a public URL with no token, anyone who finds the host can read
 every uploaded document by guessing a name.
 
-`KBM_API_TOKEN` adds one shared bearer secret in front of the whole API. That is the
-difference between "private" and "crawlable" — it is **not** multi-user auth, and it
-should not be mistaken for it. Real per-user auth is a separate piece of work, needed
-before this is shared beyond people who already trust each other with one password.
+There are **two locks on two different doors**, and both must be set:
+
+- **`APP_AUTH`** gates the Gradio login page (`config.app_auth()`).
+- **`KBM_API_TOKEN`** gates the API itself, on port 8000.
+
+Setting only `APP_AUTH` protects the page while leaving the API that serves it wide
+open on another port — anyone hitting `:8000` directly bypasses the login entirely.
+Setting only `KBM_API_TOKEN` leaves the UI open to anyone, though it could not talk to
+the API. Neither is multi-user auth: they are the difference between "private" and
+"crawlable". Real per-user auth is separate work, needed before this is shared beyond
+people who already trust each other with one password.
 
 Also tighten `allow_origins` in `api/main.py` before going public: a wildcard plus a
 bearer token means any page a family member visits can spend that token.
@@ -128,7 +142,7 @@ load and look broken.
 
 ## 6. Known gaps
 
-- **Documents still land wherever `KBM_DATA_DIR` points.** On the pod that's the network
+- **Documents still land wherever  `DATA_DIR` points.** On the pod that's the network
   volume, which solves the "not on my laptop" problem. It does **not** solve durability:
   a deleted pod volume is a deleted corpus. Moving `chroma_db/` and the uploaded PDFs to
   a managed store (S3-compatible object storage, or a hosted vector DB) is the next step
