@@ -27,16 +27,19 @@ cd $WORKSPACE/RAG_experimentation/knowledge-base-math
 # ── Python deps ───────────────────────────────────────────────────────────────
 python -m venv venv          # optional; skip to use the pod's system python
 source venv/bin/activate
-pip install -r requirements.txt   # fully pinned; see the header of that file
 
-# ── Confirm torch still sees the GPU AFTER installing ─────────────────────────
-# requirements.txt lists a bare `torch`. On most RunPod images pip keeps the CUDA
-# build, but an image with a pinned torch can end up downgraded by this install.
-# This is the one check worth doing by hand; `startup.sh` also enforces it.
+# Install torch FIRST, from the CUDA index, then let requirements.txt see it satisfied.
+# requirements.txt lists a bare `torch`, so on its own it takes whatever PyPI's default
+# wheel is — which may or may not be the CUDA build you want.
+pip install torch --index-url https://download.pytorch.org/whl/cu130
+pip install -r requirements.txt
+
+# ── Confirm torch sees the GPU AFTER installing ───────────────────────────────
+# The one check worth doing by hand; startup.sh and REQUIRE_GPU also enforce it.
 python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-#   → True 12.x       good
-#   → False None      CPU-only wheel: reinstall from the CUDA index, e.g.
-#                     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
+#   → True 13.0       good
+#   → False None      CPU-only wheel:
+#                     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu130
 
 # ── Models ────────────────────────────────────────────────────────────────────
 ollama serve &
@@ -52,6 +55,22 @@ ollama pull qwen2:7b                     # eval only: gold-set author + answer j
 # really just to pay the cost now, on a volume you're already watching.
 python prefetch_models.py
 ```
+
+### A note on the pod's CUDA version
+
+**A pod advertising CUDA 14.x is fine, and you do not want a "CUDA 14" build of torch.**
+
+The number on the pod is its *driver/toolkit* version. NVIDIA's driver API is backward
+compatible — a newer driver runs binaries built against an older CUDA toolkit — so a
+CUDA 14.2 pod runs cu130 (and cu128, cu126) wheels normally. The failure mode people
+expect here is the reverse one: an *old* driver with a *new* toolkit.
+
+There is no cu14 PyTorch build to find. `download.pytorch.org/whl/cu140/` returns 403;
+the newest published index is **cu130**. Verified available there for this project's
+Python: `torch 2.13.0+cu130`, `cp314`, `manylinux_2_28_x86_64`.
+
+So: install from the **cu130** index regardless of whether the pod says 13.x or 14.x, and
+judge the result by `torch.cuda.is_available()`, not by matching version numbers.
 
 ### Set these in the RunPod dashboard → your pod → **Environment Variables**
 
