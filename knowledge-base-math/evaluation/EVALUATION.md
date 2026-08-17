@@ -162,7 +162,7 @@ Soft matching credits the neighbours.
 
 Report both, and read the **gap** between them: a large `recall@5_soft − recall@5` means retrieval
 is finding the right *region* and chunking is splitting the answer badly. That is a **chunking**
-finding (ROADMAP §3), not a retrieval one, and no reranker will fix it.
+finding (see `chunking.py`'s `eqaware` strategies), not a retrieval one, and no reranker will fix it.
 
 **recall@pool is the diagnostic, and it's the one people forget.** The reranker can only reorder
 what BM25 and dense retrieval already found. If the gold chunk isn't in the pool, reranking
@@ -370,7 +370,7 @@ Three findings, two of which **reverse or refine** what v1 (the leaky RL-paper e
 
 3. **A chunking gap is now visible.** hybrid R@5 `0.82` vs R@5 **soft** `0.91` — a 9-point jump
    from counting the adjacent chunk as a hit. That gap is the answer being split across a
-   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (ROADMAP §3),
+   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (see `chunking.py`),
    surfaced only because the harness now reports soft matching.
 
 **Inconclusive on this corpus:** the `top_k` pool-size win looked huge in v1 but does **not**
@@ -462,13 +462,13 @@ Each of these is a reason the eval is a *floor*, not a verdict on the product.
 
 - **`hybrid+rerank` beats `hybrid` on recall@5 / MRR** → the reranker earns its 2.2GB. Keep it.
 - **No meaningful delta** → drop the reranker. That is a real result, not a failure, and it
-  redirects effort to the likelier win: **math-aware chunking** (ROADMAP §3).
+  redirects effort to the likelier win: **math-aware chunking** (`chunking.py`, `eqaware*`).
 - **`recall@pool` is low across the board** → stop tuning retrieval. The ceiling is upstream:
-  extraction (ROADMAP §2) and chunking (§3).
+  extraction (`extract.py`, Marker) and chunking (`chunking.py`).
 - **`bm25` ≈ `hybrid`** → suspect the gold set (§3): the questions are probably parroting chunk
   vocabulary. Rewrite them before trusting anything else in the table.
 
-The eval is also the training data for the embedding fine-tune (ROADMAP §6) — a contrastive
+The eval is also the training data for a future embedding fine-tune — a contrastive
 fine-tune of `bge-small` needs exactly these `(question, correct chunk)` pairs.
 
 ---

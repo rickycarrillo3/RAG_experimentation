@@ -78,6 +78,27 @@ Final ranking: C → A → B → F
 
 The only real alternative worth considering is **learned fusion** — training a small model to weight the lists. This outperforms RRF on specific domains but requires labeled training data. For your use case, RRF is the right call.
 
+### RRF is no longer the last step
+
+This document was written when the RRF output went straight to the LLM. It doesn't
+anymore. RRF's weakness is exactly the one described above — it is **ordinal**, using only
+rank position and discarding how relevant each chunk actually is — and a **cross-encoder
+reranker** (`BAAI/bge-reranker-v2-m3`) was added to fix precisely that:
+
+```
+BM25 top-10  ┐
+             ├─ RRF ─→ top-20 candidates ─→ cross-encoder ─→ top-5 ─→ LLM
+dense top-10 ┘
+```
+
+Unlike the bi-encoder, the cross-encoder reads `(query, chunk)` **together** in one forward
+pass, so it can judge specific relevance rather than topical similarity. It is too expensive
+to run over the whole corpus, which is why it only ever rescores the shortlist RRF produced.
+RRF still does the "cast a wide net" job; it just no longer decides the final order.
+
+See `../knowledge-base-math/retrieval.py` for the implementation and
+`../knowledge-base-math/evaluation/EVALUATION.md` for whether it measurably earns its 2.2GB.
+
 ---
 
 ## 3. Costs to Run
@@ -146,6 +167,11 @@ ChromaDB is great up to ~100k chunks (a few hundred textbooks). Beyond that, exa
 
 ## 5. Latency in Regular Use
 
+> **These are estimates from before the system was measured.** The real numbers, taken on
+> the running pipeline, are in **`../knowledge-base-math/LATENCY.md`** — along with the four
+> fixes applied since and the reasoning behind each. Read that first; treat the sketch below
+> as the shape of the problem, not as data.
+
 Here is what happens, in order, when a family member asks a question:
 
 ```
@@ -155,15 +181,22 @@ User types: "How do I solve x^2 - 5x + 6 = 0?"
 [2] BM25 search              ~2ms     (pure Python, top-10 chunks)
 [3] ChromaDB search          ~15ms    (cosine similarity, top-10 chunks)
 [4] RRF merge                ~1ms     (trivial computation)
-[5] Format prompt            ~1ms
-[6] DeepSeek-Math generates  ~6–10s   (50 tok/sec × 300–500 tokens)
+[5] Cross-encoder rerank      tens of ms on GPU  (20 candidates, one forward pass each)
+[6] Format prompt            ~1ms
+[7] DeepSeek-Math generates  ~6–10s   (50 tok/sec × 300–500 tokens)
                           ↓
 Answer appears
 ```
 
-**Total perceived latency: ~6–10 seconds** (essentially all of it is step 6)
+**Total perceived latency: ~6–10 seconds** (essentially all of it is step 7)
 
-With streaming enabled, the user sees the first token in ~1–2 seconds and the answer builds progressively — this feels much faster than waiting 8 seconds for a wall of text.
+The measured split came out the same shape but sharper: **generation is ~95% of query time
+and all of retrieval ~4%**, which is why the reranker's real cost is its 2.2GB of VRAM
+rather than its milliseconds — and why every latency fix that mattered targeted generation,
+not search.
+
+With streaming enabled, the user sees the first token in ~1–2 seconds and the answer builds
+progressively — this feels much faster than waiting 8 seconds for a wall of text.
 
 ### What can go wrong in practice
 

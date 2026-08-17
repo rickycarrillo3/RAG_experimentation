@@ -40,6 +40,10 @@ python evaluation/eval.py --user alice --all            # sweep configs: recall@
 python evaluation/eval.py --user alice --all --answers  # also LLM-judge the end-to-end answers (slow)
 python evaluation/embed_chunk_sweep.py                  # 3 chunkers × 3 embedders → evaluation/results/sweep_results.json
 
+# Pre-download all HuggingFace models (embedder + reranker + Marker/surya, ~6GB cold)
+python prefetch_models.py
+python prefetch_models.py --skip-marker   # query-only; skips the ~3-4GB extraction models
+
 # End-to-end smoke test: ingests docs/extracted/test.mmd for a "test" user, then interactive CLI chat
 python test_chat.py
 python test_chat.py --retrieval-only
@@ -57,7 +61,7 @@ Requires [Ollama](https://ollama.com) running locally with the model pulled:
 ollama pull t1c/deepseek-math-7b-rl:Q4
 ```
 
-On a RunPod GPU pod, see `knowledge-base-math/SETUP.md` for one-time setup and `knowledge-base-math/startup.sh` for per-session start (run from inside `knowledge-base-math/`; starts Ollama if not already running, then `python app.py`).
+On a RunPod GPU pod, see `knowledge-base-math/SETUP.md` for one-time setup and `knowledge-base-math/startup.sh` for per-session start (run from inside `knowledge-base-math/`; GPU check → auth warning → starts Ollama if not already running → `python app.py`). `startup.sh --allow-cpu` runs it locally without CUDA.
 
 There is no automated test suite/linter configured — `test_chat.py` is a manual smoke test, not a pytest suite.
 
@@ -93,9 +97,12 @@ frontend are both just HTTP clients of it. See `DEPLOYMENT.md` for hosting, cost
 - **evaluation/eval.sh** — pod runner that wraps the GPU eval: CUDA check → data check → **prefetch all models before any testing** → the sweep, with an optional `--answers` run. See `SETUP.md § GPU eval run`.
 - **evaluation/EVALUATION.md** — the evaluation protocol: what's measured, why, the gold-set caveats, cost expectations, and how to act on the numbers. **Read before changing retrieval.**
 - **LATENCY.md** — where query time actually goes (generation is ~95%, retrieval ~4%), the fixes applied, and the measurements behind them. **Read before editing `SYSTEM_PROMPT` in `app.py`/`query.py`:** the prompt order is load-bearing — static text → history → context → question — because Ollama only reuses the KV cache of a common prompt *prefix*. Putting per-query context before stable content silently re-prefills the whole prompt every turn.
+- **prefetch_models.py** — downloads every HuggingFace model the app needs, before anyone uses it. Exists because the three model sets are fetched at wildly different moments: the embedder (~130MB) and reranker (~2.2GB) load at `app.py` *import*, so a cold cache just makes startup look hung — but **Marker/surya (~3-4GB) is built inside `extract_marker()` and therefore does not download until the first PDF upload**, where `handle_upload`'s `except` reports the stall as a generic `Ingestion failed: <e>`. Fetches through the pipeline's own loaders, so it pulls exactly the files that will be used and doubles as a "do these load here?" check. Called by `startup.sh` (stage 4, skippable with `--no-prefetch`) and by `evaluation/eval.sh` with `--skip-marker` — **one prefetch implementation; don't reintroduce an inline copy in a shell script.**
 - **test_chat.py** — ingests a fixed test doc for a `test` user and drops into the same interactive CLI loop as `query.py`, for manual end-to-end verification.
 
 Note: retrieval logic used to be duplicated between `query.py` and `app.py`. It is now shared via `retrieval.py` — **do not reintroduce a second copy.** An `eval.py` that measures a reimplementation of the pipeline rather than the pipeline itself will drift from what ships and quietly start lying.
+
+The same trap caught the index paths: `CHROMA_DIR`/`BM25_DIR` were declared in *both* `retrieval.py` and `ingest.py`, so the reader and the writer could disagree about where the data lived. They now come from `config.py` alone. `test_chat.py` had a third copy of the problem — it built its own `HuggingFaceEmbeddings` instead of calling `load_embeddings`, so the smoke test would have exercised a different loader (and different device) than the app it was meant to smoke-test. **When you add a path, a model, or a host, define it once and import it.**
 
 ## Model & infra
 
@@ -103,7 +110,7 @@ Note: retrieval logic used to be duplicated between `query.py` and `app.py`. It 
 - Embeddings: `BAAI/bge-small-en-v1.5` (HuggingFace, normalized).
 - Reranker: `BAAI/bge-reranker-v2-m3` cross-encoder via `sentence_transformers.CrossEncoder` (~2.2GB, downloads to the HF cache on first use — keep the HF cache on `/workspace` on the pod so it survives restarts).
 - Eval-only model: `qwen2:7b` (Ollama) — used by `make_evalset.py` as the *instruct* question-writer and by `eval.py` as the LLM-as-judge. Deliberately **not** deepseek-math (a solver, not a writer; and a model must not grade its own output). Only needed when running the eval harness, not the serving pipeline — `ollama pull qwen2:7b`.
-- Designed to run on a RunPod GPU pod; everything must survive on `/workspace` (persistent volume) between pod restarts, including `OLLAMA_MODELS`.
+- Designed to run on a RunPod GPU pod; everything must survive on `/workspace` (persistent volume) between pod restarts — `OLLAMA_MODELS`, `HF_HOME`, and **`DATA_DIR`**. The first two cost a ~10GB re-download if missed; `DATA_DIR` is the one that loses the family's uploaded documents outright, because the container filesystem is wiped on restart and the indexes default to the current directory.
 
 ## Conventions / constraints
 
