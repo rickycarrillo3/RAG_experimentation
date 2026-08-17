@@ -20,6 +20,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+from config import OLLAMA_BASE_URL
 from retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
@@ -95,9 +96,10 @@ def main():
 
     answer_chain = None
     if not args.retrieval_only:
-        print(f"Connecting to Ollama model '{OLLAMA_MODEL}'...")
+        print(f"Connecting to Ollama model '{OLLAMA_MODEL}' at {OLLAMA_BASE_URL}...")
         llm = ChatOllama(
             model=OLLAMA_MODEL,
+            base_url=OLLAMA_BASE_URL,
             temperature=0,
             num_predict=NUM_PREDICT,
             keep_alive=KEEP_ALIVE,

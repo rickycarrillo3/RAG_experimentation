@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_ollama import ChatOllama
 
+from config import OLLAMA_BASE_URL
 from retrieval import chunk_id, load_bm25
 
 EVAL_DIR = "evaluation"
@@ -274,7 +275,7 @@ def main():
     n_math = sum(1 for c in picked if is_mathy(c.page_content))
     print(f"Sampled {len(picked)} chunks ({n_math} math-bearing).")
 
-    llm = ChatOllama(model=args.model, temperature=0.4, num_predict=100)
+    llm = ChatOllama(model=args.model, base_url=OLLAMA_BASE_URL, temperature=0.4, num_predict=100)
     print(f"Generating questions with '{args.model}' (rejecting leaks, up to {MAX_ATTEMPTS} attempts each)...\n")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)

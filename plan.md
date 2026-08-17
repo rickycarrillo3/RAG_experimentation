@@ -1,3 +1,19 @@
+> # ⚠️ SUPERSEDED — historical record, not guidance
+>
+> This plan was **implemented** in commit `1571a24` ("Add cross-encoder reranking
+> stage"). It is kept for the reasoning in its Context section, which still explains
+> *why* the reranker exists better than anything else in the repo.
+>
+> **Do not follow its "Decisions" section.** It specifies duplicating the rerank logic
+> across `query.py` and `app.py` to match a then-current convention. That convention is
+> gone: retrieval was consolidated into `retrieval.py` in `31354dd`, and `CLAUDE.md` now
+> states plainly **"do not reintroduce a second copy."** Following this file as written
+> would undo that consolidation and re-create the drift between the CLI, the web UI, and
+> the eval that `retrieval.py` exists to prevent.
+>
+> For how retrieval actually works today, read `CLAUDE.md` § Architecture and
+> `knowledge-base-math/retrieval.py`.
+
 # Plan: Add a cross-encoder reranking stage to the math RAG pipeline
 
 ## Context

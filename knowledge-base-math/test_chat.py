@@ -10,9 +10,9 @@ import argparse
 import os
 import sys
 
-from langchain_huggingface import HuggingFaceEmbeddings
-
+from config import OLLAMA_BASE_URL
 from ingest import ingest
+from retrieval import load_embeddings
 from query import (
     KEEP_ALIVE,
     NUM_PREDICT,
@@ -52,16 +52,17 @@ def main():
     ingest(user=TEST_USER, inputs=[TEST_DOC])
 
     print(f"\nLoading embedding model...")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL,
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    # Via load_embeddings, not a second HuggingFaceEmbeddings(...) — the smoke test is
+    # only worth anything if it exercises the same loader (and so the same device
+    # pinning and LaTeX-normalization behaviour) that app.py and query.py use.
+    embeddings = load_embeddings(EMBED_MODEL)
 
     answer_chain = None
     if not args.retrieval_only:
-        print(f"Connecting to Ollama ({OLLAMA_MODEL})...")
+        print(f"Connecting to Ollama ({OLLAMA_MODEL}) at {OLLAMA_BASE_URL}...")
         llm = ChatOllama(
             model=OLLAMA_MODEL,
+            base_url=OLLAMA_BASE_URL,
             temperature=0,
             num_predict=NUM_PREDICT,
             keep_alive=KEEP_ALIVE,

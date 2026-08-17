@@ -95,8 +95,13 @@ class NormalizingEmbeddings(Embeddings):
 
 
 def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False) -> Embeddings:
+    # device is pinned only when CUDA is present; otherwise the key is omitted entirely
+    # so sentence-transformers keeps auto-detecting (MPS on the Mac, CPU elsewhere).
+    device = resolve_device()
+    model_kwargs = {"device": device} if device else {}
     base = HuggingFaceEmbeddings(
         model_name=model_name,
+        model_kwargs=model_kwargs,
         encode_kwargs={"normalize_embeddings": True},
     )
     if normalize_latex:
@@ -106,7 +111,7 @@ def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False
 
 
 def load_reranker() -> CrossEncoder:
-    return CrossEncoder(RERANK_MODEL)
+    return CrossEncoder(RERANK_MODEL, device=resolve_device())
 
 
 # ── Stages ────────────────────────────────────────────────────────────────────
