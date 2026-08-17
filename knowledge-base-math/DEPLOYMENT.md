@@ -80,7 +80,7 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
-| `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap and Ollama residency. Keep `KEEP_ALIVE` shorter than the idle-stop window. |
+| `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. |
 | `KBM_TELEMETRY_SALT` | Salt for hashing usernames in the event log. Set it per deployment. |
 | `OLLAMA_MODELS`, `HF_HOME` | Must point at the volume, or ~15GB of weights re-download on every wake (`SETUP.md`). |
 
@@ -124,6 +124,27 @@ bearer token means any page a family member visits can spend that token.
 and the pod calls RunPod's REST API to stop *itself*. It defers while an ingest job is
 running — stopping mid-Marker would lose the work and leave a half-built index. Note it
 stops rather than terminates, so the volume and its model weights survive.
+
+### keep-alive vs idle-stop — two timers, one of them free
+
+They sit at different layers and are easy to conflate:
+
+| | `KBM_KEEP_ALIVE` | `KBM_IDLE_STOP_MINUTES` |
+|---|---|---|
+| Controls | Ollama holding weights in VRAM | whether the pod exists |
+| On expiry | model unloads; next query reloads it (~10-20s) | **pod stops; billing stops** |
+| Affects the bill | no — the pod bills regardless | **yes, entirely** |
+
+**Idle-stop is the outer bound.** The model cannot stay resident longer than the pod
+lives, so a keep-alive longer than the idle window is simply never reached — harmless.
+
+Setting keep-alive *shorter* than the idle window is the real mistake. With keep-alive
+5m and idle-stop 10m, the model unloads at minute 5 while the pod keeps billing until
+minute 10; a question at minute 6 pays a reload for no saving at all. **Keep it ≥ the
+idle window** — the `30m` default is fine with idle-stop at 10.
+
+The one reason to lower it is VRAM: upload peaks at ~12-13GB with the generator resident
+(`evaluation/EVALUATION.md §6`), so drop it toward 0 during ingest if it ever OOMs.
 
 **Wake** is manual (or scriptable):
 

@@ -43,10 +43,21 @@ class Models:
                     base_url=OLLAMA_BASE_URL,
                     temperature=0,
                     num_predict=NUM_PREDICT,
-                    # Without this Ollama unloads after 5 min idle and the next question
-                    # pays a cold model load. Note it interacts with the idle-stop
-                    # watchdog: keep_alive should be shorter than the idle-stop window,
-                    # or the pod stops while still holding the model resident for nothing.
+                    # How long Ollama keeps the weights in VRAM after the last request.
+                    # Without it, Ollama unloads after 5 min and the second question of
+                    # an evening pays a ~10-20s reload.
+                    #
+                    # This costs nothing either way — the pod bills whether the model is
+                    # resident or not. Only KBM_IDLE_STOP_MINUTES affects the bill, and it
+                    # is the outer bound: the model cannot outlive the pod, so a keep_alive
+                    # longer than the idle window is simply never reached. Setting it
+                    # *shorter* is the actual mistake — it unloads while the pod is still
+                    # alive and billing, so a question in that gap pays a reload for
+                    # nothing. Keep it >= the idle window.
+                    #
+                    # The exception is VRAM pressure: upload peaks at ~12-13GB with the
+                    # generator resident (EVALUATION.md §6), so drop this toward 0 during
+                    # ingest if it ever OOMs.
                     keep_alive=KEEP_ALIVE,
                 )
 
