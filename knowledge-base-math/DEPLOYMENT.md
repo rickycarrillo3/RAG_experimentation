@@ -142,15 +142,59 @@ load and look broken.
 
 ## 6. Known gaps
 
-- **Documents still land wherever  `DATA_DIR` points.** On the pod that's the network
+- **Documents still land wherever `DATA_DIR` points.** On the pod that's the network
   volume, which solves the "not on my laptop" problem. It does **not** solve durability:
-  a deleted pod volume is a deleted corpus. Moving `chroma_db/` and the uploaded PDFs to
-  a managed store (S3-compatible object storage, or a hosted vector DB) is the next step
-  — it also decouples retrieval from the GPU pod entirely, which is the same refactor
-  as the CPU/GPU split in §1. Worth doing once the corpus is real textbooks rather than
-  test files.
+  a deleted volume is a deleted corpus, and RunPod may terminate a volume whose storage
+  charges go unpaid. Moving `chroma_db/` and the uploaded PDFs to a managed store
+  (S3-compatible object storage, or a hosted vector DB) is the next step — it also
+  decouples retrieval from the GPU pod entirely, which is the same refactor as the
+  CPU/GPU split in §1. Worth doing once the corpus is real textbooks rather than test
+  files.
+- **No quota on uploads.** Nothing limits how many PDFs a user can add or how large they
+  are. `/upload` streams to disk without a size check, and each accepted PDF is kept
+  under `$DATA_DIR/docs/raw/<user>/` alongside its `.mmd`. That is deliberate (§7), but
+  it means a family member uploading a shelf of textbooks grows the volume until it is
+  full — and a full network volume fails writes rather than auto-expanding. Watch
+  `du -sh $DATA_DIR` for now; a per-user cap is the obvious next guard.
 - **No per-user auth** (§4).
 - **No backups.** The BM25 pickle and Chroma directory are rebuildable from the source
   PDFs, so back up `docs/raw/` first.
 - **`KBM_RELEVANCE_FLOOR` is uncalibrated.** See `api/settings.py`; the `no_answer` slice
   of gold set v3 is what settles it.
+
+---
+
+## 7. What an upload actually costs you
+
+`POST /upload` → Marker extraction → chunk → BM25 + Chroma. What persists per document,
+under `$DATA_DIR`:
+
+| Artifact | Path | Size (measured) |
+|---|---|---|
+| Source PDF | `docs/raw/<user>/` | as uploaded — an OpenStax textbook is ~50–100 MB |
+| Extracted `.mmd` | `docs/extracted/<user>/` | ~1.8 KB per page (18 KB for 10 pages) |
+| Chroma vectors | `chroma_db/` | ~64 KB per chunk with `bge-small` (384-dim) |
+| BM25 pickle | `bm25_indexes/user_<u>.pkl` | ~5.8 KB per chunk |
+
+So a 1000-page textbook ≈ 6–7k chunks ≈ **~450 MB of index + ~100 MB of PDF**. Five of
+them is roughly 3 GB — small next to the ~25 GB of model weights.
+
+Two behaviours worth knowing:
+
+**Re-uploading the same document replaces it, rather than duplicating it.** Chunks are
+keyed by `chunk_id` (`<source>::<n>`) and merged with `ingest.merge_chunks`, so the
+second upload of `calculus.pdf` overwrites its chunks in place. Before this was fixed,
+each upload re-added the user's *entire* accumulated corpus to Chroma — 66 → 136 → 210
+entries for uploads of 66, 4 and 4 chunks. Quadratic growth, and it degraded retrieval:
+the dense top-k filled with copies of one chunk, so fewer distinct candidates reached the
+reranker than `TOP_K` implied.
+
+**Filenames are the identity.** Two different documents both named `notes.pdf`, uploaded
+by the same user, collide — the second silently replaces the first, because chunk ids are
+derived from the basename. Uploading under distinct filenames avoids it; a content hash
+in the chunk id would fix it properly.
+
+**Ingest is serialised** (`_ingest_pool`, one worker). Marker peaks at ~12–13 GB VRAM on
+top of a resident generator and reranker (`evaluation/EVALUATION.md §6`), so two
+concurrent extractions would race for memory on a 24 GB card. Several uploads at once
+queue rather than fail; `GET /jobs/{id}` reports each one's position by status.
