@@ -41,8 +41,16 @@ cd /workspace/RAG_experimentation/knowledge-base-math
 bash startup.sh
 ```
 
-Then open the public URL in your browser:
-- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`
+`startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
+Gradio client on 7860. Open the public URL in your browser:
+- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860` (UI) or `8000` (API, with `/docs`)
+
+> **Set `KBM_API_TOKEN` before exposing either port.** Without it the API is open and the
+> per-username "isolation" is just a guessable string — anyone who finds the host reads
+> every uploaded document. See `DEPLOYMENT.md §4`.
+
+For hosting shape, cost, idle-stop and the full environment-variable table, see
+**`DEPLOYMENT.md`**.
 
 ---
 

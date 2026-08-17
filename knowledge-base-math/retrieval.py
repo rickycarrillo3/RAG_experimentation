@@ -25,8 +25,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 
-CHROMA_DIR = "chroma_db"
-BM25_DIR = "bm25_indexes"
+# Index locations. KBM_DATA_DIR relocates both together — on the pod it points at the
+# network volume, so the corpus and indexes never sit on a personal disk. These are the
+# single definition: ingest.py imports them rather than declaring its own, because a
+# second opinion about where the data lives means writes and reads silently diverge.
+DATA_DIR = os.environ.get("KBM_DATA_DIR", ".")
+CHROMA_DIR = os.path.join(DATA_DIR, "chroma_db")
+BM25_DIR = os.path.join(DATA_DIR, "bm25_indexes")
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"

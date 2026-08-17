@@ -25,10 +25,10 @@ from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 
 from chunking import CHUNKERS, assign_chunk_ids  # assign_chunk_ids re-exported for callers
-from retrieval import EMBED_MODEL, load_embeddings
-
-CHROMA_DIR = "chroma_db"
-BM25_DIR = "bm25_indexes"
+# Index locations come from retrieval.py, not a local copy: if ingest wrote to one
+# directory while retrieval read from another, every query would return nothing and
+# the indexes would look empty rather than misplaced.
+from retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, load_embeddings
 
 
 def load_mmd_files(paths: list[str]) -> list[Document]:

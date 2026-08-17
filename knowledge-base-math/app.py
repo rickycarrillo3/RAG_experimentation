@@ -1,219 +1,165 @@
 """
-app.py - Gradio web UI for the math RAG system.
+app.py - Gradio web UI, as a client of the FastAPI service.
 
-Run:
-    python app.py
+Run the API first, then this:
+    uvicorn api.main:app --port 8000        # terminal 1
+    python app.py                           # terminal 2  → http://localhost:7860
 
-Then open http://localhost:7860 in your browser.
-Each user logs in with a username — their documents are fully isolated.
+This file used to import the pipeline directly and hold the models itself. It no
+longer does: it speaks HTTP to api/, exactly as the TypeScript frontend will. Keeping
+a working UI on top of the real API is what proves the API is complete — if something
+cannot be done over HTTP, it shows up here before any TypeScript is written.
+
+This is deliberately temporary. When the TS frontend lands, delete this file rather
+than porting it.
 """
 
+import json
 import os
-import tempfile
+import time
 
 import gradio as gr
-from langchain_core.documents import Document
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+import httpx
 
-from extract import extract
-from chunking import split_baseline
-from ingest import (
-    build_bm25,
-    build_chroma,
-    load_mmd_files,
-)
-import retrieval
-from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
-
-# Prompt order is load-bearing for latency: static text → history → context → question.
-# Ollama caches the KV of the longest common prompt *prefix* between consecutive requests.
-# Everything up to the first token that changes is free; everything after it is re-prefilled.
-# The static block never changes and `history` only ever grows by appending, so both stay
-# cached across turns. `context` is fresh every query, which is exactly why it must come
-# last — it lives in the human message, after the system message. Putting it before the
-# history (as this file used to) invalidated the cache at token ~150 and re-prefilled the
-# whole ~3.4k-token prompt every single turn. See LATENCY.md.
-SYSTEM_PROMPT = """You are an expert mathematician and dedicated teacher. Your deep love for mathematics drives you to help students not just find answers, but truly understand the underlying concepts and develop their own mathematical thinking.
-
-When answering:
-- Don't just solve the problem — explain the reasoning behind each step so the student understands why, not just how.
-- If a student makes a conceptual error, gently point it out and guide them toward the correct understanding.
-- Encourage curiosity: point out interesting patterns, connections to other concepts, or follow-up questions worth thinking about.
-- Show your working step by step, but match the length of the answer to the question: a conceptual "why" question wants a short, clear explanation, not a full derivation. Stop once the student has what they asked for.
-- Use LaTeX for all equations (e.g. $x^2$, \\frac{{a}}{{b}}).
-- If context from uploaded documents is provided, prioritise it and cite the source. Otherwise answer from your own expertise.
-
-Conversation so far:
-{history}"""
-
-HUMAN_PROMPT = """{context}
-
-Question: {input}"""
-
-# History is trimmed in blocks, not one message at a time — see _history_window().
-# These count *messages* (a turn is two: student + tutor).
-HISTORY_KEEP = 8    # smallest the window is ever trimmed back to
-HISTORY_BLOCK = 8   # the window start only ever moves in steps of this
-
-NUM_PREDICT = 350   # decode is ~60% of query latency and the solver will fill whatever it is given
-KEEP_ALIVE = "30m"  # else Ollama unloads after 5 min idle and the next question pays a cold load
-
-# Loaded once at startup, shared across all users (stateless)
-embeddings = load_embeddings()
-llm = ChatOllama(
-    model=OLLAMA_MODEL,
-    temperature=0,
-    num_predict=NUM_PREDICT,
-    keep_alive=KEEP_ALIVE,
-)
-reranker = load_reranker()
-chain = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", HUMAN_PROMPT),
-]) | llm | StrOutputParser()
+API_URL = os.environ.get("KBM_API_URL", "http://127.0.0.1:8000")
+API_TOKEN = os.environ.get("KBM_API_TOKEN", "")
+# Generation of a full answer runs to tens of seconds; the default httpx timeout would
+# abort mid-stream. Read timeout is the one that matters for SSE.
+TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
 
 
-# ── Retrieval ──────────────────────────────────────────────────────────────────
-# The pipeline itself (BM25 + dense → RRF → cross-encoder) lives in retrieval.py,
-# shared with query.py and eval.py. Only the UI-specific bits are here.
-
-def _has_index(user: str) -> bool:
-    return os.path.exists(os.path.join(BM25_DIR, f"user_{user}.pkl"))
-
-
-def retrieve(query: str, user: str) -> list[tuple[Document, float]]:
-    return retrieval.retrieve(query, user, embeddings, reranker=reranker)
-
-
-# ── Gradio handlers ────────────────────────────────────────────────────────────
-
-def handle_upload(pdf_file, username: str) -> str:
-    username = username.strip().lower()
-    if not username:
-        return "Please enter your name before uploading."
-    if pdf_file is None:
-        return "No file uploaded."
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            mmd_out_dir = os.path.join(tmp_dir, "extracted")
-            mmd_path = extract(pdf_file.name, out_dir=mmd_out_dir)
-
-            docs = load_mmd_files([mmd_path])
-            chunks = split_baseline(docs)
-
-            # Merge with existing BM25 index if user already has one
-            if _has_index(username):
-                _, existing_chunks = retrieval.load_bm25(username)
-                chunks = existing_chunks + chunks
-
-            build_bm25(chunks, username)
-            build_chroma(chunks, username, embeddings)
-
-        fname = os.path.basename(pdf_file.name)
-        return f"'{fname}' ingested successfully. {len(chunks)} total chunks indexed for {username}."
-    except Exception as e:
-        return f"Ingestion failed: {e}"
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
 
 
 def _msg(role: str, content: str) -> dict:
     return {"role": role, "content": content}
 
 
-def _history_window(history: list) -> list:
-    """The slice of history sent to the model, trimmed in blocks rather than per turn.
+# ── Upload ────────────────────────────────────────────────────────────────────
 
-    A plain `history[-N:]` sliding window drops the oldest message on *every* turn once
-    it is full. That shifts the start of the history block, which is the one thing the
-    prompt KV cache cannot survive (the cache only reuses a common *prefix*), so every
-    turn would pay a full re-prefill — measured at 13.4s by turn 5.
+def handle_upload(pdf_file, username: str):
+    username = (username or "").strip().lower()
+    if not username:
+        return "Please enter your name before uploading."
+    if pdf_file is None:
+        return "No file uploaded."
 
-    Trimming to a block boundary instead means the window start only moves once every
-    HISTORY_BLOCK messages. In between, history grows purely by appending and stays
-    cached. The cost is that we sometimes carry a few more messages than the minimum,
-    which is cheap: those tokens are cached, the alternative is recomputing all of them.
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            with open(pdf_file.name, "rb") as fh:
+                r = client.post(
+                    f"{API_URL}/upload",
+                    headers=_headers(),
+                    data={"user": username},
+                    files={"file": (os.path.basename(pdf_file.name), fh, "application/pdf")},
+                )
+            if r.status_code != 200:
+                return f"Upload rejected: {r.text}"
+            job_id = r.json()["job_id"]
 
-    There is deliberately no separate "max length" constant. Until history reaches
-    HISTORY_KEEP + HISTORY_BLOCK messages the division below is 0, so the window starts
-    at 0 and keeps everything — the "grow freely at first" behaviour falls out of the
-    arithmetic. Adding a max that disagreed with this grid only made the first trim
-    lurch twice in consecutive turns.
+            # Poll rather than block the request: Marker is minutes, not seconds.
+            while True:
+                time.sleep(3)
+                job = client.get(f"{API_URL}/jobs/{job_id}", headers=_headers()).json()
+                if job["status"] == "done":
+                    return job["detail"]
+                if job["status"] == "failed":
+                    return f"Ingestion failed: {job['detail']}"
+    except Exception as e:
+        return f"Ingestion failed: {e}"
 
-    max(0, ...) guards Python's floor division on negatives: (2 - 8) // 8 == -1, and a
-    negative start would silently index from the end and restore per-turn sliding.
-    """
-    start = max(0, ((len(history) - HISTORY_KEEP) // HISTORY_BLOCK) * HISTORY_BLOCK)
-    return history[start:]
 
-
-def _format_history(history: list) -> str:
-    lines = []
-    for m in _history_window(history):
-        role = "Student" if m["role"] == "user" else "Tutor"
-        lines.append(f"{role}: {m['content']}")
-    return "\n".join(lines) if lines else "None yet."
-
+# ── Chat ──────────────────────────────────────────────────────────────────────
 
 def handle_chat(message: str, history: list, clean_history: list, username: str):
-    """Stream one answer, yielding (cleared input, display history, clean history).
+    """Stream one answer from the API, yielding Gradio state as tokens arrive.
 
-    A generator rather than a plain function: a full answer takes tens of seconds to
-    decode, and waiting for all of it before painting anything is the single largest
-    contributor to *perceived* latency. Streaming shows the first words in ~1s instead.
-    Gradio treats a yielded tuple exactly like a returned one and repaints per yield.
+    Yields (cleared input, display history, clean history, event_id). `clean_history`
+    holds the plain answers with the sources footer stripped — that is what gets sent
+    back as conversation context, so the model never re-reads its own citation noise.
     """
-    username = username.strip().lower()
+    username = (username or "").strip().lower()
     if not username:
-        yield "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")], clean_history
+        yield "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")], clean_history, None
         return
     if not message.strip():
-        yield "", history, clean_history
+        yield "", history, clean_history, None
         return
 
-    chat_history = _format_history(clean_history)
     base = history + [_msg("user", message)]
-
-    # Paint the question and a placeholder before retrieval, so the UI reacts immediately.
-    yield "", base + [_msg("assistant", "_Searching your documents…_")], clean_history
+    yield "", base + [_msg("assistant", "_Searching your documents…_")], clean_history, None
 
     answer = ""
     sources_text = ""
+    event_id = None
+    payload = {
+        "user": username,
+        "message": message,
+        "history": [{"role": m["role"], "content": m["content"]} for m in clean_history],
+    }
+
     try:
-        if _has_index(username):
-            results = retrieve(message, username)
-            context = "Context from your documents:\n\n" + "\n\n".join(
-                f"[Source: {os.path.basename(doc.metadata.get('source', 'unknown'))}]\n{doc.page_content}"
-                for doc, _ in results
-            )
-            sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
-                f"- {os.path.basename(doc.metadata.get('source', 'unknown'))} (rerank={score:.4f})"
-                for doc, score in results
-            )
-        else:
-            context = "No documents uploaded yet. Answer from your own expertise."
+        with httpx.Client(timeout=TIMEOUT) as client:
+            with client.stream("POST", f"{API_URL}/chat", headers=_headers(), json=payload) as resp:
+                if resp.status_code != 200:
+                    resp.read()
+                    raise RuntimeError(f"API returned {resp.status_code}: {resp.text}")
 
-        for token in chain.stream({"context": context, "history": chat_history, "input": message}):
-            answer += token
-            yield "", base + [_msg("assistant", answer)], clean_history
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = json.loads(line[5:].strip())
+                    kind = data.get("type")
 
+                    if kind == "sources":
+                        if data["sources"]:
+                            sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
+                                f"- {s['source']} (score={s['score']:.4f})" for s in data["sources"]
+                            )
+                    elif kind == "token":
+                        answer += data["text"]
+                        yield "", base + [_msg("assistant", answer)], clean_history, event_id
+                    elif kind == "done":
+                        event_id = data["event_id"]
+                    elif kind == "error":
+                        raise RuntimeError(data["message"])
     except Exception as e:
         answer = f"Error: {e}"
         sources_text = ""
 
-    full_answer = answer + sources_text
-    # clean_history stores only the plain answer (no sources) for LLM context
     new_clean = clean_history + [_msg("user", message), _msg("assistant", answer)]
-    yield "", base + [_msg("assistant", full_answer)], new_clean
+    yield "", base + [_msg("assistant", answer + sources_text)], new_clean, event_id
+
+
+def send_feedback(event_id: str | None, rating: str) -> str:
+    """Thumbs feed the telemetry log, which is where gold set v4 and the embedding
+    fine-tune pairs eventually come from — see telemetry.py."""
+    if not event_id:
+        return "Ask something first."
+    try:
+        httpx.post(
+            f"{API_URL}/feedback",
+            headers=_headers(),
+            json={"event_id": event_id, "rating": rating},
+            timeout=10.0,
+        )
+        return "Thanks — recorded."
+    except Exception as e:
+        return f"Could not record feedback: {e}"
 
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="Math Tutor") as app:
+# theme goes on Blocks, not launch(). The previous version of this file passed it to
+# launch(), which raises TypeError on gradio 6.18 — `python app.py` crashed on startup.
+# The deprecation warning says to move it to launch() "in Gradio 6.0", but this build
+# rejects it there, so Blocks is the only thing that actually works today.
+with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
 
     clean_history_state = gr.State([])  # LLM-facing history, no sources noise
+    event_id_state = gr.State(None)     # last answer's telemetry id, for feedback
 
     with gr.Row():
         username_box = gr.Textbox(label="Your name", placeholder="e.g. alice", scale=1)
@@ -227,19 +173,31 @@ with gr.Blocks(title="Math Tutor") as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(height=500, latex_delimiters=[
+            chatbot = gr.Chatbot(type="messages", height=500, allow_tags=False, latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},
                 {"left": "\\[", "right": "\\]", "display": True},
             ])
             msg_box = gr.Textbox(label="Your question", placeholder="e.g. How do I solve a quadratic equation?")
-            send_btn = gr.Button("Send", variant="primary")
+            with gr.Row():
+                send_btn = gr.Button("Send", variant="primary")
+                up_btn = gr.Button("👍", scale=0)
+                down_btn = gr.Button("👎", scale=0)
+            feedback_status = gr.Markdown("")
+
+    chat_io = dict(
+        fn=handle_chat,
+        inputs=[msg_box, chatbot, clean_history_state, username_box],
+        outputs=[msg_box, chatbot, clean_history_state, event_id_state],
+    )
 
     upload_btn.click(handle_upload, inputs=[upload_box, username_box], outputs=upload_status)
-    send_btn.click(handle_chat, inputs=[msg_box, chatbot, clean_history_state, username_box], outputs=[msg_box, chatbot, clean_history_state])
-    msg_box.submit(handle_chat, inputs=[msg_box, chatbot, clean_history_state, username_box], outputs=[msg_box, chatbot, clean_history_state])
+    send_btn.click(**chat_io)
+    msg_box.submit(**chat_io)
+    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status)
+    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status)
 
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft())
+    app.launch(server_name="0.0.0.0", server_port=7860, share=False)

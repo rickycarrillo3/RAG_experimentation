@@ -11,6 +11,8 @@
 **/docs/extracted/
 # Any pickle files (may contain serialized user data)
 **/*.pkl
+# Usage telemetry — contains the questions people actually asked
+**/telemetry/
 
 # ── Secrets & config ───────────────────────────────────────────────────────────
 .env

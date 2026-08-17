@@ -12,3 +12,8 @@ sentence-transformers
 pylatexenc
 gradio==6.18.0
 torch
+# API service
+fastapi
+uvicorn[standard]
+python-multipart   # required by FastAPI for the multipart /upload form
+httpx              # SSE client for app.py + Ollama health probe + RunPod stop call
