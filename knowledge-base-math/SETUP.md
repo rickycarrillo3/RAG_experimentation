@@ -26,7 +26,7 @@ cd $WORKSPACE/RAG_experimentation
 # ⚠ The FastAPI service lives on `worktree-fastapi-deployment` and is NOT on main yet.
 # On main there is no api/ package, so startup.sh's stage 5 fails and app.py — now an
 # HTTP client — has nothing to talk to. Check the branch out until the PR is merged:
-git checkout worktree-fastapi-deployment
+# git checkout worktree-fastapi-deployment stale since pushed
 cd knowledge-base-math
 
 # ── Python deps ───────────────────────────────────────────────────────────────
