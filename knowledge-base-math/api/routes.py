@@ -194,21 +194,41 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
     """The same sequence app.py's handle_upload ran, moved off the request thread."""
     import shutil
 
+    from .settings import DATA_DIR
+
     from chunking import split_baseline
     from extract import extract
-    from ingest import build_bm25, build_chroma, load_mmd_files
+    from ingest import build_bm25, build_chroma, load_mmd_files, merge_chunks
 
     job = _jobs[job_id]
     job.status = JobStatus.RUNNING
     try:
-        mmd_path = extract(pdf_path, out_dir=os.path.join(tmp_dir, "extracted"))
+        # Keep the source PDF and the extracted .mmd on the persistent volume rather
+        # than only their derived vectors. Three reasons, all learned the hard way:
+        #   - The indexes are rebuildable from these; these are rebuildable from
+        #     nothing. Discarding them made "back up docs/raw/" impossible to follow
+        #     for anything uploaded through the web UI.
+        #   - Re-chunking (baseline -> eqaware) needs the .mmd. Without it, evaluating
+        #     a chunking change means asking the family to re-upload their textbooks
+        #     and paying for Marker again.
+        #   - EVALUATION.md §10.2 requires frozen .mmd files, because re-extracting
+        #     shifts chunk boundaries and silently breaks every gold label.
+        raw_dir = os.path.join(DATA_DIR, "docs", "raw", user)
+        mmd_dir = os.path.join(DATA_DIR, "docs", "extracted", user)
+        os.makedirs(raw_dir, exist_ok=True)
+        os.makedirs(mmd_dir, exist_ok=True)
+        shutil.copy2(pdf_path, os.path.join(raw_dir, os.path.basename(pdf_path)))
+
+        mmd_path = extract(pdf_path, out_dir=mmd_dir)
         chunks = split_baseline(load_mmd_files([mmd_path]))
 
         # Merge with the user's existing chunks so a second upload adds to the corpus
         # rather than replacing it — build_bm25 overwrites the pickle wholesale.
+        # merge_chunks dedupes by chunk_id, so re-uploading a document replaces its
+        # chunks instead of indexing them twice.
         if has_index(user):
             _, existing = retrieval.load_bm25(user)
-            chunks = existing + chunks
+            chunks = merge_chunks(existing, chunks)
 
         build_bm25(chunks, user)
         build_chroma(chunks, user, models.embeddings)

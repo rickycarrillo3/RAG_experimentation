@@ -9,7 +9,8 @@ to already exist by the time you want them:
    from the inside. Logged questions are the fix — gold set v4 should be drawn from
    them rather than from qwen2 writing questions about chunks.
 2. **Fine-tuning data.** Thumbs-up (question, retrieved chunk) pairs are exactly the
-   contrastive pairs the embedding fine-tune in ROADMAP §6 needs.
+   contrastive pairs an embedding fine-tune needs — far cheaper than touching the 7B
+   generator. See EVALUATION.md §10.9.
 
 Usernames are hashed. The questions are a teenager's homework and the log is a file on
 a rented box; there is no reason for it to carry names.

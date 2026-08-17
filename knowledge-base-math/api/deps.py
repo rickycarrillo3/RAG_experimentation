@@ -14,6 +14,7 @@ from fastapi import Header, HTTPException, status
 from langchain_ollama import ChatOllama
 
 import retrieval
+from config import OLLAMA_BASE_URL
 from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 
 from .settings import API_TOKEN, KEEP_ALIVE, NUM_PREDICT
@@ -37,6 +38,9 @@ class Models:
             if self.llm is None:
                 self.llm = ChatOllama(
                     model=OLLAMA_MODEL,
+                    # Same knob query.py and test_chat.py use, so the API can point at
+                    # an Ollama on another host instead of assuming it shares the box.
+                    base_url=OLLAMA_BASE_URL,
                     temperature=0,
                     num_predict=NUM_PREDICT,
                     # Without this Ollama unloads after 5 min idle and the next question

@@ -21,6 +21,8 @@ import time
 import gradio as gr
 import httpx
 
+from config import APP_HOST, APP_PORT, app_auth
+
 API_URL = os.environ.get("KBM_API_URL", "http://127.0.0.1:8000")
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "")
 # Generation of a full answer runs to tens of seconds; the default httpx timeout would
@@ -200,4 +202,7 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
 
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    # APP_AUTH gates the front door of this UI; KBM_API_TOKEN gates the API behind it.
+    # They are different locks on different doors and both need setting on a public pod
+    # — a login page in front of an open API only protects the page.
+    app.launch(server_name=APP_HOST, server_port=APP_PORT, share=False, auth=app_auth())

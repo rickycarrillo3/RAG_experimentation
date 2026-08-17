@@ -28,7 +28,7 @@ from chunking import CHUNKERS, assign_chunk_ids  # assign_chunk_ids re-exported 
 # Index locations come from retrieval.py, not a local copy: if ingest wrote to one
 # directory while retrieval read from another, every query would return nothing and
 # the indexes would look empty rather than misplaced.
-from retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, load_embeddings
+from retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, chunk_id, load_embeddings
 
 
 def load_mmd_files(paths: list[str]) -> list[Document]:
@@ -37,6 +37,25 @@ def load_mmd_files(paths: list[str]) -> list[Document]:
         loader = TextLoader(path, encoding="utf-8")
         documents.extend(loader.load())
     return documents
+
+
+def merge_chunks(existing: list[Document], new: list[Document]) -> list[Document]:
+    """Combine a user's existing chunks with freshly ingested ones, newest winning.
+
+    Deduplicated by `chunk_id`, which is `<source>::<n>` — so re-uploading the *same*
+    document replaces its chunks rather than appending a second copy of them. Without
+    this, uploading `notes.pdf` twice left the user's index holding every one of its
+    chunks twice: BM25 scored the same passage repeatedly and the dense top-k filled
+    with copies, crowding out distinct candidates before the reranker ever saw them.
+
+    Note this keys on chunk *id*, not content, so re-uploading an edited version of a
+    document correctly replaces the old chunks at the same positions. Chunks past the
+    end of a document that got shorter are the one case this cannot catch — they keep
+    ids no new chunk claims. Re-ingesting from scratch is the fix if that matters.
+    """
+    by_id: dict[str, Document] = {chunk_id(d): d for d in existing}
+    by_id.update({chunk_id(d): d for d in new})
+    return list(by_id.values())
 
 
 def build_bm25(chunks: list[Document], user: str) -> str:
@@ -51,13 +70,32 @@ def build_bm25(chunks: list[Document], user: str) -> str:
 
 
 def build_chroma(chunks: list[Document], user: str, embeddings) -> Chroma:
-    collection_name = f"user_{user}"
+    """Embed chunks into the user's collection, keyed by chunk_id so adds are idempotent.
+
+    The ids are load-bearing, not a nicety. Callers pass the user's *whole* chunk list —
+    a second upload merges the existing chunks with the new ones and rebuilds — and
+    without explicit ids Chroma mints a fresh UUID per document, so every previously
+    indexed chunk is inserted *again*. Measured before this fix: uploads of 66 then 4
+    then 4 chunks left Chroma holding 66 → 136 → 210 entries instead of 66 → 70 → 74.
+
+    That is quadratic growth in both storage and embedding time, and it degrades
+    retrieval: the dense top-k fills with copies of one chunk, so fewer distinct
+    candidates reach RRF and the reranker than TOP_K implies.
+
+    chunk_id is `<source>::<n>` (stamped by chunking.assign_chunk_ids), unique across
+    documents and stable across re-ingestion, so re-adding a chunk upserts in place.
+    """
     store = Chroma(
-        collection_name=collection_name,
+        collection_name=f"user_{user}",
         embedding_function=embeddings,
         persist_directory=CHROMA_DIR,
     )
-    store.add_documents(chunks)
+    # Defensive dedupe: Chroma rejects a batch containing the same id twice, so a caller
+    # that merged carelessly would get a DuplicateIDError mid-ingest rather than a
+    # sensible index. merge_chunks already guarantees this; belt and braces because the
+    # failure lands in a background job where it is only visible as a failed upload.
+    deduped = {chunk_id(doc): doc for doc in chunks}
+    store.add_documents(list(deduped.values()), ids=list(deduped))
     return store
 
 
