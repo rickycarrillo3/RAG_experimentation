@@ -25,6 +25,9 @@ models throughout.
 The frontend is currently `app.py` (Gradio), talking to the API over HTTP like any
 other client. A TypeScript frontend replaces it against the same endpoints.
 
+For which stage runs on which piece of hardware — and why only four things ever touch
+the GPU — see **`ARCHITECTURE.md`**.
+
 ### Why one pod
 
 Retrieval (BM25 + bge-small + the cross-encoder) runs perfectly well on CPU — a few
