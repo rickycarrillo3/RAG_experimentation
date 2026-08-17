@@ -63,6 +63,18 @@ python -c "import torch, torchvision; print(torch.cuda.is_available(), torch.ver
 #                                 major version (see §8)
 pip check                         # must report no broken requirements
 
+# ── Ollama ────────────────────────────────────────────────────────────────────
+# NOT in the pod image. Install it ON THE VOLUME: the official install script
+# (curl https://ollama.com/install.sh | sh) writes to /usr/local/bin, which is container
+# filesystem and is wiped on every pod stop — you would re-install it on every wake.
+# Note this is the ollama *binary*; OLLAMA_MODELS above is where the weights go.
+mkdir -p $WORKSPACE/ollama
+curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C $WORKSPACE/ollama
+export PATH=$WORKSPACE/ollama/bin:$PATH
+ollama --version
+# startup.sh adds this to PATH itself when $WORKSPACE/ollama/bin/ollama exists, so this
+# export is only needed for the rest of this one-time setup session.
+
 # ── Models ────────────────────────────────────────────────────────────────────
 ollama serve &
 sleep 3

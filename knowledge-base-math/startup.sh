@@ -65,6 +65,23 @@ export PYTHONUNBUFFERED=1
 
 mkdir -p "$DATA_DIR"
 
+# Ollama is not in the pod image, and the official install script puts it in
+# /usr/local/bin — container filesystem, wiped on every restart. It is installed to the
+# volume instead (SETUP.md §1), so put that on PATH here rather than relying on every
+# future shell to export it.
+if [ -x "$WORKSPACE/ollama/bin/ollama" ]; then
+  export PATH="$WORKSPACE/ollama/bin:$PATH"
+fi
+
+if ! command -v ollama > /dev/null 2>&1; then
+  echo "✗ ollama not found on PATH, and not at $WORKSPACE/ollama/bin/ollama." >&2
+  echo "  The pod image does not ship it. Install it ON THE VOLUME — an install to" >&2
+  echo "  /usr/local/bin does not survive a pod restart:" >&2
+  echo "    mkdir -p $WORKSPACE/ollama" >&2
+  echo "    curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C $WORKSPACE/ollama" >&2
+  exit 1
+fi
+
 # Prefer the project venv if present; otherwise the pod's system python.
 if [ -f venv/bin/activate ]; then
   # shellcheck disable=SC1091

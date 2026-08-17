@@ -17,6 +17,35 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-17 · `ollama: command not found` on a fresh pod
+
+**Symptom.** `startup.sh` stage 3, or `ollama pull` in setup, failed — Ollama is not in
+the RunPod PyTorch image, and `SETUP.md` assumed it was already there.
+
+**The trap, not the error.** The obvious fix is Ollama's own installer:
+```bash
+curl -fsSL https://ollama.com/install.sh | sh      # ← don't
+```
+It writes to `/usr/local/bin`, which is **container filesystem** — wiped on every pod
+stop. It works, then silently stops existing on the next wake, and `startup.sh` fails
+again with no indication that anything was ever installed.
+
+**Fix.** Install to the volume, preserving the tarball's `bin/` + `lib/` layout (the
+binary locates its runners relative to itself):
+```bash
+mkdir -p /workspace/ollama
+curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C /workspace/ollama
+export PATH=/workspace/ollama/bin:$PATH
+```
+`startup.sh` now adds `$WORKSPACE/ollama/bin` to `PATH` when it exists, and fails with
+these instructions when it doesn't — so no future session needs the export.
+
+**Lesson.** The same rule that governs `DATA_DIR`, `HF_HOME` and `OLLAMA_MODELS` governs
+*binaries*: on a pod, anything installed outside `/workspace` is temporary. A vendor
+install script that assumes a normal machine will put it in the wrong place.
+
+---
+
 ## 2026-08-17 · `torch.cuda.is_available()` is False on a working A5000
 
 **Symptom.** `python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"`
