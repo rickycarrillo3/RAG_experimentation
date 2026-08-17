@@ -100,7 +100,20 @@ bash startup.sh
 
 `startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
 Gradio client on 7860. Open the public URL in your browser:
-- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860` (UI) or `8000` (API, with `/docs`)
+- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`
+
+**Expose HTTP port `7860` only.** The Gradio client reaches the API over loopback inside
+the container, so 8000 never needs to be public — and 11434 (Ollama, unauthenticated)
+must never be. To poke the API or `/docs`, SSH in and use `localhost:8000`. Full
+reasoning in `DEPLOYMENT.md §4`.
+
+`startup.sh` **installs nothing** — it starts things. Creating the venv and the two `pip
+install` steps in §1 are one-time; this is what runs every session. Note that a missing
+torch and a missing GPU both surface as stage 1's "No CUDA device visible to torch", so
+if you see that on a fresh clone, check the install before you blame the pod.
+
+To run it automatically on every pod start, set RunPod's **Container Start Command** —
+see `DEPLOYMENT.md §5`.
 
 > **Set `KBM_API_TOKEN` before exposing either port.** Without it the API is open and the
 > per-username "isolation" is just a guessable string — anyone who finds the host reads
