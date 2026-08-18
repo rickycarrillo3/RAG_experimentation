@@ -116,8 +116,23 @@ the API. Neither is multi-user auth: they are the difference between "private" a
 "crawlable". Real per-user auth is separate work, needed before this is shared beyond
 people who already trust each other with one password.
 
-Also tighten `allow_origins` in `api/main.py` before going public: a wildcard plus a
-bearer token means any page a family member visits can spend that token.
+### Which ports to expose
+
+**HTTP: `7860` only.** `startup.sh` sets `KBM_API_URL=http://127.0.0.1:8000`, so the
+Gradio client reaches the API over loopback *inside* the container — nothing outside the
+pod needs to route to 8000. Exposing it adds a second public door guarded by one
+credential, where 7860 has `APP_AUTH` in front and the token behind it. Add TCP `22` only
+if you want `scp` for the eval corpus.
+
+**Never expose `11434`.** Ollama's API is unauthenticated: a public port there lets anyone
+run inference on the GPU you are paying for.
+
+When the TypeScript frontend needs 8000 reachable, two things change together — expose the
+port, *and* add the proxy origin to `allow_origins` in `api/main.py`. It is currently
+`["http://localhost:5173", "http://localhost:3000", "http://localhost:7860"]`, so a browser
+calling from `*.proxy.runpod.net` is blocked by CORS until that list is updated. Keep it a
+list; a wildcard plus a bearer token means any page a family member visits can spend that
+token.
 
 ---
 
@@ -149,18 +164,79 @@ idle window** — the `30m` default is fine with idle-stop at 10.
 The one reason to lower it is VRAM: upload peaks at ~12-13GB with the generator resident
 (`evaluation/EVALUATION.md §6`), so drop it toward 0 during ingest if it ever OOMs.
 
-**Wake** is manual (or scriptable):
+### Wake is two things, and neither is automatic
+
+Sleep is one action; wake is two, and it is easy to plan for only the first:
+
+1. **The pod must be started.** A stopped pod has no container and no network — the
+   `proxy.runpod.net` URL fails outright. Opening the link does not wake anything.
+2. **The processes must be started.** A pod start recreates the container from the image,
+   so nothing is running: no Ollama, no uvicorn, no Gradio. `/workspace` survives; running
+   processes do not. `startup.sh` is what brings them back.
+
+Starting the pod:
 
 ```bash
 curl -X POST https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID/start \
      -H "Authorization: Bearer $RUNPOD_API_KEY"
 ```
 
-The cold path is roughly: pod start ~30s → Ollama loads the model ~10–20s from the
-volume → first token. `GET /healthz` reports `model_loaded`, which is the flag a client
-should poll — after a cold start the API answers HTTP 200 well before the model is
-resident, so a client that only checks for 200 will fire its first question into a model
-load and look broken.
+### Automate step 2 with the container start command
+
+RunPod's **Container Start Command** runs on every pod start. Point it at the script and
+a wake brings the app up with no terminal involved:
+
+```
+bash -lc 'cd /workspace/RAG_experimentation/knowledge-base-math && bash startup.sh --no-prefetch'
+```
+
+Output lands in the pod's log tab. Use `--no-prefetch` on this path: `prefetch_models.py`
+loads the embedder and reranker to verify them, and the API loads them again thirty
+seconds later — on a warm volume that is a duplicated ~30 s on every single wake. Keep the
+full `bash startup.sh` for manual runs, where a cold cache or a fresh `git pull` makes the
+check worth paying for.
+
+### What the cold path actually costs
+
+| Step | Cost |
+|---|---|
+| Pod start (container created, volume mounted) | ~30 s |
+| `startup.sh`: torch import + CUDA check, Ollama start | ~10–20 s |
+| API startup: embedder + 2.2 GB reranker loaded | ~30 s |
+| First query: Ollama loads the generator from the volume | ~10–20 s |
+| **Click → first token** | **~1–2 min** |
+
+⚠️ **This is an estimate assembled from component measurements, not an end-to-end
+timing.** The figure the deployment was planned against was "30–60 s", which counted only
+pod start plus the model load and missed the two model-loading stages in between. Time a
+real wake and replace this table with the measured number — and if it lands materially
+above 2 minutes, that is a finding, not a detail.
+
+`GET /healthz` reports `model_loaded`, which is the flag a client should poll — after a
+cold start the API answers HTTP 200 well before the model is resident, so a client that
+only checks for 200 fires its first question into a model load and looks broken.
+
+`/healthz` sits **behind `KBM_API_TOKEN`** like every other endpoint: every caller today
+(`startup.sh`, the Gradio client, you over SSH) already holds the token, and port 8000 is
+not publicly exposed, so an unauthenticated probe would buy nothing. Note the consequence
+for the wake page in §6 — it would need a credential to poll readiness, which is an
+argument for giving that page its own narrow endpoint rather than for opening this one.
+Poll the **status code**, not merely whether the request completed: a 401 and a 500 are
+both "not ready", and treating any response as success is how a broken API reads as
+healthy.
+
+### The wake gap
+
+Step 1 needs `RUNPOD_API_KEY`, which controls the whole RunPod account — start, stop,
+terminate, spend. It cannot go in a bookmark handed to a family member, so today waking
+the pod is something **you** do on request. Two ways out, neither built:
+
+- A small always-on free-tier function holding the key and exposing a single "wake"
+  button, with no other capability.
+- A wake-on-request page that starts the pod and then polls `/healthz` until
+  `model_loaded`, so the 1–2 minutes reads as a progress bar rather than a broken link.
+
+Worth building when "text me and I'll turn it on" gets annoying — not before.
 
 ---
 
@@ -181,6 +257,13 @@ load and look broken.
   full — and a full network volume fails writes rather than auto-expanding. Watch
   `du -sh $DATA_DIR` for now; a per-user cap is the obvious next guard.
 - **No per-user auth** (§4).
+- **No unattended wake path** (§5). Sleep is automatic; wake requires the RunPod account
+  credential, so a family member who opens the link on a stopped pod gets a dead URL and
+  no explanation. This is the largest remaining gap in the day-to-day experience.
+- **`ops/idle_stop.py` has never run against a live pod.** It is the difference between
+  ~$20/mo and ~$115/mo and carries zero evidence. Verify with
+  `KBM_IDLE_STOP_MINUTES=2` before relying on it — a silent failure here surfaces on the
+  invoice, not in a log.
 - **No backups.** The BM25 pickle and Chroma directory are rebuildable from the source
   PDFs, so back up `docs/raw/` first.
 - **`KBM_RELEVANCE_FLOOR` is uncalibrated.** See `api/settings.py`; the `no_answer` slice

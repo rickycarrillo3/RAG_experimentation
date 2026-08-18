@@ -12,6 +12,13 @@ sentence-transformers
 pylatexenc
 gradio==6.18.0
 torch
+# torchvision is a marker-pdf dependency, listed explicitly because it is a trap:
+# it ships compiled C++ ops linked against one exact torch build. Installed from PyPI
+# (which is what happens transitively) it will not match a torch installed from a CUDA
+# index, and every torchvision import dies with "operator torchvision::nms does not
+# exist". They must come from the SAME index, as a pair — see SETUP.md §1, where the
+# CUDA install deliberately runs *after* this file for that reason.
+torchvision
 # API service
 fastapi
 uvicorn[standard]
