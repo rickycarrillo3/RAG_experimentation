@@ -153,11 +153,11 @@ def send_feedback(event_id: str | None, rating: str) -> str:
 
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
-# theme goes on Blocks, not launch(). The previous version of this file passed it to
-# launch(), which raises TypeError on gradio 6.18 — `python app.py` crashed on startup.
-# The deprecation warning says to move it to launch() "in Gradio 6.0", but this build
-# rejects it there, so Blocks is the only thing that actually works today.
-with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
+# Gradio moved `theme` from Blocks to launch() in 6.0, and dropped Chatbot's `type`
+# argument (messages is now the only format). requirements.txt pins gradio==6.18.0 — if
+# this file raises TypeError on a Chatbot or Blocks argument, the environment is on 5.x
+# and needs `pip install -r requirements.txt`, not a code change. See ERRORS.md.
+with gr.Blocks(title="Math Tutor") as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
 
     clean_history_state = gr.State([])  # LLM-facing history, no sources noise
@@ -175,7 +175,7 @@ with gr.Blocks(title="Math Tutor", theme=gr.themes.Soft()) as app:
 
         with gr.Column(scale=2):
             gr.Markdown("### Ask a question")
-            chatbot = gr.Chatbot(type="messages", height=500, allow_tags=False, latex_delimiters=[
+            chatbot = gr.Chatbot(height=500, allow_tags=False, latex_delimiters=[
                 {"left": "$$", "right": "$$", "display": True},
                 {"left": "$", "right": "$", "display": False},
                 {"left": "\\(", "right": "\\)", "display": False},
@@ -205,4 +205,10 @@ if __name__ == "__main__":
     # APP_AUTH gates the front door of this UI; KBM_API_TOKEN gates the API behind it.
     # They are different locks on different doors and both need setting on a public pod
     # — a login page in front of an open API only protects the page.
-    app.launch(server_name=APP_HOST, server_port=APP_PORT, share=False, auth=app_auth())
+    app.launch(
+        server_name=APP_HOST,
+        server_port=APP_PORT,
+        share=False,
+        auth=app_auth(),
+        theme=gr.themes.Soft(),
+    )

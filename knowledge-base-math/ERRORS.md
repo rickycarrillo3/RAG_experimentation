@@ -17,6 +17,56 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-18 · Gradio UI crashed on startup; `/healthz` returned 401
+
+Two unrelated bugs surfaced by the first full `startup.sh` run on the pod.
+
+### `Chatbot.__init__() got an unexpected keyword argument 'type'`
+
+**Symptom.** Stages 1–5 passed, the API came up, then stage 6 died. The UI never
+started; the API was left running until the trap killed it.
+
+**Cause.** `requirements.txt` pins `gradio==6.18.0`, but `app.py` was written against
+Gradio 5.x. Gradio 6 moved `theme` from `Blocks` to `launch()` and removed `Chatbot`'s
+`type` argument. The Mac had 5.x installed, so the file worked there and could not work
+on the pod — **the same code could only run on one of the two machines.**
+
+**What made it confusing.** `SETUP.md §7` claimed the pin moved gradio *to 5.50*, and §8
+said this exact error meant "environment has 6.x, code targets 5.50" — the precise
+inverse of the truth. Following the docs would have led to downgrading a correct
+environment.
+
+**Fix.** `app.py` now targets Gradio 6 (theme on `launch()`, no `type=` on `Chatbot`),
+matching the pin. `SETUP.md §7`/`§8` corrected. Local venvs on 5.x need
+`pip install -r requirements.txt`.
+
+**Lesson.** A version pin is a contract with the code, and a doc that describes a
+different pin than the file contains is worse than no doc — it argues against the fix.
+
+### `GET /healthz 401 Unauthorized`
+
+**Symptom.** `startup.sh` logged a 401 for its own readiness probe and then printed
+`✓ Ready.` anyway.
+
+**Cause.** `/healthz` was declared on the router carrying
+`dependencies=[Depends(require_token)]`, so the liveness probe required a bearer token.
+It only *looked* fine because the probe checks curl's exit status, not the HTTP code —
+so a 401 counted as "up", and the check would have passed against an API that was
+returning nothing but auth errors.
+
+**Why it matters beyond the log line.** `DEPLOYMENT.md §5` tells clients to poll
+`model_loaded` before asking the first question after a cold start. Behind auth, "is the
+service up?" becomes indistinguishable from "is my token right?", and any future
+wake-poller page would have to hold the RunPod-adjacent secret to ask.
+
+**Fix.** `/healthz` moved to a separate unauthenticated `public_router`. It exposes only
+the model name and two booleans.
+
+**Lesson.** Health probes run before, or without, credentials by definition. And a
+readiness check that ignores the status code is not a readiness check.
+
+---
+
 ## 2026-08-17 · `ollama: command not found` on a fresh pod
 
 **Symptom.** `startup.sh` stage 3, or `ollama pull` in setup, failed — Ollama is not in

@@ -40,6 +40,14 @@ from .schemas import (
 
 router = APIRouter(dependencies=[Depends(require_token)])
 
+# /healthz is deliberately OUTSIDE the authenticated router. It is a liveness probe:
+# startup.sh polls it to know when the API is up, and the wake path polls `model_loaded`
+# to know when the first question will not land in a 20s model load. Both of those run
+# before, or without, a token — behind auth the probe gets a 401 and "is it up?" becomes
+# indistinguishable from "is my token right?". It exposes only the model name and two
+# booleans, no user data.
+public_router = APIRouter()
+
 # Ingest is GPU-heavy (Marker/Surya) and must not run concurrently with itself, or two
 # uploads will fight over VRAM that the generator and reranker are already holding —
 # EVALUATION.md §6 measures upload as the tightest moment in the memory budget.
@@ -265,7 +273,7 @@ async def feedback(fb: Feedback):
     telemetry.log_feedback(fb.event_id, fb.rating, fb.note)
 
 
-@router.get("/healthz", response_model=Health)
+@public_router.get("/healthz", response_model=Health)
 async def healthz():
     """Liveness plus whether Ollama holds the generator resident.
 
