@@ -69,7 +69,13 @@ pip check                         # must report no broken requirements
 # filesystem and is wiped on every pod stop — you would re-install it on every wake.
 # Note this is the ollama *binary*; OLLAMA_MODELS above is where the weights go.
 mkdir -p $WORKSPACE/ollama
-curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C $WORKSPACE/ollama
+# ~1.4GB: the archive bundles the CUDA runners. zstd, not gzip — and note the URL is
+# the GitHub release asset directly. ollama.com/download/...tgz 404s: that asset name
+# no longer exists (renamed to .tar.zst), and the redirect chain hides it behind a
+# generic 404 from a URL that looks official.
+curl -fL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst \
+  | tar --zstd -x -C $WORKSPACE/ollama
+# If tar lacks --zstd:  apt-get install -y zstd  then  zstd -dc file | tar -x -C ...
 export PATH=$WORKSPACE/ollama/bin:$PATH
 ollama --version
 # startup.sh adds this to PATH itself when $WORKSPACE/ollama/bin/ollama exists, so this

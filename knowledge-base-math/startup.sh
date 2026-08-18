@@ -78,7 +78,8 @@ if ! command -v ollama > /dev/null 2>&1; then
   echo "  The pod image does not ship it. Install it ON THE VOLUME — an install to" >&2
   echo "  /usr/local/bin does not survive a pod restart:" >&2
   echo "    mkdir -p $WORKSPACE/ollama" >&2
-  echo "    curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C $WORKSPACE/ollama" >&2
+  echo "    curl -fL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst \\" >&2
+  echo "      | tar --zstd -x -C $WORKSPACE/ollama" >&2
   exit 1
 fi
 

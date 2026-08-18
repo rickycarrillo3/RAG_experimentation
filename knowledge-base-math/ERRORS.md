@@ -34,7 +34,8 @@ again with no indication that anything was ever installed.
 binary locates its runners relative to itself):
 ```bash
 mkdir -p /workspace/ollama
-curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz | tar -xz -C /workspace/ollama
+curl -fL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst \
+  | tar --zstd -x -C /workspace/ollama
 export PATH=/workspace/ollama/bin:$PATH
 ```
 `startup.sh` now adds `$WORKSPACE/ollama/bin` to `PATH` when it exists, and fails with
