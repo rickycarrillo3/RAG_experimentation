@@ -160,6 +160,44 @@ come from the same index, and the CUDA install has to be the last thing that run
 
 ---
 
+## 2026-08-18 · `Marker failed (docker binary not found)` on the first upload
+
+**Symptom.** First PDF upload on the pod logged
+`WARNING: Marker failed (docker binary not found. Install Docker ... and ensure the
+daemon is running.)` and fell back to `pymupdf4llm` — so the document was ingested with
+**no LaTeX at all**, which is the one outcome this project cannot tolerate.
+
+**Cause.** `marker-pdf` **2.0.0** (released 2026-07-20) stopped running Surya in-process.
+It now spawns an inference server on first use: **vLLM inside Docker** on NVIDIA GPUs,
+llama.cpp elsewhere. A RunPod pod is itself a container with no Docker daemon, so the
+spawn can never succeed there.
+
+**Why the version changed underneath us.** `requirements.txt` listed a bare `marker-pdf`.
+The laptop venv was resolved months ago and holds 1.10.2; a fresh `pip install` on the pod
+resolved to 2.0.0. Same file, two different majors — the environments drifted silently.
+
+**Why nothing caught it earlier.** `prefetch_models.py` calls `create_model_dict()`, which
+still succeeds on 2.x — the Docker spawn happens at *conversion* time, not at model load.
+So stage 4 of `startup.sh` reported success and the failure waited for a real upload,
+exactly the stall `prefetch_models.py` exists to prevent, arriving by a different route.
+
+**Fix.** Pin below the rewrite and reinstall on the pod:
+```bash
+pip install -r requirements.txt          # now marker-pdf<2.0
+python -c "import marker; print(marker.__version__)"   # expect 1.10.x
+```
+Then **re-upload any PDF ingested during the fallback** — a pymupdf-extracted document is
+already in the index with its equations flattened to Unicode, and re-uploading replaces
+its chunks in place (`DEPLOYMENT.md §7`).
+
+**Lesson.** An unpinned dependency is a promise that upstream will not change its
+architecture. Two of the three worst bugs in this file (`torchvision`, this one) are the
+laptop and the pod resolving the same requirements file differently. Also: a fallback that
+"works" is more dangerous than a crash — this one produced a searchable index that was
+quietly worthless for math.
+
+---
+
 ## Earlier · fixed, documented elsewhere
 
 Kept short — each links to where the reasoning lives.
@@ -178,3 +216,4 @@ Kept short — each links to where the reasoning lives.
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |
 | Every question paid a 4.4 s cold model load | `keep_alive` unset, so Ollama unloaded after 5 min idle | `LATENCY.md`, `DEPLOYMENT.md §5` |
 | Math PDFs routed to the wrong extractor | math detected by grepping LaTeX tokens in `pymupdf4llm` output, which contains **no LaTeX at all** | `CLAUDE.md` — the repeat offender |
+| Gradio died with `Cannot find empty port in range: 7860-7860` | `APP_HOST` was `0.0.0.0.` — a trailing dot, so `getaddrinfo` failed (Errno -2); gradio's port loop swallows the bind error and blames the port | `DEPLOYMENT.md §4`, `SETUP.md` troubleshooting |
