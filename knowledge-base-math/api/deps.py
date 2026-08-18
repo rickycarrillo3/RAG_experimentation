@@ -6,6 +6,7 @@ across requests, exactly as app.py did at module scope. Loading the 2.2GB rerank
 per request would dominate every other cost in the system.
 """
 
+import hmac
 import os
 import pickle
 import threading
@@ -120,7 +121,11 @@ async def require_token(authorization: str = Header(default="")) -> None:
     if not API_TOKEN:
         return
     expected = f"Bearer {API_TOKEN}"
-    if authorization != expected:
+    # compare_digest, not `!=`: a plain string comparison returns as soon as it hits a
+    # differing byte, so how long the check takes leaks how many leading characters the
+    # guess got right — enough to recover the token one character at a time. The
+    # constant-time compare costs nothing and removes the channel.
+    if not hmac.compare_digest(authorization, expected):
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Invalid or missing bearer token.",
