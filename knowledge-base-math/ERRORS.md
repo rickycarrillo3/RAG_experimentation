@@ -48,22 +48,25 @@ different pin than the file contains is worse than no doc — it argues against 
 **Symptom.** `startup.sh` logged a 401 for its own readiness probe and then printed
 `✓ Ready.` anyway.
 
-**Cause.** `/healthz` was declared on the router carrying
-`dependencies=[Depends(require_token)]`, so the liveness probe required a bearer token.
-It only *looked* fine because the probe checks curl's exit status, not the HTTP code —
-so a 401 counted as "up", and the check would have passed against an API that was
-returning nothing but auth errors.
+**Cause — not the one it looks like.** The 401 was correct: `/healthz` is behind
+`KBM_API_TOKEN` like every other endpoint, and the probe was not sending it. The *bug* was
+that the probe tested `curl`'s exit status rather than the HTTP status code, so any
+response at all counted as ready — a 401, and equally a 500. The check would have passed
+against an API that answered nothing but errors.
 
-**Why it matters beyond the log line.** `DEPLOYMENT.md §5` tells clients to poll
-`model_loaded` before asking the first question after a cold start. Behind auth, "is the
-service up?" becomes indistinguishable from "is my token right?", and any future
-wake-poller page would have to hold the RunPod-adjacent secret to ask.
+**The wrong fix, briefly applied.** `/healthz` was first moved to an unauthenticated
+router on the reasoning that liveness probes precede credentials. That argument does not
+hold here: every caller today (`startup.sh`, the Gradio client, SSH) already has the
+token, port 8000 is not publicly exposed, and the only caller that would need an
+unauthenticated probe — a family-facing wake page — does not exist and is listed as a
+known gap. Reverted.
 
-**Fix.** `/healthz` moved to a separate unauthenticated `public_router`. It exposes only
-the model name and two booleans.
+**Fix.** Probe sends the token and switches on the status code: 200 ready, 401 a distinct
+and fatal "token mismatch" message, 000 keep waiting, anything else logged and retried.
 
-**Lesson.** Health probes run before, or without, credentials by definition. And a
-readiness check that ignores the status code is not a readiness check.
+**Lesson.** A readiness check that ignores the status code is not a readiness check. And
+when a fix requires relaxing a security boundary, check whether the caller that needs it
+actually exists before relaxing anything.
 
 ---
 

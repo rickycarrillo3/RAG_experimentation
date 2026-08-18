@@ -216,6 +216,15 @@ above 2 minutes, that is a finding, not a detail.
 cold start the API answers HTTP 200 well before the model is resident, so a client that
 only checks for 200 fires its first question into a model load and looks broken.
 
+`/healthz` sits **behind `KBM_API_TOKEN`** like every other endpoint: every caller today
+(`startup.sh`, the Gradio client, you over SSH) already holds the token, and port 8000 is
+not publicly exposed, so an unauthenticated probe would buy nothing. Note the consequence
+for the wake page in §6 — it would need a credential to poll readiness, which is an
+argument for giving that page its own narrow endpoint rather than for opening this one.
+Poll the **status code**, not merely whether the request completed: a 401 and a 500 are
+both "not ready", and treating any response as success is how a broken API reads as
+healthy.
+
 ### The wake gap
 
 Step 1 needs `RUNPOD_API_KEY`, which controls the whole RunPod account — start, stop,

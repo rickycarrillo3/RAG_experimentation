@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .deps import models
-from .routes import public_router, router
+from .routes import router
 from .settings import API_TOKEN, DATA_DIR, IDLE_STOP_MINUTES
 
 
@@ -58,5 +58,4 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(public_router)   # /healthz — unauthenticated, see routes.py
 app.include_router(router)

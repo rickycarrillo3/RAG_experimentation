@@ -188,7 +188,29 @@ API_PID=$!
 trap 'kill "$API_PID" 2>/dev/null || true' EXIT
 
 echo "   Loading embedder + 2.2GB reranker..."
-until curl -s -o /dev/null "http://localhost:$API_PORT/healthz"; do
+
+# /healthz is behind the bearer token like every other endpoint, so the probe sends it.
+AUTH_HEADER=()
+if [ -n "$KBM_API_TOKEN" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer $KBM_API_TOKEN")
+fi
+
+# Check the HTTP STATUS, not curl's exit code. The previous version tested only whether
+# curl ran, so a 401 — or a 500 — printed "✓ Ready" and the app started against an API
+# that answered nothing. Distinguishing 000/401/200 also turns "is it up?" and "is my
+# token right?" into two different messages, which is the whole reason the check exists.
+while :; do
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                "${AUTH_HEADER[@]}" "http://localhost:$API_PORT/healthz" || echo 000)
+    case "$CODE" in
+      200) break ;;
+      401) echo "   ✗ API is up but rejected the token." >&2
+           echo "     KBM_API_TOKEN here does not match the one uvicorn started with." >&2
+           echo "     Set it once, in the environment, before running this script." >&2
+           exit 1 ;;
+      000) : ;;   # not listening yet — normal during startup
+      *)   echo "   ... API returned HTTP $CODE, still waiting." >&2 ;;
+    esac
     # If uvicorn died (bad env, missing model, port taken), stop waiting forever.
     kill -0 "$API_PID" 2>/dev/null || { echo "   ✗ API failed to start (see above)." >&2; exit 1; }
     sleep 2
