@@ -21,13 +21,8 @@ export DATA_DIR=$WORKSPACE/kb-data                     # chroma_db/ + bm25_index
 
 # ── Code ──────────────────────────────────────────────────────────────────────
 git clone https://github.com/rickycarrillo3/RAG_experimentation.git $WORKSPACE/RAG_experimentation
-cd $WORKSPACE/RAG_experimentation
-
-# ⚠ The FastAPI service lives on `worktree-fastapi-deployment` and is NOT on main yet.
-# On main there is no api/ package, so startup.sh's stage 5 fails and app.py — now an
-# HTTP client — has nothing to talk to. Check the branch out until the PR is merged:
-# git checkout worktree-fastapi-deployment stale since pushed
-cd knowledge-base-math
+cd $WORKSPACE/RAG_experimentation/knowledge-base-math
+# main is current — no branch checkout needed.
 
 # ── Python deps ───────────────────────────────────────────────────────────────
 python -m venv venv          # optional; skip to use the pod's system python
