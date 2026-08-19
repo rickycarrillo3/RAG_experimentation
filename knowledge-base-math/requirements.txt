@@ -1,4 +1,11 @@
-marker-pdf
+# Pinned <2.0 deliberately. marker-pdf 2.0.0 (2026-07-20) stopped running Surya
+# in-process: it now spawns an inference server on first use — vLLM **in Docker** on
+# NVIDIA GPUs. A RunPod pod is itself a container with no Docker daemon, so every
+# extraction dies with "docker binary not found" and falls back to pymupdf4llm, which
+# produces NO LaTeX (CLAUDE.md). It surfaces only on the first upload: prefetch's
+# create_model_dict() succeeds because the Docker spawn happens at conversion time,
+# not at model load. See ERRORS.md.
+marker-pdf<2.0
 pymupdf4llm
 langchain-core
 langchain-community

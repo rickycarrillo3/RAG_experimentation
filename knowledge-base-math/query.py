@@ -20,7 +20,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-from config import OLLAMA_BASE_URL
+from config import KEEP_ALIVE, NUM_PREDICT, OLLAMA_BASE_URL
 from retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
@@ -48,8 +48,9 @@ HUMAN_PROMPT = """Context:
 
 Question: {input}"""
 
-NUM_PREDICT = 350   # decode dominates query latency; 1024 just let the solver ramble
-KEEP_ALIVE = "30m"  # keep the model resident between questions (default unloads after 5 min)
+# NUM_PREDICT / KEEP_ALIVE come from config.py. They used to be redeclared here as
+# literals, which meant raising the API's cap left this CLI on its own stale 350.
+# test_chat.py imports them from this module, so it follows automatically.
 
 
 # ── Generation ────────────────────────────────────────────────────────────────

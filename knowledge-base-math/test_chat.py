@@ -4,6 +4,13 @@ test_chat.py - Ingest test.mmd then start an interactive CLI chat.
 Usage:
     python test_chat.py
     python test_chat.py --retrieval-only   # skip LLM, print chunks only
+    python test_chat.py --selftest         # run the pure regression checks and exit
+
+`--selftest` covers the two invariants that fail *silently* if broken, which is why they
+are checked here rather than left to a manual pass: the prefill-echo filter (whose failure
+mode is showing the student a duplicated answer) and chunk-id stability (whose failure mode
+is every re-upload duplicating a document in the index instead of replacing it). Neither
+needs a GPU, a model, or a network.
 """
 
 import argparse
@@ -39,10 +46,71 @@ def _format_history(history: list[tuple[str, str]]) -> str:
     return "\n".join(lines) if lines else "None yet."
 
 
+def selftest() -> int:
+    """Pure checks: no model, no network, no GPU. Returns a process exit code."""
+    import tempfile
+
+    from api.chat import PrefillEcho
+    from chunking import split_baseline
+    from ingest import load_mmd_files, merge_chunks
+
+    failures = []
+
+    def check(name, cond):
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+        if not cond:
+            failures.append(name)
+
+    def echo_run(prefill, chunks):
+        e = PrefillEcho(prefill)
+        return "".join(e.feed(c) for c in chunks), e.mismatch
+
+    print("PrefillEcho — strips the prefill Ollama echoes back on a continuation")
+    check("first pass (no prefill) passes text through", echo_run("", ["a", "b"]) == ("ab", False))
+    check("echo + new text in one chunk", echo_run("Hello world", ["Hello world and more"]) == (" and more", False))
+    check("echo split across chunks", echo_run("Hello world", ["Hel", "lo ", "world", " tail"]) == (" tail", False))
+    check("leading space preserved", echo_run(" The chain rule", [" The chain rule is"]) == (" is", False))
+    # The one that matters: on divergence it must emit NOTHING, so the caller can abandon
+    # the continuation rather than showing the answer twice.
+    check("diverged echo -> mismatch, no output", echo_run("Hello world", ["Hello there"]) == ("", True))
+    check("divergence caught before full length", echo_run("Hello world", ["Hex"]) == ("", True))
+
+    print("chunk ids — must not depend on the (now temporary) directory")
+    text = "The chain rule states that $$\\frac{d}{dx}f(g(x)) = f'(g(x))g'(x)$$.\n\n" * 20
+
+    def chunks_from_tempdir():
+        d = tempfile.mkdtemp(prefix="kbm_selftest_")
+        path = os.path.join(d, "calculus.mmd")
+        with open(path, "w") as fh:
+            fh.write(text)
+        docs = load_mmd_files([path])
+        for doc in docs:
+            doc.metadata["source"] = os.path.basename(path)
+        return split_baseline(docs)
+
+    a, b = chunks_from_tempdir(), chunks_from_tempdir()
+    ids_a = [c.metadata["chunk_id"] for c in a]
+    check("ids identical across two temp dirs", ids_a == [c.metadata["chunk_id"] for c in b])
+    check("ids are basename-derived", ids_a[:1] == ["calculus.mmd::0"])
+    check("re-upload replaces rather than duplicates", len(merge_chunks(a, b)) == len(a))
+
+    print()
+    if failures:
+        print(f"{len(failures)} check(s) FAILED: {', '.join(failures)}")
+        return 1
+    print("all checks passed")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--retrieval-only", action="store_true")
+    parser.add_argument("--selftest", action="store_true",
+                        help="Run the pure regression checks and exit (no model needed)")
     args = parser.parse_args()
+
+    if args.selftest:
+        sys.exit(selftest())
 
     if not os.path.exists(TEST_DOC):
         print(f"Test document not found: {TEST_DOC}")

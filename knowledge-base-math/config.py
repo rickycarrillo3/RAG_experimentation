@@ -20,6 +20,8 @@ Env vars
     APP_PORT          Gradio port                         (default: 7860)
     APP_AUTH          "user:pass" pairs, comma-separated  (default: unset = no auth)
     REQUIRE_GPU       1 = refuse to run on CPU            (default: unset = allow CPU)
+    KBM_NUM_PREDICT   decode cap, in tokens               (default: 350)
+    KBM_KEEP_ALIVE    how long Ollama holds the weights   (default: 30m)
 """
 
 import os
@@ -35,6 +37,21 @@ BM25_DIR = os.environ.get("BM25_DIR") or os.path.join(DATA_DIR, "bm25_indexes")
 # Defaults to the local daemon, which is the pod layout (app and Ollama on the same
 # box, sharing the GPU). Set it to point the app at a separate inference host.
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# ── Generation ─────────────────────────────────────────────────────────────────
+# These lived in three places at once (api/settings.py, query.py, and test_chat.py via
+# query.py), one of which hardcoded 350 — so raising the cap fixed the API and silently
+# left the CLI alone. Defined once here, imported everywhere, per CLAUDE.md.
+#
+# NUM_PREDICT is the direct lever on decode time, which LATENCY.md measures as the
+# dominant cost (~38 ms/token on the Mac, ~10x less on the pod). It is a *cap*, not a
+# target: hitting it means the answer was cut off, which api/routes.py now detects via
+# Ollama's done_reason and continues from. Do not raise this to "fix" truncation — it
+# moves the cliff without removing it.
+NUM_PREDICT = int(os.environ.get("KBM_NUM_PREDICT", "350"))
+# Keep this >= KBM_IDLE_STOP_MINUTES: a keep-alive shorter than the idle window unloads
+# the model while the pod keeps billing, so the next question pays a reload for nothing.
+KEEP_ALIVE = os.environ.get("KBM_KEEP_ALIVE", "30m")
 
 # ── Serving ────────────────────────────────────────────────────────────────────
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
