@@ -716,3 +716,113 @@ because it **cannot be backfilled**. Two payoffs:
    should reproduce within noise; a shift means the harness changed, not the system.
 
 Step 1 gates 2–4. Nothing in 2–4 is safe to interpret before step 1 lands.
+
+---
+
+## 11. Self-consistency: is majority voting worth k× the decode?
+
+Everything above measures **retrieval**. This section measures the other half of a wrong
+answer: the generator. `deepseek-math-7b-rl` is a solver, and when it is wrong it is often
+wrong *unstably* — re-sample the same question at a non-zero temperature and the wrong
+answers scatter while the right one repeats. **Self-consistency** (Wang et al., 2022)
+exploits that: sample k chains of thought, take the majority final answer.
+
+It is the cheapest accuracy fix available to this project — no new model, no fine-tune, no
+labelled data — and also a **k× multiplier on the single most expensive stage in the
+system**: generation is ~95% of query time (`LATENCY.md`). So the question is never "does
+it help" but "does it help *enough here*". `evaluation/self_consistency.py` answers that.
+
+```bash
+# from knowledge-base-math/
+python evaluation/self_consistency.py                    # 20 questions × (1 greedy + 10 sampled)
+python evaluation/self_consistency.py --limit 5          # smoke run
+python evaluation/self_consistency.py --ks 1 3 5 --samples 5
+bash evaluation/eval.sh --skip-sweep --self-consistency  # on the pod
+```
+
+### 11.1 The question set — and why it is closed-book
+
+`evaluation/reasoning_set.jsonl`: 20 hand-written, closed-ended reasoning questions with a
+single verifiable answer (arithmetic, algebra, calculus, combinatorics, number theory,
+probability, word problems), each with `aliases` for equivalent forms (`5/16` ≡ `0.3125`).
+
+**No retrieval is involved, deliberately.** The thing under test is the model's reasoning
+stability. Route these through the RAG pipeline and a wrong answer could be the retriever's
+fault, which is exactly the confound that makes a result unactionable. Retrieval quality is
+§4's job; this is the generator in isolation.
+
+It is also a **different kind of gold set from `goldset.jsonl`**, and the distinction
+matters: §3's caveats (machine-generated questions, vocabulary leakage, hand-cleaning) do
+not apply here, because these questions were written by hand against known answers rather
+than generated *from* chunks. What does apply is size — 20 questions is a small exam, and a
+±0.05 difference is inside the noise. Treat the output as a go/no-go signal, not an effect
+size.
+
+### 11.2 How k=1 / 5 / 10 are compared fairly
+
+The naive protocol generates 1, then 5, then 10 answers per question — 16 generations, and a
+k=1 number estimated from a single sample, which on 20 questions is almost pure variance.
+
+Instead the script draws **N samples once** per question and estimates majority-vote accuracy
+at each k by **resampling k of those N without replacement** (400 draws per question × k).
+Same generations, far tighter estimates, and every k is scored against the *identical* pool
+of model outputs — so a gap between k=1 and k=10 is the voting, not sampling luck.
+
+A **greedy (temperature 0) run is scored separately**, because that is what ships today. The
+sampled k=1 row is the control for the voting mechanism itself (same temperature, no vote);
+greedy is the baseline the change would have to beat in production. Reporting only sampled
+k=1 would flatter self-consistency, since raising the temperature costs accuracy before
+voting wins it back.
+
+Voting details that decide whether the measurement is honest at all:
+
+- **Answers are normalized to numbers before they vote.** If `5/16` and `0.3125` count as
+  different votes the majority splits and self-consistency measures the parser, not the
+  model. `\boxed{}` first (deepseek-math emits it natively), then a `Final answer:` line,
+  then the last number in the text; LaTeX fractions and `$…$` are stripped, values compared
+  numerically with tolerance.
+- **Unparseable samples do not vote.** A model that never stated an answer has not cast one.
+  The unparseable rate is reported next to accuracy — if it is high, fix the prompt before
+  reading anything else.
+- **Ties break toward the first-seen answer**, which is what a real streaming implementation
+  would do.
+
+### 11.3 Reading the output
+
+The table gives accuracy for greedy and for each k, with the generation count and estimated
+serial seconds per query. The part that decides the answer is the **ERROR STRUCTURE** block:
+
+- **fixed by voting** (greedy wrong → vote right) — the win, question by question.
+- **broken by voting** (greedy right → vote wrong) — the cost nobody budgets for. Sampling
+  can lose a question greedy got right.
+- **confidently wrong** (≥80% of samples agree on a wrong answer) — **the ceiling.** These
+  are stable errors: the model is not guessing, it is reliably mistaken. No amount of extra
+  sampling touches them, and their count is the hard floor on what self-consistency can
+  deliver. A set where most errors are confident means the answer is "no" regardless of the
+  accuracy delta.
+- **mean distinct answers per question** — the diversity the method depends on. Near 1.0
+  means the samples are effectively deterministic and voting is a no-op; raise the
+  temperature or stop.
+
+### 11.4 How to act on the result
+
+- **Gain < 5 points** → **don't implement.** A multi-x bill on the stage that already owns
+  95% of latency, for a difference inside the noise of a 20-question set.
+- **5–10 points** → **make it opt-in, not the default.** A "check my work" button that
+  spends 5× decode on demand, rather than paying it on every family question.
+- **> 10 points** → **implement**, and check whether a smaller k captures most of it — the
+  accuracy/k curve is usually steeply diminishing (k=5 typically gets most of k=10's win at
+  half the cost).
+- **Most errors are "confidently wrong"** → self-consistency is the wrong lever entirely.
+  Look at the prompt, at a larger/better generator, or at whether retrieval should have been
+  supplying the fact in the first place.
+
+Two things this section does *not* measure, and both matter before shipping:
+
+1. **Interaction with retrieval.** These questions are closed-book; a grounded question's
+   errors may be differently distributed (the context may already stabilize the model,
+   shrinking the win). Re-check on grounded questions before making it the default path.
+2. **Streaming.** `/chat` streams SSE token-by-token (`api/routes.py`). Majority voting
+   cannot stream — the answer does not exist until every sample is complete — so adopting it
+   changes the UX from "tokens appear immediately" to "nothing for k× the latency, then an
+   answer." That is a product decision, not just a cost one.

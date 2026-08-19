@@ -11,6 +11,7 @@
 #     bash evaluation/eval.sh                 # GPU checks + the 9-combo sweep
 #     bash evaluation/eval.sh --answers       # also run eval.py --all --answers (LLM-judged, needs Ollama)
 #     bash evaluation/eval.sh --skip-sweep --answers   # answers only
+#     bash evaluation/eval.sh --skip-sweep --self-consistency  # generator-only: does majority voting help?
 #     bash evaluation/eval.sh --allow-cpu     # run even if CUDA is absent (for a local dry-run)
 #
 # Overridable via env:
@@ -18,19 +19,22 @@
 #     EVAL_USER     index/user name for the --answers run   (default: calctest)
 #     EVAL_DOC      source .mmd for the --answers ingest     (default: docs/extracted/calculus_chainrule.mmd)
 #     NORMALIZE=1   LaTeX-normalize embeddings in the --answers run (matches ingest+query)
+#     SC_SAMPLES    samples per question for --self-consistency   (default: 10)
 #
 set -euo pipefail
 
 # ── Options ────────────────────────────────────────────────────────────────────
 RUN_SWEEP=1
 RUN_ANSWERS=0
+RUN_SC=0
 ALLOW_CPU=0
 for arg in "$@"; do
   case "$arg" in
     --answers)    RUN_ANSWERS=1 ;;
     --skip-sweep) RUN_SWEEP=0 ;;
+    --self-consistency) RUN_SC=1 ;;
     --allow-cpu)  ALLOW_CPU=1 ;;
-    -h|--help)    sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -40,6 +44,7 @@ EVAL_USER="${EVAL_USER:-calctest}"
 EVAL_DOC="${EVAL_DOC:-docs/extracted/calculus_chainrule.mmd}"
 GOLDSET="evaluation/goldset.jsonl"
 NORMALIZE="${NORMALIZE:-0}"
+SC_SAMPLES="${SC_SAMPLES:-10}"
 
 # ── Model caches on the persistent volume (survive pod restarts) ────────────────
 export OLLAMA_MODELS="${OLLAMA_MODELS:-/workspace/ollama-models}"
@@ -118,7 +123,7 @@ if [ "${#EMBED_MODELS[@]}" -gt 0 ]; then
 fi
 
 # Ollama models — only the --answers run needs them; pull before testing, not during.
-if [ "$RUN_ANSWERS" -eq 1 ]; then
+if [ "$RUN_ANSWERS" -eq 1 ] || [ "$RUN_SC" -eq 1 ]; then
   echo "   Ollama (into OLLAMA_MODELS=$OLLAMA_MODELS):"
   if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo "     starting ollama serve..."
@@ -126,7 +131,10 @@ if [ "$RUN_ANSWERS" -eq 1 ]; then
     until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
   fi
   ollama pull t1c/deepseek-math-7b-rl:Q4   # generator (~4.5GB)
-  ollama pull qwen2:7b                       # LLM judge (~4.4GB)
+  # The judge is only needed for --answers; self-consistency grades against known answers.
+  if [ "$RUN_ANSWERS" -eq 1 ]; then
+    ollama pull qwen2:7b                     # LLM judge (~4.4GB)
+  fi
 fi
 echo "   All required models present."
 
@@ -155,6 +163,19 @@ if [ "$RUN_ANSWERS" -eq 1 ]; then
   echo "   Running eval.py --all --answers..."
   $PY evaluation/eval.py --user "$EVAL_USER" --all --answers --embed-model "$EMBED_MODEL" $NORM_FLAG
   echo "   → evaluation/results/results_*.json + failures_*.json  (answer_score_1to5 = qwen2-judged quality)"
+fi
+
+# ── 6. Self-consistency: does majority voting beat greedy? (generator only) ─────
+if [ "$RUN_SC" -eq 1 ]; then
+  hr; echo "6. Self-consistency ($SC_SAMPLES samples/question, closed-book — no retrieval)"
+
+  if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    ollama serve > /dev/null 2>&1 &
+    until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
+  fi
+
+  $PY evaluation/self_consistency.py --samples "$SC_SAMPLES"
+  echo "   → evaluation/results/self_consistency.json  (read the VERDICT block, not just the table)"
 fi
 
 hr
