@@ -84,6 +84,8 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. |
+| `KBM_MAX_CONTINUATIONS` | How many times the server may resume an answer cut off at `KBM_NUM_PREDICT`. `0` = label it truncated instead. |
+| `KBM_SHOW_DIAGNOSTICS` | `1` appends the technical cause to upload status messages. Off by default — the family sees plain sentences, the log keeps the exception. |
 | `KBM_TELEMETRY_SALT` | Salt for hashing usernames in the event log. Set it per deployment. |
 | `OLLAMA_MODELS`, `HF_HOME` | Must point at the volume, or ~15GB of weights re-download on every wake (`SETUP.md`). |
 

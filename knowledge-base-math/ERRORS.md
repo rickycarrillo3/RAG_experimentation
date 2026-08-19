@@ -88,9 +88,21 @@ TypeScript client is generated from. Adding an enum member breaks an exhaustive 
 adding an optional field is ignored by clients that predate it. So a half-good ingest is
 `status="done"` **plus** `degraded=true`, never a new status value.
 
+**Follow-up, same day.** The first fix over-corrected: it put the raw Marker exception —
+`docker binary not found. Install Docker (https://docs.docker.com/get-docker/)…` — straight
+into the status box that tells a family member their upload worked. Correct information,
+wrong audience. `Job` now carries **two** strings: `detail`, a plain sentence for whoever
+uploaded the file, and `diagnostic`, the exception text for the log and for operators
+(`KBM_SHOW_DIAGNOSTICS=1` surfaces it in the UI). The client-side messages were leaking too
+— a raw FastAPI error body from `Upload rejected: {r.text}`, a bare `httpx` exception, and
+an internal `GET /jobs/{id}` instruction.
+
 **Lesson.** The same one the marker-pdf entry below reaches from the other direction: a
 fallback that "works" is more dangerous than a crash. Make the degradation part of the
-return value, or every layer above will faithfully report success.
+return value, or every layer above will faithfully report success. And the corollary the
+follow-up taught: "surface the error" and "show the user the exception" are not the same
+instruction. One string cannot serve both a family member and an operator — an install URL
+in a success message is noise to everyone who cannot act on it.
 
 ---
 

@@ -139,6 +139,12 @@ class Job(BaseModel):
     stage: str | None = Field(
         None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index"
     )
+    diagnostic: str | None = Field(
+        None,
+        description="Technical cause — exception text, tool errors, install URLs. For "
+                    "operators and logs. NOT for display: `detail` is the user-facing "
+                    "sentence, and clients should render that instead.",
+    )
 
 
 class UserStatus(BaseModel):
