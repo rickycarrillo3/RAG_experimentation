@@ -735,28 +735,64 @@ it help" but "does it help *enough here*". `evaluation/self_consistency.py` answ
 ```bash
 # from knowledge-base-math/
 python evaluation/self_consistency.py                    # 20 questions × (1 greedy + 10 sampled)
+python evaluation/self_consistency.py --easy              # grade-school regression tier
 python evaluation/self_consistency.py --limit 5          # smoke run
-python evaluation/self_consistency.py --ks 1 3 5 --samples 5
-bash evaluation/eval.sh --skip-sweep --self-consistency  # on the pod
+python evaluation/self_consistency.py --dry-run          # validate the set, generate nothing
+python evaluation/verify_reasoning_set.py                # recompute every gold answer
+bash evaluation/eval.sh --skip-sweep --self-consistency  # on the pod (baseline tier)
+bash evaluation/eval.sh --skip-sweep --self-consistency --sc-easy
 ```
 
-### 11.1 The question set — and why it is closed-book
+### 11.1 Two tiers, and why the distinction decides what a number means
 
-`evaluation/reasoning_set.jsonl`: 20 hand-written, closed-ended reasoning questions with a
-single verifiable answer (arithmetic, algebra, calculus, combinatorics, number theory,
-probability, word problems), each with `aliases` for equivalent forms (`5/16` ≡ `0.3125`).
+| flag | file | n | role |
+|---|---|---|---|
+| `--baseline` (default) | `reasoning_set_college.jsonl` | 30 | **The set that decides things.** |
+| `--easy` | `reasoning_set_easy.jsonl` | 20 | Regression tier. Not a quality score. |
 
-**No retrieval is involved, deliberately.** The thing under test is the model's reasoning
+**`--baseline` is college-level** — multivariable calculus, linear algebra, ODEs, analysis,
+probability, abstract algebra — because that is the real target distribution. A benchmark
+only discriminates near the incumbent's ~50% mark: DeepSeek scores **0.85 on the easy tier**,
+which means three candidate models would all land in 0.85–0.95 and every difference would sit
+inside the noise. A set the incumbent nearly aces cannot rank anything.
+
+**`--easy` is kept, not deleted, as a regression tier.** A change that lifts hard questions
+while breaking basic arithmetic is a bad change, and only the easy tier can see it. Read it
+as a tripwire, never as evidence of quality — it is near ceiling by design.
+
+Both tiers are **closed-book, deliberately.** The thing under test is the model's reasoning
 stability. Route these through the RAG pipeline and a wrong answer could be the retriever's
 fault, which is exactly the confound that makes a result unactionable. Retrieval quality is
 §4's job; this is the generator in isolation.
 
-It is also a **different kind of gold set from `goldset.jsonl`**, and the distinction
-matters: §3's caveats (machine-generated questions, vocabulary leakage, hand-cleaning) do
-not apply here, because these questions were written by hand against known answers rather
-than generated *from* chunks. What does apply is size — 20 questions is a small exam, and a
-±0.05 difference is inside the noise. Treat the output as a go/no-go signal, not an effect
-size.
+They are also a **different kind of gold set from `goldset.jsonl`**: §3's caveats
+(machine-generated questions, vocabulary leakage, hand-cleaning) do not apply, because these
+were written by hand against known answers rather than generated *from* chunks.
+
+**The answer key is derived, not trusted.** `evaluation/verify_reasoning_set.py` recomputes
+every answer in both tiers with sympy, from an independent formulation that never reads the
+JSONL, and exits non-zero on any disagreement or any question lacking a verification. This is
+not ceremony: a wrong key marks a *right* model wrong, sends you hunting a model bug that
+does not exist, and silently corrupts accuracy, the self-consistency delta, and the model
+bake-off alike. It has already earned its place — it caught a bad determinant in the first
+draft of the college set. **Edit a question, edit the verification, and keep them agreeing.**
+
+What still applies is size: 30 questions is a small exam, and a ±0.05 difference is inside
+the noise. Treat the output as a go/no-go signal, not an effect size.
+
+### 11.1b Scope: closed-ended only
+
+College math is substantially proof-based, and "prove that the sequence converges" has no
+boxed answer. Both tiers are therefore **closed-ended by construction**, which bounds what
+this section can speak to:
+
+- Closed-ended numeric/symbolic questions → this harness works, and self-consistency applies.
+- Proof and derivation questions → need LLM-judged grading (§10.6), and **majority voting is
+  simply inapplicable** — you cannot vote on a proof.
+
+Before treating a self-consistency result as a decision about the product, check what
+fraction of real queries is which. `telemetry.py` is already logging real questions; that is
+the only thing that can answer it (§8, §10.9).
 
 ### 11.2 How k=1 / 5 / 10 are compared fairly
 
@@ -820,11 +856,15 @@ serial seconds per query. The part that decides the answer is the **ERROR STRUCT
   Look at the prompt, at a larger/better generator, or at whether retrieval should have been
   supplying the fact in the first place.
 
-### 11.5 Baseline run — 2026-08-19, Mac (Metal), `t1c/deepseek-math-7b-rl:Q4`
+### 11.5 EASY-TIER run — 2026-08-19, Mac (Metal), `t1c/deepseek-math-7b-rl:Q4`
+
+⚠️ **This is the `--easy` tier, not `--baseline`.** It predates the college set and its
+verdict does **not** carry over — see the scoping note at the end of this section. Kept
+because it is a real measurement and the easy tier's regression role needs a reference point.
 
 20 questions × (1 greedy + 10 sampled at T=0.8/top_p=0.95), 220 generations, 31.6 min wall
-clock, ~8.2 s/generation. `--report-only evaluation/results/self_consistency.json` re-prints
-this without regenerating anything.
+clock, ~8.2 s/generation. `--report-only evaluation/results/self_consistency_easy.json`
+re-prints this without regenerating anything.
 
 | setting | accuracy | vs greedy | gens/q | est. serial s/query |
 |---|---|---|---|---|
@@ -884,6 +924,15 @@ Two findings that generalize beyond the go/no-go:
 
 The actionable form, if it is wanted later, is an opt-in **"check my work"** button at k=5:
 paid per request rather than per query, on the questions a user already doubts.
+
+**Scope warning — this verdict is measured on the wrong population.** Self-consistency pays
+off in the *middle* of the accuracy range: it needs the right answer to be present in the
+sample pool but not to be the single-sample favourite. At 0.85 there is almost no headroom,
+and the two failures here were "never right" — the answer absent from the pool entirely.
+Both are regimes where voting is structurally useless, and this tier contained only those
+two regimes. On `--baseline`, where the model is expected nearer 0.5, the same measurement
+could land very differently. **Re-run on the college tier before treating "don't implement"
+as settled.** The harness is unchanged; it is one command.
 
 Two things this section does *not* measure, and both matter before shipping:
 

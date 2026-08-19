@@ -11,7 +11,8 @@
 #     bash evaluation/eval.sh                 # GPU checks + the 9-combo sweep
 #     bash evaluation/eval.sh --answers       # also run eval.py --all --answers (LLM-judged, needs Ollama)
 #     bash evaluation/eval.sh --skip-sweep --answers   # answers only
-#     bash evaluation/eval.sh --skip-sweep --self-consistency  # generator-only: does majority voting help?
+#     bash evaluation/eval.sh --skip-sweep --self-consistency           # college tier (the deciding one)
+#     bash evaluation/eval.sh --skip-sweep --self-consistency --sc-easy  # grade-school regression tier
 #     bash evaluation/eval.sh --allow-cpu     # run even if CUDA is absent (for a local dry-run)
 #
 # Overridable via env:
@@ -27,12 +28,14 @@ set -euo pipefail
 RUN_SWEEP=1
 RUN_ANSWERS=0
 RUN_SC=0
+SC_TIER="--baseline"
 ALLOW_CPU=0
 for arg in "$@"; do
   case "$arg" in
     --answers)    RUN_ANSWERS=1 ;;
     --skip-sweep) RUN_SWEEP=0 ;;
     --self-consistency) RUN_SC=1 ;;
+    --sc-easy)    SC_TIER="--easy" ;;
     --allow-cpu)  ALLOW_CPU=1 ;;
     -h|--help)    sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)"; exit 2 ;;
@@ -167,15 +170,18 @@ fi
 
 # ── 6. Self-consistency: does majority voting beat greedy? (generator only) ─────
 if [ "$RUN_SC" -eq 1 ]; then
-  hr; echo "6. Self-consistency ($SC_SAMPLES samples/question, closed-book — no retrieval)"
+  hr; echo "6. Self-consistency ($SC_TIER, $SC_SAMPLES samples/question, closed-book — no retrieval)"
+
+  # A wrong answer key marks a right model wrong. Verify before spending GPU hours on it.
+  $PY evaluation/verify_reasoning_set.py
 
   if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
     ollama serve > /dev/null 2>&1 &
     until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
   fi
 
-  $PY evaluation/self_consistency.py --samples "$SC_SAMPLES"
-  echo "   → evaluation/results/self_consistency.json  (read the VERDICT block, not just the table)"
+  $PY evaluation/self_consistency.py $SC_TIER --samples "$SC_SAMPLES"
+  echo "   → evaluation/results/self_consistency_*.json  (read the VERDICT block, not just the table)"
 fi
 
 hr

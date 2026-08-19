@@ -13,18 +13,30 @@ already ~95% of query time (LATENCY.md). So the question is not "does it help" �
 numbers instead of vibes.
 
     (run from knowledge-base-math/)
-    python evaluation/self_consistency.py                       # 20 questions, 10 samples each
-    python evaluation/self_consistency.py --samples 10 --temperature 0.8
-    python evaluation/self_consistency.py --limit 5             # quick smoke run
-    python evaluation/self_consistency.py --concurrency 4       # needs OLLAMA_NUM_PARALLEL>1
+    python evaluation/self_consistency.py                    # baseline (college) tier, 10 samples
+    python evaluation/self_consistency.py --easy             # grade-school regression tier
+    python evaluation/self_consistency.py --limit 5          # quick smoke run
+    python evaluation/self_consistency.py --concurrency 4    # needs OLLAMA_NUM_PARALLEL>1
+    python evaluation/self_consistency.py --report-only evaluation/results/self_consistency_baseline.json
 
 What it measures
 ----------------
-CLOSED-BOOK, on purpose. The questions in evaluation/reasoning_set.jsonl are hand-written
-with verifiable short answers and no document context, because the thing under test is the
-model's *reasoning stability*, not retrieval. Mixing retrieval in would mean a wrong answer
-could be the retriever's fault, and the whole point is to isolate the generator. Retrieval
-quality is eval.py's job.
+CLOSED-BOOK, on purpose. The questions are hand-written with verifiable short answers and no
+document context, because the thing under test is the model's *reasoning stability*, not
+retrieval. Mixing retrieval in would mean a wrong answer could be the retriever's fault, and
+the whole point is to isolate the generator. Retrieval quality is eval.py's job.
+
+Two tiers, and the distinction decides what a number means:
+  --baseline (default)  evaluation/reasoning_set_college.jsonl — college-level. THE set that
+                        decides model choice and whether voting pays, because a benchmark
+                        only discriminates near the incumbent's ~50% mark.
+  --easy                evaluation/reasoning_set_easy.jsonl — grade-school. A REGRESSION
+                        tier: it catches a change that wins on hard questions while breaking
+                        basic arithmetic. It sits near ceiling by design, so a high score
+                        there is not evidence of quality.
+
+Both answer keys are recomputed independently by evaluation/verify_reasoning_set.py — a
+wrong key marks a right model wrong and corrupts everything downstream.
 
 How k=1/5/10 are compared fairly
 --------------------------------
@@ -39,13 +51,14 @@ A greedy (temperature=0) run is included separately as the honest baseline, beca
 what ships today: today's system is greedy k=1, not sampled k=1.
 
 Verdict, not a table dump: the script ends by stating whether the accuracy gained per extra
-generation clears a bar worth paying for, and where the remaining errors live (a question
-the model gets confidently and unanimously wrong is NOT fixable by voting — that is the
-part of the error budget self-consistency cannot touch).
+generation clears a bar worth paying for, and where the remaining errors live. Voting can
+only reorder the sample pool, so an answer the model never produces — or produces and
+agrees is something else — is outside its reach no matter how large k gets.
 """
 
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -67,8 +80,21 @@ from retrieval import OLLAMA_MODEL
 
 EVAL_DIR = "evaluation"
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")
-QUESTION_SET_PATH = os.path.join(EVAL_DIR, "reasoning_set.jsonl")
-RESULTS_PATH = os.path.join(RESULTS_DIR, "self_consistency.json")
+
+# Two tiers, because they answer different questions and one cannot replace the other.
+#   baseline - the real target distribution: college-level (multivariable, linear algebra,
+#              ODEs, analysis, probability). This is the set that DECIDES things — model
+#              choice, whether self-consistency pays — because a benchmark only
+#              discriminates near the incumbent's ~50% mark, not at its ceiling.
+#   easy     - the original grade-school/early-undergrad set. Kept as a REGRESSION tier:
+#              a change that lifts the hard set while breaking basic arithmetic is a bad
+#              change, and only the easy tier can see that. Near-ceiling by design, so it
+#              is useless for ranking models — do not read it as a quality score.
+TIERS = {
+    "baseline": os.path.join(EVAL_DIR, "reasoning_set_college.jsonl"),
+    "easy": os.path.join(EVAL_DIR, "reasoning_set_easy.jsonl"),
+}
+DEFAULT_TIER = "baseline"
 
 DEFAULT_SAMPLES = 10
 DEFAULT_KS = [1, 5, 10]
@@ -161,12 +187,19 @@ def normalize_answer(raw: str) -> str | None:
     return s.lower()
 
 
+_CONSTS = {"pi": math.pi, "π": math.pi, "e": math.e}
+
+
 def to_number(s: str) -> float | None:
     """Best-effort numeric value of an answer string; None if it is not a number.
 
-    Handles plain numbers, thousands separators, percentages, and simple a/b fractions.
-    Deliberately does NOT eval() arbitrary expressions — a symbolic answer staying symbolic
-    is fine (string voting still works), but eval on model output is a code-execution hole.
+    Handles plain numbers, thousands separators, percentages, a/b fractions, and short
+    products/quotients of numbers and the constants π and e — because college answers come
+    back as "\\pi/2" or "2\\pi" at least as often as "1.5708", and scoring those wrong would
+    make the harness measure its own parser instead of the model (the r20 lesson).
+
+    Deliberately does NOT eval() — the factors are parsed and multiplied by hand. eval() on
+    model output is a code-execution hole, and no benchmark is worth one.
     """
     t = s.replace(",", "").replace(" ", "").rstrip("%")
     is_pct = s.strip().endswith("%")
@@ -183,7 +216,61 @@ def to_number(s: str) -> float | None:
             return None
         val = num / den
         return val / 100 if is_pct else val
+
+    val = _product_of_factors(t)
+    if val is not None:
+        return val / 100 if is_pct else val
     return None
+
+
+def _product_of_factors(t: str) -> float | None:
+    """Value of a chain like "2*pi/3", "\\pi/2" or "2pi", or None if it is not one.
+
+    Only numbers and the constants π/e are accepted as factors; anything else (a variable,
+    a function call, a root) returns None and the answer stays a string, which is the safe
+    outcome — string voting still works, it just will not unify with a decimal.
+    """
+    t = t.replace("\\pi", "pi").replace("\\cdot", "*").replace("\\times", "*")
+    t = re.sub(r"(?<=[\d)])\s*(?=(?:pi|π))", "*", t)      # implicit "2pi" -> "2*pi"
+    t = t.replace("(", "").replace(")", "")
+    if not re.fullmatch(r"-?[\d.]*(?:pi|π|e)?(?:[*/][\d.]*(?:pi|π|e)?)*", t) or not t:
+        return None
+
+    tokens = re.split(r"([*/])", t)
+    if not tokens or tokens[0] == "":
+        return None
+    try:
+        value = _factor(tokens[0])
+        for op, raw in zip(tokens[1::2], tokens[2::2]):
+            f = _factor(raw)
+            if f is None or value is None:
+                return None
+            if op == "*":
+                value *= f
+            else:
+                if f == 0:
+                    return None
+                value /= f
+        return value
+    except (ValueError, TypeError):
+        return None
+
+
+def _factor(raw: str) -> float | None:
+    """One factor: a number, a constant, or a number glued to a constant ("-2pi")."""
+    if raw in _CONSTS:
+        return _CONSTS[raw]
+    m = re.fullmatch(r"(-?[\d.]*)(pi|π|e)?", raw)
+    if not m:
+        return None
+    coeff, const = m.group(1), m.group(2)
+    if coeff in ("", "-", "+"):
+        if const is None:
+            return None
+        base = 1.0 if coeff != "-" else -1.0
+    else:
+        base = float(coeff)
+    return base * _CONSTS[const] if const else base
 
 
 def gold_forms(item: dict) -> set[str]:
@@ -403,18 +490,30 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
 
 def main():
     p = argparse.ArgumentParser(description="Measure whether self-consistency voting helps.")
-    p.add_argument("--questions", default=QUESTION_SET_PATH)
+    tier = p.add_mutually_exclusive_group()
+    tier.add_argument("--baseline", dest="tier", action="store_const", const="baseline",
+                      help="College-level set (default) — the tier that decides things.")
+    tier.add_argument("--easy", dest="tier", action="store_const", const="easy",
+                      help="Grade-school regression tier. Near ceiling; not for ranking models.")
+    p.set_defaults(tier=DEFAULT_TIER)
+    p.add_argument("--questions", help="Explicit question file, overriding the tier flags.")
     p.add_argument("--samples", type=int, default=DEFAULT_SAMPLES,
                    help="Samples generated per question (must be >= max k)")
     p.add_argument("--ks", type=int, nargs="+", default=DEFAULT_KS,
                    help="Vote sizes to score, e.g. --ks 1 5 10")
     p.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     p.add_argument("--top-p", type=float, default=DEFAULT_TOP_P)
+    # A positive int, so that `--limit 0` is a loud error rather than silently falling
+    # through to a full 30-question, ~50-minute run.
     p.add_argument("--limit", type=int, help="Only the first N questions (smoke run)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Resolve the tier, load and validate the questions, then stop "
+                        "without generating anything.")
     p.add_argument("--concurrency", type=int, default=1,
                    help="Parallel samples per question; >1 needs OLLAMA_NUM_PARALLEL set")
     p.add_argument("--seed", type=int, default=0, help="Seed for the resampling, not the model")
-    p.add_argument("--out", default=RESULTS_PATH)
+    p.add_argument("--out", help="Results JSON (default: per-tier, so tiers never clobber "
+                                 "each other's runs).")
     p.add_argument("--report-only", metavar="RESULTS_JSON",
                    help="Re-print the report from a previous run's JSON, generating nothing. "
                         "The samples are the expensive part (~30 min); re-scoring them at "
@@ -422,6 +521,13 @@ def main():
     args = p.parse_args()
 
     ks = sorted(set(args.ks))
+    if args.limit is not None and args.limit < 1:
+        p.error("--limit must be >= 1 (0 would silently run the whole tier).")
+    questions_path = args.questions or TIERS[args.tier]
+    tier_label = "custom" if args.questions else args.tier
+    # Per-tier default output: one shared filename would mean an easy run silently
+    # destroying the baseline run it is supposed to be compared against.
+    out_path = args.out or os.path.join(RESULTS_DIR, f"self_consistency_{tier_label}.json")
 
     if args.report_only:
         with open(args.report_only, encoding="utf-8") as f:
@@ -445,17 +551,23 @@ def main():
         p.error(f"--ks max ({max(ks)}) exceeds --samples ({args.samples}); "
                 "raise --samples or lower --ks.")
 
-    with open(args.questions, encoding="utf-8") as f:
+    with open(questions_path, encoding="utf-8") as f:
         items = [json.loads(line) for line in f if line.strip()]
     if args.limit:
         items = items[:args.limit]
     if not items:
-        p.error(f"No questions in {args.questions}")
+        p.error(f"No questions in {questions_path}")
 
-    print(f"Loaded {len(items)} questions from {args.questions}")
+    print(f"Loaded {len(items)} questions from {questions_path}  [tier: {tier_label}]")
     print(f"Generator: {OLLAMA_MODEL} @ {OLLAMA_BASE_URL}")
     print(f"Plan: {len(items)} × (1 greedy + {args.samples} sampled) = "
           f"{len(items) * (args.samples + 1)} generations. This takes a while.")
+    if args.dry_run:
+        bad = [it["id"] for it in items if not gold_forms(it)]
+        print("Dry run: questions load and "
+              + ("all golds normalize." if not bad else f"BAD GOLDS: {bad}"))
+        print(f"Would write {out_path}")
+        return
 
     greedy_chain = build_chain(0.0, 1.0)
     sample_chain = build_chain(args.temperature, args.top_p)
@@ -489,21 +601,22 @@ def main():
         "top_p": args.top_p,
         "trials": RESAMPLE_TRIALS,
         "num_predict": NUM_PREDICT,
-        "questions": args.questions,
+        "questions": questions_path,
+        "tier": tier_label,
         "n_questions": len(items),
         "wall_clock_s": round(wall, 1),
     }
     print_report(per_q, acc_at_k, ks, cfg)
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump({
             "config": cfg,
             "greedy_accuracy": sum(q["greedy_correct"] for q in per_q) / len(per_q),
             "accuracy_at_k": {str(k): acc_at_k[k] for k in ks},
             "per_question": per_q,
         }, f, indent=2, ensure_ascii=False)
-    print(f"\nWrote {args.out}  (wall clock {wall / 60:.1f} min)")
+    print(f"\nWrote {out_path}  (wall clock {wall / 60:.1f} min)")
 
 
 if __name__ == "__main__":
