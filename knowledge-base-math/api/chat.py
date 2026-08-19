@@ -57,6 +57,64 @@ Conversation so far:
 # the label is guaranteed rather than merely measured.
 GENERAL_MODE_MARKER = "_Not from your uploaded documents — answering from general knowledge._\n\n"
 
+# Same reasoning as GENERAL_MODE_MARKER, for the same reason: the server knows the
+# answer was cut off (Ollama says so, via done_reason == "length"), and the model cannot
+# be relied on to say it. Appended — not prepended — because it is a fact about the end
+# of the answer, and because prepending it would change the prompt prefix that the next
+# turn's KV cache depends on.
+TRUNCATION_MARKER = (
+    "\n\n_This answer was cut off at the length limit. "
+    'Ask "please continue" for the rest._'
+)
+
+
+class PrefillEcho:
+    """Strips the assistant-prefill that Ollama echoes back when resuming a generation.
+
+    To continue a truncated answer we send the partial text back as an assistant
+    message and let the model keep writing. Ollama treats a trailing assistant message
+    as a *prefill* — which is what makes seamless continuation possible at all — but it
+    replays the whole prefill at the head of the stream before emitting anything new.
+    Forwarded unfiltered, the student sees the first half of the answer twice.
+
+    Verified on ollama 0.32.6 with deepseek-math-7b-rl: the echo is byte-identical to
+    what was sent, including a leading space, and arrives in the first one or two
+    chunks. That is an observation, not a guarantee — hence `mismatch`.
+
+    On mismatch (a different Ollama build that opens a fresh turn instead of prefilling,
+    or retokenisation at the boundary) this emits NOTHING and the caller abandons the
+    continuation, keeping the first-pass answer and labelling it truncated. Degrading to
+    a shorter honest answer is always correct; emitting duplicated text never is.
+    """
+
+    def __init__(self, prefill: str) -> None:
+        self._prefill = prefill
+        self._buf = ""
+        self._done = not prefill      # nothing to strip on the first pass
+        self.mismatch = False
+
+    def feed(self, text: str) -> str:
+        """Return the portion of `text` that is genuinely new."""
+        if self.mismatch:
+            return ""
+        if self._done:
+            return text
+
+        self._buf += text
+        # Still a prefix of what we sent: keep swallowing, emit nothing yet.
+        if len(self._buf) < len(self._prefill):
+            if not self._prefill.startswith(self._buf):
+                self.mismatch = True
+            return ""
+
+        if not self._buf.startswith(self._prefill):
+            self.mismatch = True
+            return ""
+
+        self._done = True
+        return self._buf[len(self._prefill):]
+
+
 SYSTEM_PROMPTS = {
     Mode.GROUNDED: _TEACHING_STYLE + _GROUNDED_RULES,
     Mode.GENERAL: _TEACHING_STYLE + _GENERAL_RULES,

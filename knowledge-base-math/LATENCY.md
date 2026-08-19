@@ -157,8 +157,19 @@ bugs that waste time on *both* machines, which is why they were worth doing rega
 
 ## 5. Tuning notes
 
-- `NUM_PREDICT` (350) is the direct lever on decode time — the dominant cost. Raise it only if
-  answers are visibly truncated; every extra token is ~38 ms on the Mac.
+- `NUM_PREDICT` (350) is the direct lever on decode time — the dominant cost; every extra token
+  is ~38 ms on the Mac. **Raising it is no longer the answer to truncation.** Since 2026-08-19
+  the server detects `done_reason == "length"` and resumes the generation up to
+  `KBM_MAX_CONTINUATIONS` times (default 2), labelling the answer only if it is still cut off.
+  Raising the cap moves the cliff; continuing removes it. Lower `MAX_CONTINUATIONS` to bound
+  worst-case answer latency, not `NUM_PREDICT`.
+- Continuation is cheap because it **appends** to the prompt, which is the same prefix rule as
+  fix 3. Measured on a 1821-token prompt: 7358 ms cold, **47 ms** repeated identically,
+  **160 ms** with a 350-token partial answer appended — against ~13 s to decode those tokens.
+- ⚠️ **`prompt_eval_count` does not tell you whether the cache hit.** It reports *total* prompt
+  tokens, not the ones actually computed: all three rows above report 1821. Only
+  `prompt_eval_duration` distinguishes 7358 ms from 47 ms. Reading the count alone would tell
+  you prefix caching is not working when it is.
 - `HISTORY_KEEP` / `HISTORY_BLOCK` (8/8) trade context for prompt size. They now hold 8–14 messages
   versus the old fixed 6, so the model sees more of the conversation. Lower both to reduce prompt
   tokens; keep them equal and a multiple of 2 for evenly spaced anchors.

@@ -509,6 +509,11 @@ exam everyone passes.
 - **Freeze the `.mmd` files afterwards.** Chunk ids are `<source>::<n>`; re-extracting
   shifts boundaries and silently invalidates every gold label. `SETUP.md` warns about
   this for the parity run — it is now permanent.
+- **This applies to the repo-relative `docs/extracted/` corpus built with the `extract.py`
+  CLI, which is the only corpus the eval harness reads.** Documents uploaded through the
+  web UI are *not* retained (`DEPLOYMENT.md §7`): their `.mmd` is deleted with the ingest
+  job, so they cannot be re-chunked or used as gold-set sources without being uploaded
+  again. Build the eval corpus with the CLI, deliberately, and keep it.
 
 Expected effect: recall comes down off 1.00 and config differences exceed the noise
 floor. **If recall is still ~1.00 after this, the corpus is still too easy and component

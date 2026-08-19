@@ -132,16 +132,23 @@ Numbers from `evaluation/EVALUATION.md §6`.
 | Chunk splitting | CPU | string operations over the `.mmd` |
 | Telemetry writer | CPU | one JSON line appended per answer |
 | Idle-stop watchdog | CPU | a timer — the cheapest thing here, and the entire cost model |
-| Uploaded PDFs | Disk | `docs/raw/<user>/` — **the only irreplaceable bytes** |
-| Extracted `.mmd` | Disk | expensive to regenerate, cheap to keep |
-| Chroma vectors | Disk | rebuildable from the `.mmd` |
-| BM25 pickle | Disk | rebuildable from the `.mmd` |
+| Uploaded PDFs | — | **not retained**; held in a temp dir for the length of the ingest |
+| Extracted `.mmd` | — | **not retained**; deleted with the temp dir |
+| Chroma vectors | Disk | **the only copy** — nothing on the volume rebuilds these |
+| BM25 pickle | Disk | **the only copy**; also holds the chunk *text*, so re-embedding is still possible |
 | Model weights | Disk | on the volume, or ~15 GB re-downloads every wake |
 | Telemetry log | Disk | append-only; future gold set + fine-tune data |
 | Browser tab | Your Mac | renders the token stream, writes nothing |
 
-Back up `docs/raw/` and the `.mmd` files. Everything else in the Disk rows rebuilds from
-them.
+Back up `chroma_db/` and `bm25_indexes/`. That advice is the inverse of what it used to
+be, and the reason matters: uploaded documents are no longer kept, so the indexes are no
+longer derived data — they are the only copy the pod holds. Recovery depends on the family
+still having their own PDFs, which is an assumption rather than a guarantee.
+
+Re-*embedding* survives this: `build_bm25` pickles the chunk text alongside the index, so
+a different embedding model can be applied offline. Re-*chunking* does not — the chunk
+boundaries are frozen at whatever the upload produced, and changing them needs the document
+uploaded again.
 
 ---
 

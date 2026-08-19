@@ -7,7 +7,11 @@ matter of environment variables rather than edited source.
 
 import os
 
-from config import DATA_DIR  # noqa: F401  (re-exported for callers)
+from config import (  # noqa: F401  (re-exported for callers)
+    DATA_DIR,
+    KEEP_ALIVE,
+    NUM_PREDICT,
+)
 
 # NOTE: deployment knobs shared with the CLI and the Gradio client — DATA_DIR,
 # CHROMA_DIR, BM25_DIR, OLLAMA_BASE_URL, APP_HOST/PORT, APP_AUTH, REQUIRE_GPU — live in
@@ -41,8 +45,19 @@ API_TOKEN = os.environ.get("KBM_API_TOKEN", "").strip()
 RELEVANCE_FLOOR = float(os.environ.get("KBM_RELEVANCE_FLOOR", "0.01"))
 
 # ── Generation ────────────────────────────────────────────────────────────────
-NUM_PREDICT = int(os.environ.get("KBM_NUM_PREDICT", "350"))
-KEEP_ALIVE = os.environ.get("KBM_KEEP_ALIVE", "30m")
+# NUM_PREDICT / KEEP_ALIVE are re-exported from config.py, not redeclared here. They
+# used to exist in three places (here, query.py, test_chat.py), so the cap could be
+# raised for the API while the CLI silently kept its own hardcoded 350.
+#
+# How many times the server may resume a generation that stopped because it hit
+# NUM_PREDICT. deepseek-math is a chain-of-thought solver that fills whatever budget it
+# is given, so a cap alone guarantees a cut-off answer sooner or later; continuing is
+# what makes the answer finish. Measured on the Mac: resuming re-prefills only the
+# partial answer (~160 ms for 350 tokens, because it appends to the END of the prompt
+# and the cached prefix survives — see LATENCY.md) against ~13 s to decode the same
+# tokens. So the cap bounds worst-case answer length, and costs almost nothing in
+# prefill. 0 disables continuation and falls back to labelling the answer truncated.
+MAX_CONTINUATIONS = int(os.environ.get("KBM_MAX_CONTINUATIONS", "2"))
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 TELEMETRY_PATH = os.environ.get(

@@ -49,6 +49,9 @@ def log_query(
     model: str,
     n_completion_chars: int,
     error: str | None = None,
+    *,
+    truncated: bool = False,
+    continuations: int = 0,
 ) -> None:
     _append({
         "kind": "query",
@@ -61,6 +64,12 @@ def log_query(
         "timings": timings,
         "model": model,
         "n_completion_chars": n_completion_chars,
+        # Whether the answer hit KBM_NUM_PREDICT, and how many resumes it took to finish.
+        # Logged because nothing else in this project can answer "is 350 the wrong cap?" —
+        # LATENCY.md's advice is "raise it if answers are visibly truncated", which needs
+        # someone to notice. These two fields turn that into a query over the log.
+        "truncated": truncated,
+        "continuations": continuations,
         "error": error,
     })
 
