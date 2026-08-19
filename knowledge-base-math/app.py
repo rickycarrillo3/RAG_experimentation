@@ -15,6 +15,7 @@ than porting it.
 """
 
 import json
+import logging
 import os
 import time
 
@@ -22,6 +23,8 @@ import gradio as gr
 import httpx
 
 from config import APP_HOST, APP_PORT, app_auth
+
+log = logging.getLogger(__name__)
 
 API_URL = os.environ.get("KBM_API_URL", "http://127.0.0.1:8000")
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "")
@@ -44,6 +47,17 @@ def _msg(role: str, content: str) -> dict:
 # tell the user where to look instead. It does NOT cancel the job — the server keeps
 # going, and GET /jobs/{id} still has the answer.
 UPLOAD_POLL_TIMEOUT = float(os.environ.get("KBM_UPLOAD_POLL_TIMEOUT_MIN", "45")) * 60
+
+# The family sees plain sentences; whoever runs the pod can opt into the exception text
+# without reading the server log. Off by default — an install URL or a stack trace in the
+# status box is noise to everyone who cannot act on it.
+SHOW_DIAGNOSTICS = os.environ.get("KBM_SHOW_DIAGNOSTICS", "").strip() not in ("", "0")
+
+
+def _diagnostic(job: dict) -> str:
+    """The technical cause, only when this deployment asked to see it."""
+    d = job.get("diagnostic")
+    return f"\n\n<small>{d}</small>" if (d and SHOW_DIAGNOSTICS) else ""
 
 
 def handle_upload(pdf_file, username: str, last_ingested):
@@ -82,7 +96,13 @@ def handle_upload(pdf_file, username: str, last_ingested):
                     files={"file": (os.path.basename(pdf_file.name), fh, "application/pdf")},
                 )
             if r.status_code != 200:
-                yield f"Upload rejected: {r.text}", last_ingested
+                # r.text is a raw FastAPI error body. Show the message if there is a
+                # readable one, never the JSON envelope.
+                try:
+                    why = r.json().get("detail") or "the server rejected it"
+                except Exception:
+                    why = "the server rejected it"
+                yield f"Could not upload {os.path.basename(pdf_file.name)} — {why}", last_ingested
                 return
             job_id = r.json()["job_id"]
 
@@ -95,31 +115,35 @@ def handle_upload(pdf_file, username: str, last_ingested):
                 status = job["status"]
 
                 if status == "done":
-                    # Never echo `detail` blindly on success. A Marker failure still ends
-                    # up here — the pymupdf4llm fallback indexes fine, it just produces no
-                    # LaTeX — and that used to read as an unqualified success.
-                    if job.get("degraded"):
-                        yield "⚠️ " + job["detail"], pdf_file.name
-                    else:
-                        yield job["detail"], pdf_file.name
+                    # `detail` is the user-facing sentence and `diagnostic` is the
+                    # technical cause; only the first belongs on screen. A Marker failure
+                    # still lands here — the pymupdf4llm fallback indexes fine, it just
+                    # produces no LaTeX — so the warning prefix is what distinguishes it.
+                    prefix = "⚠️ " if job.get("degraded") else "✅ "
+                    yield prefix + job["detail"] + _diagnostic(job), pdf_file.name
                     return
                 if status == "failed":
-                    where = job.get("stage")
-                    where = f" during {where}" if where else ""
-                    yield f"Ingestion failed{where}: {job['detail']}", last_ingested
+                    yield "❌ " + job["detail"] + _diagnostic(job), last_ingested
                     return
 
                 if elapsed > UPLOAD_POLL_TIMEOUT:
                     yield (
-                        f"Still {status} after {elapsed / 60:.0f} min — the job is not "
-                        f"cancelled. Check GET /jobs/{job_id} for the outcome.",
+                        f"Still working after {elapsed / 60:.0f} minutes. The import has "
+                        f"not been cancelled — it should finish on its own.",
                         last_ingested,
                     )
                     return
 
                 yield f"{status.title()}... ({elapsed / 60:.1f} min elapsed)", last_ingested
     except Exception as e:
-        yield f"Ingestion failed: {e}", last_ingested
+        # httpx/JSON errors from the polling loop itself. The upload may well still be
+        # running on the server, so do not claim it failed.
+        log.warning("upload status polling failed", exc_info=e)
+        yield (
+            "Lost contact with the server while importing. The import may still be "
+            "running — wait a moment, then press Ingest / retry to check.",
+            last_ingested,
+        )
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────

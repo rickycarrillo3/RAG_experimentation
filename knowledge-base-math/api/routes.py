@@ -51,6 +51,14 @@ router = APIRouter(dependencies=[Depends(require_token)])
 _ingest_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
 _jobs: dict[str, Job] = {}
 
+# Pipeline stages in words a family member can act on. The stage name itself ("chunk")
+# is ours, not theirs.
+_STAGE_BLAME = {
+    "extract": "the text could not be read out of the PDF",
+    "chunk": "the text could not be split into sections",
+    "index": "the search index could not be built",
+}
+
 # Set by the idle-stop watchdog; every /chat touches it. See ops/idle_stop.py.
 last_chat_at = time.monotonic()
 
@@ -265,11 +273,13 @@ def _mark_crashed(job_id: str, fut: Future) -> None:
     if exc is not None:
         log.exception("ingest job %s crashed outside its own handler", job_id, exc_info=exc)
         job.status = JobStatus.FAILED
-        job.detail = f"Ingest crashed: {exc}"
+        job.detail = f"Could not add {job.filename} — the import stopped unexpectedly."
+        job.diagnostic = f"{type(exc).__name__} escaped _run_ingest: {exc}"
     elif job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
         # Returned without reaching either terminal branch — should be unreachable.
         job.status = JobStatus.FAILED
-        job.detail = "Ingest ended without reporting a result."
+        job.detail = f"Could not add {job.filename} — the import stopped unexpectedly."
+        job.diagnostic = "worker returned without setting a terminal status"
 
 
 def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
@@ -323,29 +333,35 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         job.status = JobStatus.DONE
         job.stage = None
         job.n_chunks = len(chunks)
-        # The message has to carry the degradation, because this is the exact path that
-        # used to report "Indexed. N total chunks" for an index containing no LaTeX at
-        # all: extract() returned the same string whether Marker ran or the pymupdf4llm
-        # fallback did, so nothing upstream could tell them apart. Lead with the bad news.
+        n = len(chunks)
+        counted = f"{n} section{'' if n == 1 else 's'} indexed"
+        # `detail` is read by a family member, `diagnostic` by whoever runs the pod. The
+        # two used to be one string, so a Marker failure put a raw exception — install
+        # URLs and all — into the box that says the upload worked. Say what it means for
+        # them here; put the cause where it is useful, in the log and in `diagnostic`.
         if result.degraded:
-            why = (
-                f"Marker failed ({result.marker_error})"
-                if result.marker_error
-                else "pymupdf4llm was requested"
-            )
             job.detail = (
-                f"Indexed WITHOUT LaTeX. {why}, so equations are flattened to plain "
-                f"text and math retrieval will be poor. Fix Marker and re-upload to "
-                f"replace these chunks. {len(chunks)} total chunks for {user}."
+                f"Added {job.filename}, but without proper equation formatting — "
+                f"maths questions about it may not find the right sections. Worth "
+                f"uploading again once that is fixed. {counted}."
             )
+            job.diagnostic = (
+                f"Marker unavailable, fell back to pymupdf4llm: {result.marker_error}"
+                if result.marker_error
+                else "pymupdf4llm was requested explicitly (--force-pymupdf)"
+            )
+            log.warning("ingest job %s degraded: %s", job_id, job.diagnostic)
         else:
-            job.detail = f"Indexed with Marker. {len(chunks)} total chunks for {user}."
+            job.detail = f"Added {job.filename} — {counted} and ready to search."
     except Exception as e:  # noqa: BLE001 - reported through the job record
         # A bare str(e) was all this used to record: no indication of which stage raised
         # it, and no traceback anywhere. Log both.
         log.exception("ingest job %s failed during %s", job_id, job.stage)
         job.status = JobStatus.FAILED
-        job.detail = f"{job.stage or 'ingest'} failed: {e}"
+        # Plain sentence for the person who uploaded; exception text for the log and for
+        # `diagnostic`. A stack trace in the status box helps nobody who can act on it.
+        job.detail = f"Could not add {job.filename} — {_STAGE_BLAME.get(job.stage, 'something went wrong')}."
+        job.diagnostic = f"{type(e).__name__} during {job.stage or 'ingest'}: {e}"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
