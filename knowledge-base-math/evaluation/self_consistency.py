@@ -346,6 +346,12 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
     unanimous_wrong = [q for q in per_q if not q["modal_correct"] and q["modal_share"] >= 0.8]
     recoverable = [q for q in per_q if not q["greedy_correct"] and q["modal_correct"]]
     broken = [q for q in per_q if q["greedy_correct"] and not q["modal_correct"]]
+    # The other way voting cannot help: the samples scatter across many WRONG answers and the
+    # right one is essentially absent from the pool. Voting reorders a pool; it cannot add to
+    # it. These look nothing like "confidently wrong" (low modal share, high answer diversity)
+    # but are just as far out of reach, so counting only unanimity understates the ceiling.
+    unreachable = [q for q in per_q if q["pass_rate"] <= 0.1 and not q["modal_correct"]]
+    beyond = {q["id"]: q for q in unanimous_wrong + unreachable}
     mean_distinct = statistics.mean(q["distinct_answers"] for q in per_q)
     unparse = sum(q["unparseable"] for q in per_q) / (n * cfg["samples"])
 
@@ -353,12 +359,19 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
     print(f"  fixed by voting (greedy wrong → vote right):   {len(recoverable):>3}/{n}")
     print(f"  broken by voting (greedy right → vote wrong):  {len(broken):>3}/{n}")
     print(f"  confidently wrong (≥80% of samples agree on a wrong answer): {len(unanimous_wrong):>3}/{n}")
+    print(f"  never right (≤10% of samples correct — right answer not in the pool): "
+          f"{len(unreachable):>3}/{n}")
     print(f"  mean distinct answers per question: {mean_distinct:.1f}   unparseable samples: {unparse:.0%}")
-    if unanimous_wrong:
-        print("  → These are NOT fixable by more sampling. The model is stably wrong; only a")
-        print("    better prompt, a better model, or retrieval can move them.")
-        for q in unanimous_wrong[:5]:
-            print(f"      {q['id']} ({q['topic']}): said {q['modal_answer']}, gold {q['gold'][0]}")
+    if beyond:
+        print(f"\n  BEYOND VOTING'S REACH: {len(beyond)}/{n}. More sampling cannot fix these — the")
+        print("  model either agrees on the wrong answer or never produces the right one. Only a")
+        print("  better prompt, a better model, or retrieval can move them. This count, not the")
+        print("  accuracy delta, is the ceiling on what self-consistency can ever deliver here.")
+        for q in list(beyond.values())[:5]:
+            kind = "stably wrong" if q["modal_share"] >= 0.8 else "scattered"
+            print(f"      {q['id']} ({q['topic']}, {kind}): said {q['modal_answer']} "
+                  f"({q['modal_share']:.0%} of samples), gold {q['gold'][0]}, "
+                  f"{q['pass_rate']:.0%} of samples correct")
 
     # Verdict.
     best_k = max(ks, key=lambda k: acc_at_k[k])
@@ -398,9 +411,32 @@ def main():
                    help="Parallel samples per question; >1 needs OLLAMA_NUM_PARALLEL set")
     p.add_argument("--seed", type=int, default=0, help="Seed for the resampling, not the model")
     p.add_argument("--out", default=RESULTS_PATH)
+    p.add_argument("--report-only", metavar="RESULTS_JSON",
+                   help="Re-print the report from a previous run's JSON, generating nothing. "
+                        "The samples are the expensive part (~30 min); re-scoring them at "
+                        "different k, or after changing the analysis, must not need a re-run.")
     args = p.parse_args()
 
     ks = sorted(set(args.ks))
+
+    if args.report_only:
+        with open(args.report_only, encoding="utf-8") as f:
+            saved = json.load(f)
+        per_q = saved["per_question"]
+        cfg = saved["config"]
+        n_samples = cfg["samples"]
+        if max(ks) > n_samples:
+            p.error(f"--ks max ({max(ks)}) exceeds the {n_samples} samples in that run.")
+        rng = random.Random(args.seed)
+        acc_at_k = {
+            k: statistics.mean(
+                vote_accuracy_at_k(q["sampled_answers"], set(q["gold"]), k, rng, RESAMPLE_TRIALS)
+                for q in per_q
+            )
+            for k in ks
+        }
+        print_report(per_q, acc_at_k, ks, cfg)
+        return
     if max(ks) > args.samples:
         p.error(f"--ks max ({max(ks)}) exceeds --samples ({args.samples}); "
                 "raise --samples or lower --ks.")

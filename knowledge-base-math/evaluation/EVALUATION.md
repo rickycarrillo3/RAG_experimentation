@@ -795,11 +795,14 @@ serial seconds per query. The part that decides the answer is the **ERROR STRUCT
 - **fixed by voting** (greedy wrong → vote right) — the win, question by question.
 - **broken by voting** (greedy right → vote wrong) — the cost nobody budgets for. Sampling
   can lose a question greedy got right.
-- **confidently wrong** (≥80% of samples agree on a wrong answer) — **the ceiling.** These
-  are stable errors: the model is not guessing, it is reliably mistaken. No amount of extra
-  sampling touches them, and their count is the hard floor on what self-consistency can
-  deliver. A set where most errors are confident means the answer is "no" regardless of the
-  accuracy delta.
+- **confidently wrong** (≥80% of samples agree on a wrong answer) — stable errors: the model
+  is not guessing, it is reliably mistaken.
+- **never right** (≤10% of samples correct) — the samples scatter across many *wrong*
+  answers and the right one is essentially absent. Voting reorders a pool; it cannot add to
+  it. These look nothing like the confident case (low modal share, high diversity) but are
+  just as unreachable — counting only unanimity understates the ceiling, which is why both
+  are reported and summed into **BEYOND VOTING'S REACH**. That count, not the accuracy
+  delta, is the hard limit on what self-consistency can ever deliver on this set.
 - **mean distinct answers per question** — the diversity the method depends on. Near 1.0
   means the samples are effectively deterministic and voting is a no-op; raise the
   temperature or stop.
@@ -813,9 +816,45 @@ serial seconds per query. The part that decides the answer is the **ERROR STRUCT
 - **> 10 points** → **implement**, and check whether a smaller k captures most of it — the
   accuracy/k curve is usually steeply diminishing (k=5 typically gets most of k=10's win at
   half the cost).
-- **Most errors are "confidently wrong"** → self-consistency is the wrong lever entirely.
+- **Most errors are BEYOND VOTING'S REACH** → self-consistency is the wrong lever entirely.
   Look at the prompt, at a larger/better generator, or at whether retrieval should have been
   supplying the fact in the first place.
+
+### 11.5 Baseline run — 2026-08-19, Mac (Metal), `t1c/deepseek-math-7b-rl:Q4`
+
+20 questions × (1 greedy + 10 sampled at T=0.8/top_p=0.95), 220 generations, 31.6 min wall
+clock, ~8.2 s/generation. `--report-only evaluation/results/self_consistency.json` re-prints
+this without regenerating anything.
+
+| setting | accuracy | vs greedy | gens/q | est. serial s/query |
+|---|---|---|---|---|
+| greedy (ships today) | 0.85 | — | 1 | 8.2 |
+| majority vote k=1 | 0.85 | −0.00 | 1 | 8.7 |
+| majority vote k=5 | 0.88 | +0.03 | 5 | 43.3 |
+| majority vote k=10 | 0.90 | +0.05 | 10 | 86.5 |
+
+Error structure: 1/20 fixed by voting, **0/20 broken** by voting, 2/20 beyond reach
+(r03 inclusion–exclusion, r07 modular exponentiation — both scattered, 0% and 10% of samples
+correct). Mean 2.0 distinct answers per question, 0% unparseable.
+
+**Verdict: do not implement as the default path.** Three greedy errors; voting fixes exactly
+one (r04, a decoding slip the samples unanimously got right), and the other two are number
+theory the model simply cannot do — it never produces the right answer at any temperature, so
+k could be 100 and they would still be wrong. +5 points is inside the noise of a 20-question
+set, and it costs 10× the decode on the stage that already owns ~95% of query time: ~86 s per
+answer serially, versus 8. Even k=5's +3 points costs 43 s.
+
+Two findings that generalize beyond the go/no-go:
+
+1. **Sampling at T=0.8 is free here** (k=1 sampled ≈ greedy, and 0/20 broken by voting). The
+   usual objection — "raising the temperature loses questions greedy got right" — did not
+   materialize, so an opt-in path would not be trading accuracy away.
+2. **The model's failures are knowledge-shaped, not decoding-shaped.** 2 of 3 errors are
+   "doesn't know the method", which sampling cannot touch. That is an argument for a better
+   generator or for making sure retrieval supplies the method — not for spending 10× decode.
+
+The actionable form, if it is wanted later, is an opt-in **"check my work"** button at k=5:
+paid per request rather than per query, on the questions a user already doubts.
 
 Two things this section does *not* measure, and both matter before shipping:
 
