@@ -145,6 +145,10 @@ def normalize_answer(raw: str) -> str | None:
     s = s.replace("\\%", "%").replace("\\left", "").replace("\\right", "")
     s = re.sub(r"\\text\s*\{([^{}]*)\}", r"\1", s)
     s = _FRAC.sub(r"(\1)/(\2)", s)          # \frac{a}{b} and \dfrac{a}{b} -> (a)/(b)
+    s = re.sub(r"\\frac(\d)(\d)", r"(\1)/(\2)", s)   # \frac12, the brace-less form
+    # A stray backslash before a plain number ("\0.05" — a mangled \$ escape) must not make
+    # a correct answer count as wrong. Seen in the 2026-08-19 run on r20.
+    s = re.sub(r"\\+(?=[\d.])", "", s)
     s = s.strip().strip(".").strip()
     s = re.sub(r"\s+", " ", s)
     if not s:

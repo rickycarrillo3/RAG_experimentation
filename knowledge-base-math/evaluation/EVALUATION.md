@@ -844,6 +844,35 @@ k could be 100 and they would still be wrong. +5 points is inside the noise of a
 set, and it costs 10× the decode on the stage that already owns ~95% of query time: ~86 s per
 answer serially, versus 8. Even k=5's +3 points costs 43 s.
 
+### 11.6 What the failures actually are — execution, not knowledge
+
+Worth reading the wrong answers, not just counting them. The answer distributions say the
+model is not ignorant of the methods; it cannot execute arithmetic reliably.
+
+**r07 — remainder of 7^100 mod 13** (gold 9). Ten samples returned 1 ×3, 3 ×3, 7 ×3, 9 ×1 —
+every one of those is a member of the cycle of 7 mod 13, i.e. the model found the right
+*structure* every time and picked the wrong position in it. The greedy trace is unambiguous:
+
+> find the smallest k with 7^k ≡ 1 (mod 13) … k = 12 … divide 100 by 12, quotient 8
+> remainder 4 … so 7^100 ≡ 7^4 … 7^4 = 2401 ≡ 3 (mod 13)
+
+Order of the group: right. Exponent reduction: right. 2401 = 13·184 + **9**, not 3. The
+entire method is correct and one long division at the end is wrong.
+
+**r03 — sum of 1..100 divisible by 3 or 5** (gold 2418). Samples included 2385 and 2413 —
+inclusion–exclusion applied, arithmetic slipped. 285 is the sum of the multiples of 5 alone,
+i.e. a run that stopped before the union.
+
+The implication for this project: **sampling is the wrong lever for an arithmetic-execution
+error.** Voting helps when errors are random *and* the right answer is in the pool; here the
+model reaches a different wrong number each time, so the pool never contains the answer to
+vote for. The lever that matches this failure is **tool-integrated reasoning** — let the
+model emit Python for the arithmetic step and execute it. DeepSeekMath's own paper reports a
+large program-aided gain over chain-of-thought on MATH for exactly this reason. Second lever:
+this is a **Q4 quantization**, and 4-bit degrades multi-digit arithmetic more than prose —
+re-running §11.5 at Q8 or fp16 would separate "the model can't" from "the quantization can't"
+and is a cheap experiment.
+
 Two findings that generalize beyond the go/no-go:
 
 1. **Sampling at T=0.8 is free here** (k=1 sampled ≈ greedy, and 0/20 broken by voting). The
