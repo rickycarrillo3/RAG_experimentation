@@ -42,9 +42,17 @@ Qwen2.5-Math-7B-Instruct also reports **94.6 / 85.2 under TIR** (tool-integrated
 the model writes and executes Python). Hold that number; §4 explains why it is the one that
 matters most here.
 
+**Every row above is CoT.** The TIR numbers in the previous paragraph are quoted for §4.3's
+argument and are deliberately *not* what the bake-off arms were chosen on — nothing in this
+system executes tool calls, so selecting a model on its TIR column would be choosing on a
+capability we have not built.
+
 **These numbers do not decide what ships**, for the reasons in `EVALUATION.md §12.2`: wrong
-question distribution, public test sets with known contamination, and unquantized weights
-against our Q4. They are a reason to spend two hours of GPU time on a bake-off, not a result.
+question distribution, public test sets with known contamination, unquantized weights against
+our Q4, and **few-shot prompting against our zero-shot `SC_PROMPT`**. That last one cuts
+predictably rather than randomly: few-shot exemplars mostly buy format compliance, so expect
+our absolute numbers to sit below every published row for every arm. They are a reason to
+spend two hours of GPU time on a bake-off, not a result.
 
 ### 1.2 Measured on our questions
 

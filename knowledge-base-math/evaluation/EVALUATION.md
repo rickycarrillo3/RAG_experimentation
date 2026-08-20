@@ -1029,6 +1029,19 @@ already-strong CoT score.
 3. **Quantization.** Every published row is unquantized; every arm here is Q4. §11.6 already
    flags 4-bit as a suspect in the multi-digit-arithmetic failures this bake-off is trying to
    fix, so the Q4 gap could differ from the fp16 gap in either direction.
+4. **Prompting.** Table 3 is **few-shot** CoT; `SC_PROMPT` is **zero-shot** — one instruction
+   and the problem, no worked exemplars. Few-shot exemplars mostly buy *format compliance*,
+   which is the exact axis §12.4's parse-rate guard watches, so a model that looks strong at
+   5-shot can lose points here for reasons that have nothing to do with mathematics. Zero-shot
+   is the right choice anyway, because it is what `api/chat.py` actually sends — but it means
+   our absolute numbers should be expected to sit *below* every published row, for all arms.
+
+And the one confusion this table invites, stated explicitly: **every number in it is CoT, not
+TIR.** Qwen2.5-Math's TIR scores (94.6 / 85.2) are quoted above and were deliberately *not*
+used to choose arms, because nothing in this system executes tool calls — picking a model on
+its TIR column would be choosing on a capability we have not built. If TIR is ever adopted
+(`MAIN_LLM_ANALYSIS.md §4.3`), the arms must be re-chosen against the TIR column, and this
+bake-off's result does not carry over.
 
 Read as: a +31 MATH gap on paper is a strong reason to spend two hours of GPU time. It is not
 a result.

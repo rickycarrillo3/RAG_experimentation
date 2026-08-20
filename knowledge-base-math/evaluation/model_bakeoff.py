@@ -229,6 +229,10 @@ def print_reference_table(models: list[str]) -> None:
     print("    college questions are not on the internet, which is the whole point of them.")
     print("  · Published rows are unquantized. Every arm here is Q4, and §11.6 flags 4-bit as a")
     print("    suspect in exactly the multi-digit-arithmetic failures this is meant to fix.")
+    print("  · Table 3 is FEW-SHOT; SC_PROMPT is zero-shot. Exemplars mostly buy format")
+    print("    compliance, so expect every arm to land below its published row.")
+    print("  · Every row above is CoT, not TIR. Nothing here executes tool calls, so the arms")
+    print("    were chosen on the CoT column on purpose. Adopting TIR means re-choosing them.")
     print("  · A +31 MATH gap on paper is a reason to spend the GPU time, not a result.")
 
 
