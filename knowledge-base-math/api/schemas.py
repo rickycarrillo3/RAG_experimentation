@@ -79,6 +79,14 @@ class SourcesEvent(BaseModel):
 class TokenEvent(BaseModel):
     type: Literal["token"] = "token"
     text: str
+    server_marker: bool = Field(
+        False,
+        description="True for text the server wrote rather than the model — the sources "
+                    "footer and the truncation notice. Render it like any other token; the "
+                    "flag exists so a client can leave it out of the history it sends back, "
+                    "since the model did not write it and should not be shown it as its own "
+                    "words. A client that ignores the field still displays a correct answer.",
+    )
 
 
 class DoneEvent(BaseModel):

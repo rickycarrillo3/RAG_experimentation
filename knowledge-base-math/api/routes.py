@@ -136,14 +136,6 @@ async def _chat_stream(user: str, req: ChatRequest):
             input=req.message,
         )
 
-        # Server-emitted provenance marker; see chat.GENERAL_MODE_MARKER for why this
-        # is not left to the model. It goes out as a normal token frame so the client
-        # needs no special case, and it lands in `answer` so telemetry and the
-        # faithfulness eval see exactly what the student saw.
-        if mode is Mode.GENERAL:
-            answer += chatmod.GENERAL_MODE_MARKER
-            yield _sse("token", TokenEvent(text=chatmod.GENERAL_MODE_MARKER))
-
         t_gen = time.perf_counter()
         first_token_at = None
 
@@ -154,6 +146,13 @@ async def _chat_stream(user: str, req: ChatRequest):
         generated = ""
         truncated = False
         continuations = 0
+
+        # Guards the head of the answer against coming back as a copy of the question —
+        # see chat.QuestionEcho. It filters what is *shown*, never `generated`: the
+        # continuation prefill has to be the model's own text, byte for byte, or
+        # PrefillEcho will not recognise it.
+        qecho = chatmod.QuestionEcho(req.message)
+        shown = ""
 
         for attempt in range(MAX_CONTINUATIONS + 1):
             messages = base_messages if not generated else [
@@ -172,8 +171,13 @@ async def _chat_stream(user: str, req: ChatRequest):
                     first_token_at = time.perf_counter()
                     timings["ttft_ms"] = round((first_token_at - t_start) * 1000, 1)
                 produced += text
-                answer += text
-                yield _sse("token", TokenEvent(text=text))
+
+                visible = qecho.feed(text)
+                if not visible:
+                    continue
+                shown += visible
+                answer += visible
+                yield _sse("token", TokenEvent(text=visible))
 
             generated += produced
 
@@ -191,9 +195,43 @@ async def _chat_stream(user: str, req: ChatRequest):
             if attempt < MAX_CONTINUATIONS:
                 continuations += 1
 
+        # Anything QuestionEcho was still holding when the stream ended.
+        tail = qecho.flush()
+        if tail:
+            shown += tail
+            answer += tail
+            yield _sse("token", TokenEvent(text=tail))
+
+        if qecho.fired:
+            log.warning(
+                "answer opened with a verbatim copy of the question (mode=%s, user=%s) — "
+                "the echo was dropped; see chat.QuestionEcho", mode.value, user,
+            )
+
+        # An empty bubble followed by a sources footer is not an answer. This is the
+        # honest end of the same failure QuestionEcho guards: the model returned nothing,
+        # or nothing but the question.
+        if not shown.strip():
+            answer += chatmod.NO_ANSWER_TEXT
+            yield _sse("token", TokenEvent(text=chatmod.NO_ANSWER_TEXT, server_marker=True))
+
         if truncated:
             answer += chatmod.TRUNCATION_MARKER
-            yield _sse("token", TokenEvent(text=chatmod.TRUNCATION_MARKER))
+            yield _sse("token", TokenEvent(text=chatmod.TRUNCATION_MARKER, server_marker=True))
+
+        # Server-written provenance; see chat.sources_footer for why the model is not
+        # asked for it. It goes out as a normal token frame so a client needs no special
+        # case, and it lands in `answer` so telemetry and the faithfulness eval see
+        # exactly what the student saw. Last, because it is a statement about the answer
+        # above it — and because appending cannot disturb the prompt prefix the next
+        # turn's KV cache depends on (LATENCY.md).
+        # Skipped when nothing was answered: there is no answer for the line to
+        # attribute, and naming a document under "no answer came back" reads as though
+        # the document were the reason.
+        if shown.strip():
+            footer = chatmod.sources_footer(sources, mode)
+            answer += footer
+            yield _sse("token", TokenEvent(text=footer, server_marker=True))
 
         timings["generate_ms"] = round((time.perf_counter() - t_gen) * 1000, 1)
 

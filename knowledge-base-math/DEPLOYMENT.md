@@ -86,6 +86,7 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. |
 | `KBM_MAX_CONTINUATIONS` | How many times the server may resume an answer cut off at `KBM_NUM_PREDICT`. `0` = label it truncated instead. |
 | `KBM_SHOW_DIAGNOSTICS` | `1` appends the technical cause to upload status messages. Off by default — the family sees plain sentences, the log keeps the exception. |
+| `KBM_ENABLE_DOCS` | `1` serves `/docs`, `/redoc`, `/openapi.json`. Defaults **on** with no `KBM_API_TOKEN` (laptop) and **off** once one is set — those routes belong to the app, not the router, so the token never covered them. |
 | `KBM_TELEMETRY_SALT` | Salt for hashing usernames in the event log. Set it per deployment. |
 | `OLLAMA_MODELS`, `HF_HOME` | Must point at the volume, or ~15GB of weights re-download on every wake (`SETUP.md`). |
 

@@ -17,215 +17,74 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
-## 2026-08-19 · `pip install` hung for minutes, blaming `sentence-transformers`
+## 2026-08-19 · The answer came back as the student's own question — not reproduced
 
-**Symptom.** On a fresh pod, `pip install -r requirements.txt` printed a wall of
-`Downloading sentence_transformers-X.Y.Z...metadata` lines, walking backwards from 6.0.0
-through 5.7.0, 5.6.1, 5.5.1, … 5.1.1, with pip's own advice to "provide the dependency
-resolver with stricter constraints". It reads as a slow network or a
-`sentence-transformers` problem. It is neither.
+**Symptom.** Reported from the running app, with no documents ingested yet: the tutor's
+reply was the question that had just been asked, and nothing else. No answer under it, no
+error frame.
 
-**What it actually was.** Two pins in `requirements.txt` had become unsatisfiable
-together, through a chain neither one mentions:
+**Status: open.** No reproduction. The shipped `general`-mode path was driven through
+`t1c/deepseek-math-7b-rl:Q4` on ~15 prompts chosen to provoke it — bare greetings,
+one-word turns, statements with a wrong premise, multi-turn histories, word problems — and
+every one answered normally. `app.handle_chat` was driven against a live API for a user
+with no index, and the displayed history was correct. So the cause is **not** in prompt
+construction or the Gradio client as they stand here, and may be environment-specific
+(a different Ollama or `langchain-core` build on the pod).
 
-```
-marker-pdf<2.0  ->  marker-pdf 1.10.2  ->  transformers<5.0.0  ->  huggingface-hub<1.0
-gradio==6.18.0                                                 ->  huggingface-hub>=1.2.0
-```
+**What was done about it anyway.** Two guards, neither of which can damage a good answer:
 
-Gradio raised its `huggingface-hub` floor from `>=0.33.5` to `>=1.2.0` in **6.18.0** — the
-exact version that had been pinned to fix an unrelated `Blocks`/`launch()` crash. Nothing
-can satisfy `hub<1.0` and `hub>=1.2.0` at once, so pip backtracks looking for an escape,
-and `sentence-transformers` is simply the package it chose to pivot on. It has ~30
-releases and its own `huggingface-hub` floor (6.0.0 needs `>=1.3.0`), so it looks like the
-constrained package while contributing nothing to the conflict.
+- `chat.QuestionEcho` (wired in `routes._chat_stream`) holds back the head of the stream
+  only while it is still a prefix of the question, and drops it only if it turns out to be
+  a verbatim copy. A real answer diverges within a character or two and streams through
+  untouched. When it fires it logs a warning naming the mode — **if this symptom recurs,
+  that line in the server log is the first thing to look for.**
+- An answer that comes back empty — or that was nothing but the question — now says so
+  (`chat.NO_ANSWER_TEXT`) instead of rendering an empty bubble with a sources footer
+  under it.
 
-The `marker-pdf<2.0` pin is not the one to loosen: it exists because marker-pdf 2.0 needs
-a Docker daemon a RunPod pod does not have (see the 2026-08-18 entry below).
+**What would settle it.** The `question` and `n_completion_chars` of the offending event
+in `$DATA_DIR/telemetry/events.jsonl` (a completion length within a few characters of the
+question length is the fingerprint), plus `ollama --version` and `pip show langchain-core`
+from the machine it happened on.
 
-**Fix.** Pin Gradio to the last release that still accepts `hub>=0.33.5`, and pin
-`sentence-transformers` so the resolver stops exploring at all:
-
-```
-gradio==6.17.3
-sentence-transformers==5.5.1
-```
-
-Still Gradio 6, so `app.py`'s Gradio-6 API usage is unaffected. To unblock an install
-without editing the file, append the pins on the command line:
-
-```bash
-pip install -r requirements.txt gradio==6.17.3 sentence-transformers==5.5.1
-```
-
-**Lesson.** When pip backtracks, the package it names is almost never the cause — it is
-whichever package has the most versions to walk. Read the *constraints*, not the log:
-`pip index versions` and each candidate's `requires_dist` find the real pair in a minute,
-while watching the download log finds nothing. And a version pin added to fix an API
-crash is still a dependency edge; this one silently re-opened a conflict on a transitive
-package neither pin names.
+**Lesson.** A guard on the symptom is not a diagnosis, and saying so in writing is what
+keeps it from being mistaken for one later.
 
 ---
 
-## 2026-08-19 · Long answers stopped mid-sentence, and the API called it a success
+## 2026-08-19 · `prefetch_models.py` failed on a second pod: hf_transfer, then a "missing config.json"
 
-**Symptom.** Answers to derivation-style questions ended abruptly, mid-word or mid-step.
-Nothing in the UI, the `done` frame, or the telemetry log distinguished them from answers
-that had finished.
+**Symptom.** Stage 4 of `startup.sh` on a freshly built pod:
 
-**Cause.** `KBM_NUM_PREDICT` caps decode at 350 tokens, and deepseek-math-7b-rl is a
-chain-of-thought solver that fills whatever budget it is given — `LATENCY.md` records it
-emitting 534 tokens on a *one-line conceptual* question. Ollama reports this honestly as
-`done_reason: "length"` (versus `"stop"`). Nothing in this repo had ever read that field.
-
-**Why it was invisible.** `api/routes.py` built the chain as
-`prompt | models.llm | StrOutputParser()`. `StrOutputParser` maps each `AIMessageChunk` to
-its `.content` and drops `response_metadata` — which is exactly where `done_reason` lives.
-The convenience parser threw away the failure signal along with the metadata, three layers
-before anything could act on it: `DoneEvent` had no field for it and `app.py` read only
-`event_id` from the `done` frame.
-
-**Fix.** Stream `AIMessageChunk`s directly, and when `done_reason == "length"`, resume by
-sending the partial answer back as an `AIMessage` and continuing — bounded by
-`KBM_MAX_CONTINUATIONS` (default 2). If it is still cut off after that, the server appends
-`TRUNCATION_MARKER` itself, the same way it already prepends `GENERAL_MODE_MARKER`, and
-for the same measured reason: the model ignores instructions to emit such lines.
-
-**The trap inside the fix.** Ollama treats a trailing assistant message as a *prefill* —
-which is what makes seamless continuation work at all — but it **echoes the entire prefill
-back at the head of the continuation stream** before emitting anything new. Forwarded
-unfiltered, the student sees the answer twice. `chat.PrefillEcho` strips it, and on any
-mismatch emits nothing and abandons the continuation, degrading to a shorter honest answer.
-Verified on ollama 0.32.6: pass 0 emitted 147 chars; pass 1 sent 224 and emitted 77 (147
-stripped); pass 2 sent 350 and emitted 126 (224 stripped). Exact, every time.
-
-**Latency.** The continuation appends at the *end* of the prompt, so `LATENCY.md`'s prefix
-rule protects the KV cache. Measured on a 1821-token prompt: 7358 ms cold, **47 ms** on an
-identical repeat, **160 ms** with the partial answer appended.
-
-**Lesson.** A convenience wrapper that flattens a rich object to a primitive throws away
-the failure signal along with the metadata. And when a cap exists, something must report
-whether it was hit — `telemetry.log_query` now records `truncated`/`continuations`, because
-"raise it if answers are visibly truncated" requires someone to be able to see it.
-
----
-
-## 2026-08-19 · An ingest that destroyed every equation reported `done` and a chunk count
-
-**Symptom.** Uploading a PDF returned `"Indexed. 412 total chunks for alice."` The index
-contained no LaTeX at all and retrieved math badly.
-
-**Cause.** `extract()` returned a bare `str` path on *both* the Marker path and the
-`pymupdf4llm` fallback. The fallback only `print`ed a WARNING to the server's stdout and
-fell through, so no exception was raised, `_run_ingest` reached its success branch, and
-`app.py` echoed `job.detail` verbatim. A return type that cannot express degradation
-guarantees the caller will report success.
-
-**Also found here.** `_ingest_pool.submit(...)`'s `Future` was discarded, so anything
-escaping `_run_ingest` itself — a `KeyError` on `_jobs[job_id]`, an `ImportError` from the
-function-local imports, an OOM-killed thread — left the job `queued` forever with a client
-polling a status that would never change. And the single broad `except` recorded a bare
-`str(e)` with no stage and no traceback.
-
-**Fix.** `extract_detailed()` returns an `ExtractResult(path, extractor, marker_error)`
-with a `.degraded` property (mirroring `retrieve`/`retrieve_detailed` in `retrieval.py`);
-`extract()` keeps its `-> str` signature for the CLI. `Job` gained `extractor`, `degraded`
-and `stage`; the success message now leads with the bad news. `add_done_callback` marks
-crashed jobs failed, and the `except` logs a traceback with the stage.
-
-**Why `degraded` is a field and not a fifth `JobStatus`.** `api/schemas.py` is what the
-TypeScript client is generated from. Adding an enum member breaks an exhaustive switch;
-adding an optional field is ignored by clients that predate it. So a half-good ingest is
-`status="done"` **plus** `degraded=true`, never a new status value.
-
-**Follow-up, same day.** The first fix over-corrected: it put the raw Marker exception —
-`docker binary not found. Install Docker (https://docs.docker.com/get-docker/)…` — straight
-into the status box that tells a family member their upload worked. Correct information,
-wrong audience. `Job` now carries **two** strings: `detail`, a plain sentence for whoever
-uploaded the file, and `diagnostic`, the exception text for the log and for operators
-(`KBM_SHOW_DIAGNOSTICS=1` surfaces it in the UI). The client-side messages were leaking too
-— a raw FastAPI error body from `Upload rejected: {r.text}`, a bare `httpx` exception, and
-an internal `GET /jobs/{id}` instruction.
-
-**Lesson.** The same one the marker-pdf entry below reaches from the other direction: a
-fallback that "works" is more dangerous than a crash. Make the degradation part of the
-return value, or every layer above will faithfully report success. And the corollary the
-follow-up taught: "surface the error" and "show the user the exception" are not the same
-instruction. One string cannot serve both a family member and an operator — an install URL
-in a success message is noise to everyone who cannot act on it.
-
----
-
-## 2026-08-19 · Uploaded PDFs accumulated on the volume, and ingest took two clicks
-
-**Symptom.** Not a crash — a policy problem. Every upload kept the source PDF (~50–100 MB
-for a textbook) and its `.mmd` under `$DATA_DIR/docs/{raw,extracted}/<user>/`, with no
-quota in front of them, and ingestion required selecting a file *and* clicking a button.
-
-**Change.** User documents are no longer retained: extraction goes to the request's temp
-dir and dies with it in the existing `finally`. The Gradio upload now fires on file
-selection. This deliberately reverses the earlier decision recorded in the "Earlier" table
-below — see the comment at the top of `_run_ingest` for the consequences accepted with it
-(the indexes become the only copy; re-chunking needs a re-upload; re-*embedding* still
-works, because `build_bm25` pickles the chunk text).
-
-**The invariant that had to be checked first.** Chunk ids are `<basename>::<n>`
-(`chunking.assign_chunk_ids`), and `merge_chunks` dedupes on them — that is what makes
-re-uploading a document *replace* its chunks instead of duplicating them, a bug this
-project already hit once (66 → 136 → 210 chunks). Moving extraction into a random temp
-directory is safe **only** because `assign_chunk_ids` takes `os.path.basename`, and
-`mkdtemp()` randomises the *directory* while the *file* keeps the uploaded name. Verified:
-identical ids across two temp dirs, and `merge_chunks(a, b)` of 5 + 5 → 5.
-
-> Never switch to `NamedTemporaryFile`, a uuid'd filename, or `<uuid>_<name>.pdf`. The
-> randomness must live in the directory, never the file name, or every re-upload silently
-> becomes a duplicate.
-
-**Also fixed.** `metadata["source"]` was being persisted as a dead temp path; it is now
-normalised to the basename (id-neutral — basename of a basename). And auto-firing on
-selection needed an idempotence guard plus a `username_box.submit` trigger, or a user who
-picked the file before typing their name hit a dead end with nothing to re-trigger, while
-every Enter press re-ran Marker.
-
-**Lesson.** Before moving where a file lives, find what derives identity from its path.
-
----
-
-## 2026-08-18 · `Marker failed (docker binary not found)` on the first upload
-
-**Symptom.** First PDF upload on the pod logged
-`WARNING: Marker failed (docker binary not found. Install Docker ... and ensure the
-daemon is running.)` and fell back to `pymupdf4llm` — so the document was ingested with
-**no LaTeX at all**, which is the one outcome this project cannot tolerate.
-
-**Cause.** `marker-pdf` **2.0.0** (released 2026-07-20) stopped running Surya in-process.
-It now spawns an inference server on first use: **vLLM inside Docker** on NVIDIA GPUs,
-llama.cpp elsewhere. A RunPod pod is itself a container with no Docker daemon, so the
-spawn can never succeed there.
-
-**Why the version changed underneath us.** `requirements.txt` listed a bare `marker-pdf`.
-The laptop venv was resolved months ago and holds 1.10.2; a fresh `pip install` on the pod
-resolved to 2.0.0. Same file, two different majors — the environments drifted silently.
-
-**Why nothing caught it earlier.** `prefetch_models.py` calls `create_model_dict()`, which
-still succeeds on 2.x — the Docker spawn happens at *conversion* time, not at model load.
-So stage 4 of `startup.sh` reported success and the failure waited for a real upload,
-exactly the stall `prefetch_models.py` exists to prevent, arriving by a different route.
-
-**Fix.** Pin below the rewrite and reinstall on the pod:
-```bash
-pip install -r requirements.txt          # now marker-pdf<2.0
-python -c "import marker; print(marker.__version__)"   # expect 1.10.x
 ```
-Then **re-upload any PDF ingested during the fallback** — a pymupdf-extracted document is
-already in the index with its equations flattened to Unicode, and re-uploading replaces
-its chunks in place (`DEPLOYMENT.md §7`).
+↓ embedder BAAI/bge-small-en-v1.5
+  FAILED: ValueError: Fast download using 'hf_transfer' is enabled
+  (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available
+↓ reranker BAAI/bge-reranker-v2-m3
+  FAILED: OSError: Can't load the configuration of 'BAAI/bge-reranker-v2-m3' ...
+  make sure ... is the correct path to a directory containing a config.json file
+```
 
-**Lesson.** An unpinned dependency is a promise that upstream will not change its
-architecture. Two of the three worst bugs in this file (`torchvision`, this one) are the
-laptop and the pod resolving the same requirements file differently. Also: a fallback that
-"works" is more dangerous than a crash — this one produced a searchable index that was
-quietly worthless for math.
+**Cause.** One cause, two faces. RunPod's images export `HF_HUB_ENABLE_HF_TRANSFER=1` to
+speed up model downloads; `huggingface_hub` honours it by raising on *every* download
+when the `hf_transfer` package is absent. It was absent because nothing in
+`requirements.txt` asked for it — our code never imports it.
+
+**What made it confusing.** The second error names the wrong problem. Nothing is wrong
+with the model id or the cache: the download never ran, so there is no `config.json` on
+disk, and `transformers` reports the empty cache as if the repo were bad. Chasing the
+reranker message leads to checking model names and clearing caches, none of which is the
+issue. **When several models fail in sequence, fix the first failure and re-run before
+reading the rest** — later entries in a prefetch list are usually echoes of the first.
+
+**Fix.** `hf_transfer` added to `requirements.txt`, with a comment saying why a package
+we never import is there. On a pod that already exists, `pip install hf_transfer` inside
+the venv. Unsetting `HF_HUB_ENABLE_HF_TRANSFER` also works but only for that shell — the
+variable comes from the image, so the failure returns next session.
+
+**General lesson.** The pod image's environment is part of the dependency set. A variable
+someone else exported can make a correct `requirements.txt` incomplete, and the resulting
+error names our config rather than theirs.
 
 ---
 
@@ -385,7 +244,7 @@ Kept short — each links to where the reasoning lives.
 | `startup.sh` could not run at all | `ALLOW_CPU`/`DO_PULL`/`DO_PREFETCH` read but never assigned; fatal under `set -u`. `bash -n` passed | recovered from commit `eb9044c` |
 | Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
 | Abstention was structurally impossible | `KBM_RELEVANCE_FLOOR` documented as a raw logit, default `0.0`; the reranker applies a Sigmoid, so every score passed | `api/settings.py`, `CLAUDE.md` |
-| Answers claimed document grounding they didn't have | deepseek-math ignores the "say this isn't from your documents" instruction — it is a solver, not an instruction-follower | server prepends the marker; `api/chat.py` |
+| Answers claimed document grounding they didn't have | deepseek-math ignores the "say this isn't from your documents" instruction — it is a solver, not an instruction-follower | server appends the `Sources:` line itself; `api/chat.py:sources_footer` |
 | Gradio UI crashed on startup | `theme=` passed to `launch()` instead of `Blocks()` on gradio 6.18 | `app.py` |
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |
 | Every question paid a 4.4 s cold model load | `keep_alive` unset, so Ollama unloaded after 5 min idle | `LATENCY.md`, `DEPLOYMENT.md §5` |

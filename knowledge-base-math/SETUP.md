@@ -142,8 +142,10 @@ Gradio client on 7860. Open the public URL in your browser:
 
 **Expose HTTP port `7860` only.** The Gradio client reaches the API over loopback inside
 the container, so 8000 never needs to be public — and 11434 (Ollama, unauthenticated)
-must never be. To poke the API or `/docs`, SSH in and use `localhost:8000`. Full
-reasoning in `DEPLOYMENT.md §4`.
+must never be. To poke the API, SSH in and use `localhost:8000`. `/docs` is *off*
+whenever `KBM_API_TOKEN` is set — those routes sit outside the token — so add
+`KBM_ENABLE_DOCS=1` if you need them, and only over the SSH tunnel. Full reasoning in
+`DEPLOYMENT.md §4`.
 
 `startup.sh` **installs nothing** — it starts things. Creating the venv and the two `pip
 install` steps in §1 are one-time; this is what runs every session. Note that a missing
@@ -324,9 +326,14 @@ it; `127.0.0.1` will bind successfully and be unreachable from outside.
 gradio **5.x** while the code targets the pinned 6.17.3. `pip install -r requirements.txt`.
 A `UserWarning` about `theme` moving to `launch()` just above it is the same mismatch. See §7.
 
-**`pip install` stalls for minutes on `sentence-transformers`, then `ResolutionImpossible`**
-— something has been added or bumped that re-opens the gradio/`marker-pdf` conflict. The
-stall looks like a network problem and the error names `sentence-transformers`, but that
-package is only pip's backtracking pivot; the real conflict is the `huggingface-hub`
-chain documented in `requirements.txt`. Read that comment block before loosening a pin to
-make the error go away.
+**`ValueError: ... 'hf_transfer' package is not available`** during `prefetch_models.py`
+(usually followed by the reranker failing with "Can't load the configuration of
+`BAAI/bge-reranker-v2-m3`") — the pod image exports `HF_HUB_ENABLE_HF_TRANSFER=1` and the
+package is missing, so every HuggingFace download raises. The reranker's message is a
+red herring: the download never ran, so there is no `config.json` to load. `pip install
+hf_transfer` in the venv (it is in `requirements.txt`, so `pip install -r
+requirements.txt` also fixes it) and re-run. See `ERRORS.md 2026-08-19`.
+
+**`ResolutionImpossible` when installing** — something has been added or bumped that
+re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the
+`requirements.txt` header before loosening a pin to make the error go away.

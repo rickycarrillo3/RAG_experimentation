@@ -26,6 +26,20 @@ from config import (  # noqa: F401  (re-exported for callers)
 # "private URL" and "readable by anything that finds the host".
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "").strip()
 
+# Whether to serve the interactive OpenAPI docs (/docs, /redoc, /openapi.json).
+#
+# Those routes are mounted by FastAPI on the *app*, while require_token is a dependency of
+# the *router* — so they are not behind the token and never were. Anyone who reaches the
+# host reads the complete shape of the service: every path, every field of every schema.
+#
+# Default: on when there is no token (a laptop, where /docs is part of the documented
+# workflow), off as soon as one is set (a deployed pod). Set KBM_ENABLE_DOCS=1 to get them
+# back on a pod — over an SSH tunnel, not a public port.
+ENABLE_DOCS = (
+    os.environ.get("KBM_ENABLE_DOCS", "").strip().lower() in ("1", "true", "yes")
+    or not API_TOKEN
+)
+
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 # Cross-encoder relevance floor. If the best retrieved chunk scores below this, the
 # corpus probably does not cover the question and we answer in `general` mode rather
