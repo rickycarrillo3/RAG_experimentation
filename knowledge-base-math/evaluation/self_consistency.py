@@ -17,7 +17,15 @@ numbers instead of vibes.
     python evaluation/self_consistency.py --easy             # grade-school regression tier
     python evaluation/self_consistency.py --limit 5          # quick smoke run
     python evaluation/self_consistency.py --concurrency 4    # needs OLLAMA_NUM_PARALLEL>1
-    python evaluation/self_consistency.py --report-only evaluation/results/self_consistency_baseline.json
+    python evaluation/self_consistency.py --model qwen2.5:7b-instruct-q4_K_M   # another generator
+    python evaluation/self_consistency.py --report-only \
+        evaluation/results/self_consistency_baseline_deepseek-math-7b-rl_Q4.json
+
+To rank generators rather than measure one, use evaluation/model_bakeoff.py, which drives this
+script's own functions over several models and adds the paired significance test that a
+30-question exam needs. Do not eyeball two separate runs of this script side by side: on n=30
+an unpaired 10-point gap is inside the noise, and the questions are the same both times, so the
+paired test is both the honest and the more sensitive one.
 
 What it measures
 ----------------
@@ -80,6 +88,18 @@ from retrieval import OLLAMA_MODEL
 
 EVAL_DIR = "evaluation"
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")
+
+
+def model_slug(model: str) -> str:
+    """Filesystem-safe short name for an Ollama model tag.
+
+    Result files are named per (tier, model). A run is only meaningful against the run it
+    is compared to, so two models writing the same filename would mean the challenger
+    silently destroying the incumbent baseline — the same failure the per-tier naming
+    already guards against, one axis up. `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M`
+    becomes `Qwen2.5-Math-7B-Instruct-GGUF_Q4_K_M`.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", model.rsplit("/", 1)[-1])
 
 # Two tiers, because they answer different questions and one cannot replace the other.
 #   baseline - the real target distribution: college-level (multivariable, linear algebra,
@@ -336,9 +356,10 @@ def vote_accuracy_at_k(answers: list[str | None], gold: set[str], k: int,
 
 # ── Generation ─────────────────────────────────────────────────────────────────
 
-def build_chain(temperature: float, top_p: float, seed: int | None = None):
+def build_chain(temperature: float, top_p: float, seed: int | None = None,
+                model: str = OLLAMA_MODEL):
     llm = ChatOllama(
-        model=OLLAMA_MODEL,
+        model=model,
         base_url=OLLAMA_BASE_URL,
         temperature=temperature,
         top_p=top_p,
@@ -403,6 +424,86 @@ def run_question(item: dict, greedy_chain, sample_chain, n_samples: int,
     }
 
 
+# ── One run ────────────────────────────────────────────────────────────────────
+
+def run_tier(items: list[dict], model: str, samples: int, ks: list[int],
+             temperature: float, top_p: float, concurrency: int, seed: int,
+             tier_label: str, questions_path: str, out_path: str) -> dict:
+    """Generate and score one (model, tier) run, write its JSON, and return the record.
+
+    Both the single-model CLI and evaluation/model_bakeoff.py call this. A bake-off that
+    reimplemented the loop would drift from the thing it claims to be comparing — the same
+    trap CLAUDE.md records for retrieval and the index paths.
+    """
+    greedy_chain = build_chain(0.0, 1.0, model=model)
+    sample_chain = build_chain(temperature, top_p, model=model)
+
+    t0 = time.perf_counter()
+    per_q = []
+    for i, item in enumerate(items, 1):
+        print(f"  [{i}/{len(items)}] {item['id']} ({item.get('topic', '')})…", flush=True)
+        rec = run_question(item, greedy_chain, sample_chain, samples, concurrency)
+        per_q.append(rec)
+        print(f"      greedy {'✓' if rec['greedy_correct'] else '✗'} ({rec['greedy_answer']})  "
+              f"sampled pass-rate {rec['pass_rate']:.0%}  "
+              f"modal {rec['modal_answer']} ×{rec['modal_share']:.0%} "
+              f"{'✓' if rec['modal_correct'] else '✗'}")
+    wall = time.perf_counter() - t0
+
+    rng = random.Random(seed)
+    acc_at_k = {
+        k: statistics.mean(
+            vote_accuracy_at_k(q["sampled_answers"], set(q["gold"]), k, rng, RESAMPLE_TRIALS)
+            for q in per_q
+        )
+        for k in ks
+    }
+
+    cfg = {
+        "model": model,
+        "samples": samples,
+        "ks": ks,
+        "temperature": temperature,
+        "top_p": top_p,
+        "trials": RESAMPLE_TRIALS,
+        "num_predict": NUM_PREDICT,
+        "questions": questions_path,
+        "tier": tier_label,
+        "n_questions": len(items),
+        "wall_clock_s": round(wall, 1),
+    }
+    record = {
+        "config": cfg,
+        "greedy_accuracy": sum(q["greedy_correct"] for q in per_q) / len(per_q),
+        "accuracy_at_k": {str(k): acc_at_k[k] for k in ks},
+        "per_question": per_q,
+    }
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2, ensure_ascii=False)
+    return record
+
+
+def unload(model: str) -> None:
+    """Ask Ollama to drop a model's weights now (keep_alive=0).
+
+    KEEP_ALIVE is 30m so one run does not pay a reload per generation — but a bake-off runs
+    several 4-5GB models back to back, and without this all of them stay resident at once.
+    Best-effort: failing to free VRAM must not lose a run that already cost 40 minutes.
+    """
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            data=json.dumps({"model": model, "keep_alive": 0}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception as e:
+        print(f"    [warn] could not unload {model}: {e}")
+
+
 # ── Reporting ──────────────────────────────────────────────────────────────────
 
 def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
@@ -412,7 +513,7 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
     mean_sample_s = statistics.mean(q["mean_sample_s"] for q in per_q)
 
     print("\n" + "=" * 74)
-    print(f"SELF-CONSISTENCY — {OLLAMA_MODEL}, closed-book, {n} questions")
+    print(f"SELF-CONSISTENCY — {cfg['model']}, closed-book, {n} questions")
     print(f"  {cfg['samples']} samples/question at temperature={cfg['temperature']}, "
           f"top_p={cfg['top_p']}; k estimated by {cfg['trials']} resamples")
     print("=" * 74)
@@ -501,6 +602,10 @@ def main():
                    help="Samples generated per question (must be >= max k)")
     p.add_argument("--ks", type=int, nargs="+", default=DEFAULT_KS,
                    help="Vote sizes to score, e.g. --ks 1 5 10")
+    p.add_argument("--model", default=OLLAMA_MODEL,
+                   help=f"Ollama tag of the generator under test (default: {OLLAMA_MODEL}). "
+                        "Everything else — prompt, questions, extraction, scoring — is held "
+                        "identical, so the only difference between two runs is the model.")
     p.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     p.add_argument("--top-p", type=float, default=DEFAULT_TOP_P)
     # A positive int, so that `--limit 0` is a loud error rather than silently falling
@@ -525,9 +630,11 @@ def main():
         p.error("--limit must be >= 1 (0 would silently run the whole tier).")
     questions_path = args.questions or TIERS[args.tier]
     tier_label = "custom" if args.questions else args.tier
-    # Per-tier default output: one shared filename would mean an easy run silently
-    # destroying the baseline run it is supposed to be compared against.
-    out_path = args.out or os.path.join(RESULTS_DIR, f"self_consistency_{tier_label}.json")
+    # Per-tier AND per-model default output: one shared filename would mean an easy run
+    # silently destroying the baseline run it is supposed to be compared against — and,
+    # once models are swappable, a challenger destroying the incumbent it is measured against.
+    out_path = args.out or os.path.join(
+        RESULTS_DIR, f"self_consistency_{tier_label}_{model_slug(args.model)}.json")
 
     if args.report_only:
         with open(args.report_only, encoding="utf-8") as f:
@@ -559,7 +666,7 @@ def main():
         p.error(f"No questions in {questions_path}")
 
     print(f"Loaded {len(items)} questions from {questions_path}  [tier: {tier_label}]")
-    print(f"Generator: {OLLAMA_MODEL} @ {OLLAMA_BASE_URL}")
+    print(f"Generator: {args.model} @ {OLLAMA_BASE_URL}")
     print(f"Plan: {len(items)} × (1 greedy + {args.samples} sampled) = "
           f"{len(items) * (args.samples + 1)} generations. This takes a while.")
     if args.dry_run:
@@ -569,54 +676,11 @@ def main():
         print(f"Would write {out_path}")
         return
 
-    greedy_chain = build_chain(0.0, 1.0)
-    sample_chain = build_chain(args.temperature, args.top_p)
-
-    t0 = time.perf_counter()
-    per_q = []
-    for i, item in enumerate(items, 1):
-        print(f"  [{i}/{len(items)}] {item['id']} ({item.get('topic', '')})…", flush=True)
-        rec = run_question(item, greedy_chain, sample_chain, args.samples, args.concurrency)
-        per_q.append(rec)
-        print(f"      greedy {'✓' if rec['greedy_correct'] else '✗'} ({rec['greedy_answer']})  "
-              f"sampled pass-rate {rec['pass_rate']:.0%}  "
-              f"modal {rec['modal_answer']} ×{rec['modal_share']:.0%} "
-              f"{'✓' if rec['modal_correct'] else '✗'}")
-    wall = time.perf_counter() - t0
-
-    rng = random.Random(args.seed)
-    acc_at_k = {}
-    for k in ks:
-        accs = [
-            vote_accuracy_at_k(q["sampled_answers"], set(q["gold"]), k, rng, RESAMPLE_TRIALS)
-            for q in per_q
-        ]
-        acc_at_k[k] = statistics.mean(accs)
-
-    cfg = {
-        "model": OLLAMA_MODEL,
-        "samples": args.samples,
-        "ks": ks,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "trials": RESAMPLE_TRIALS,
-        "num_predict": NUM_PREDICT,
-        "questions": questions_path,
-        "tier": tier_label,
-        "n_questions": len(items),
-        "wall_clock_s": round(wall, 1),
-    }
-    print_report(per_q, acc_at_k, ks, cfg)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "config": cfg,
-            "greedy_accuracy": sum(q["greedy_correct"] for q in per_q) / len(per_q),
-            "accuracy_at_k": {str(k): acc_at_k[k] for k in ks},
-            "per_question": per_q,
-        }, f, indent=2, ensure_ascii=False)
-    print(f"\nWrote {out_path}  (wall clock {wall / 60:.1f} min)")
+    record = run_tier(items, args.model, args.samples, ks, args.temperature, args.top_p,
+                      args.concurrency, args.seed, tier_label, questions_path, out_path)
+    acc_at_k = {int(k): v for k, v in record["accuracy_at_k"].items()}
+    print_report(record["per_question"], acc_at_k, ks, record["config"])
+    print(f"\nWrote {out_path}  (wall clock {record['config']['wall_clock_s'] / 60:.1f} min)")
 
 
 if __name__ == "__main__":
