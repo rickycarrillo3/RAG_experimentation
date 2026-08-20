@@ -84,6 +84,8 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. |
+| `KBM_MAX_CONTINUATIONS` | How many times the server may resume an answer cut off at `KBM_NUM_PREDICT`. `0` = label it truncated instead. |
+| `KBM_SHOW_DIAGNOSTICS` | `1` appends the technical cause to upload status messages. Off by default — the family sees plain sentences, the log keeps the exception. |
 | `KBM_TELEMETRY_SALT` | Salt for hashing usernames in the event log. Set it per deployment. |
 | `OLLAMA_MODELS`, `HF_HOME` | Must point at the volume, or ~15GB of weights re-download on every wake (`SETUP.md`). |
 
@@ -251,11 +253,12 @@ Worth building when "text me and I'll turn it on" gets annoying — not before.
   CPU/GPU split in §1. Worth doing once the corpus is real textbooks rather than test
   files.
 - **No quota on uploads.** Nothing limits how many PDFs a user can add or how large they
-  are. `/upload` streams to disk without a size check, and each accepted PDF is kept
-  under `$DATA_DIR/docs/raw/<user>/` alongside its `.mmd`. That is deliberate (§7), but
-  it means a family member uploading a shelf of textbooks grows the volume until it is
-  full — and a full network volume fails writes rather than auto-expanding. Watch
-  `du -sh $DATA_DIR` for now; a per-user cap is the obvious next guard.
+  are — `/upload` streams to disk without a size check. Since 2026-08-19 the PDF itself is
+  not retained (§7), so the volume grows by index size only: ~450 MB per 1000-page
+  textbook rather than ~550 MB. That is a smaller slope, not a bound. A family member
+  uploading a shelf of textbooks still fills the volume, and a full network volume fails
+  writes rather than auto-expanding. Watch `du -sh $DATA_DIR`; a per-user cap is the
+  obvious next guard.
 - **No per-user auth** (§4).
 - **No unattended wake path** (§5). Sleep is automatic; wake requires the RunPod account
   credential, so a family member who opens the link on a stopped pod gets a dead URL and
@@ -264,8 +267,10 @@ Worth building when "text me and I'll turn it on" gets annoying — not before.
   ~$20/mo and ~$115/mo and carries zero evidence. Verify with
   `KBM_IDLE_STOP_MINUTES=2` before relying on it — a silent failure here surfaces on the
   invoice, not in a log.
-- **No backups.** The BM25 pickle and Chroma directory are rebuildable from the source
-  PDFs, so back up `docs/raw/` first.
+- **No backups, and now nothing to rebuild from.** Uploaded PDFs are no longer kept, so
+  the BM25 pickle and Chroma directory are not derived data any more — they are the only
+  copy on the pod. Back *those* up. Losing them means asking the family to re-upload every
+  document and paying for Marker again.
 - **`KBM_RELEVANCE_FLOOR` is uncalibrated.** See `api/settings.py`; the `no_answer` slice
   of gold set v3 is what settles it.
 
@@ -278,19 +283,30 @@ under `$DATA_DIR`:
 
 | Artifact | Path | Size (measured) |
 |---|---|---|
-| Source PDF | `docs/raw/<user>/` | as uploaded — an OpenStax textbook is ~50–100 MB |
-| Extracted `.mmd` | `docs/extracted/<user>/` | ~1.8 KB per page (18 KB for 10 pages) |
+| Source PDF | *(not retained)* | temp dir only, deleted when the job ends |
+| Extracted `.mmd` | *(not retained)* | temp dir only, deleted when the job ends |
 | Chroma vectors | `chroma_db/` | ~64 KB per chunk with `bge-small` (384-dim) |
 | BM25 pickle | `bm25_indexes/user_<u>.pkl` | ~5.8 KB per chunk |
 
-So a 1000-page textbook ≈ 6–7k chunks ≈ **~450 MB of index + ~100 MB of PDF**. Five of
-them is roughly 3 GB — small next to the ~25 GB of model weights.
+So a 1000-page textbook ≈ 6–7k chunks ≈ **~450 MB of index**, with the PDF costing nothing
+after the job ends. Five of them is roughly 2.3 GB — small next to the ~25 GB of model
+weights.
+
+**The documents themselves are not kept.** The PDF and its `.mmd` live in the request's
+temp directory and are removed when the job finishes, successfully or not. What this buys
+is that the pod holds no copy of the family's library; what it costs is that the indexes
+become irreplaceable and a chunking change cannot be evaluated against real user documents
+without a re-upload. `ARCHITECTURE.md §5` carries the full trade.
 
 Two behaviours worth knowing:
 
 **Re-uploading the same document replaces it, rather than duplicating it.** Chunks are
 keyed by `chunk_id` (`<source>::<n>`) and merged with `ingest.merge_chunks`, so the
-second upload of `calculus.pdf` overwrites its chunks in place. Before this was fixed,
+second upload of `calculus.pdf` overwrites its chunks in place. This still holds now that
+extraction happens in a temp directory, and the reason is worth knowing before anyone
+refactors that path: `assign_chunk_ids` takes `os.path.basename`, and `mkdtemp()`
+randomises the *directory* while the uploaded *file name* is preserved. Randomise the file
+name — a uuid prefix, `NamedTemporaryFile` — and every re-upload becomes a duplicate. Before this was fixed,
 each upload re-added the user's *entire* accumulated corpus to Chroma — 66 → 136 → 210
 entries for uploads of 66, 4 and 4 chunks. Quadratic growth, and it degraded retrieval:
 the dense top-k filled with copies of one chunk, so fewer distinct candidates reached the

@@ -1,0 +1,30 @@
+{"id": "c01", "topic": "multivariable calculus", "question": "Let f(x, y) = x^2 * y. What is the directional derivative of f at the point (1, 2) in the direction of the unit vector (3/5, 4/5)? Give the answer as a decimal.", "answer": "3.2", "aliases": ["16/5"]}
+{"id": "c02", "topic": "multivariable calculus", "question": "Evaluate the double integral of (x^2 + y^2) over the unit disk x^2 + y^2 <= 1. Give the answer as a decimal to 4 decimal places.", "answer": "1.5708", "aliases": []}
+{"id": "c03", "topic": "multivariable calculus", "question": "Let F(x, y, z) = (x^2*y, y*z, z*x). What is the divergence of F at the point (1, 1, 1)?", "answer": "4", "aliases": []}
+{"id": "c04", "topic": "multivariable calculus", "question": "Using Lagrange multipliers, what is the maximum value of f(x, y) = x*y subject to the constraint x + y = 10?", "answer": "25", "aliases": []}
+{"id": "c05", "topic": "multivariable calculus", "question": "Use Green's theorem to evaluate the line integral of (-y dx + x dy) counterclockwise around the unit circle. Give the answer as a decimal to 4 decimal places.", "answer": "6.2832", "aliases": []}
+{"id": "c06", "topic": "multivariable calculus", "question": "What is the volume of the solid obtained by revolving the region under y = x^2 from x = 0 to x = 1 about the x-axis? Give the answer as a decimal to 4 decimal places.", "answer": "0.6283", "aliases": []}
+{"id": "c07", "topic": "linear algebra", "question": "What is the largest eigenvalue of the matrix with first row (4, 1) and second row (2, 3)?", "answer": "5", "aliases": []}
+{"id": "c08", "topic": "linear algebra", "question": "What is the determinant of the 3x3 matrix with rows (1, 2, 3), (4, 5, 6), and (7, 8, 10)?", "answer": "-3", "aliases": []}
+{"id": "c09", "topic": "linear algebra", "question": "What is the rank of the 3x3 matrix with rows (1, 2, 3), (2, 4, 6), and (1, 1, 1)?", "answer": "2", "aliases": []}
+{"id": "c10", "topic": "linear algebra", "question": "Let A be the matrix with first row (1, 2) and second row (3, 4). What is the trace of A^2?", "answer": "29", "aliases": []}
+{"id": "c11", "topic": "linear algebra", "question": "A linear map is represented by a 5x7 matrix of rank 3. What is the dimension of its kernel?", "answer": "4", "aliases": []}
+{"id": "c12", "topic": "linear algebra", "question": "What is the determinant of the 4x4 matrix with rows (1, 0, 2, -1), (3, 0, 0, 5), (2, 1, 4, -3), and (1, 0, 5, 0)?", "answer": "30", "aliases": []}
+{"id": "c13", "topic": "differential equations", "question": "Solve y'' - 5y' + 6y = 0 with y(0) = 1 and y'(0) = 0. In the solution written as y(t) = A*e^(2t) + B*e^(3t), what is the value of A?", "answer": "3", "aliases": []}
+{"id": "c14", "topic": "differential equations", "question": "For the equation y' + 2y = e^x, a particular solution has the form y_p = A*e^x. What is A? Give the answer as a fraction or a decimal to 4 decimal places.", "answer": "0.3333", "aliases": ["1/3"]}
+{"id": "c15", "topic": "differential equations", "question": "Solve dy/dx = y^2 with y(0) = 1. What is y(0.5)?", "answer": "2", "aliases": []}
+{"id": "c16", "topic": "differential equations", "question": "What is the value of the Wronskian of the functions e^(2t) and e^(3t) at t = 0?", "answer": "1", "aliases": []}
+{"id": "c17", "topic": "analysis", "question": "What is the radius of convergence of the power series sum over n >= 1 of (n! / n^n) * x^n? Give the answer as a decimal to 4 decimal places.", "answer": "2.7183", "aliases": []}
+{"id": "c18", "topic": "analysis", "question": "Evaluate the infinite sum over n >= 1 of 1 / (n * (n + 1)).", "answer": "1", "aliases": []}
+{"id": "c19", "topic": "analysis", "question": "Evaluate the infinite sum over n >= 0 of n / 2^n.", "answer": "2", "aliases": []}
+{"id": "c20", "topic": "analysis", "question": "Evaluate the limit as x approaches 0 of (e^x - 1 - x) / x^2. Give the answer as a fraction or a decimal.", "answer": "0.5", "aliases": ["1/2"]}
+{"id": "c21", "topic": "analysis", "question": "In the Taylor series of ln(1 + x^2) about x = 0, what is the coefficient of x^4? Give the answer as a fraction or a decimal.", "answer": "-0.5", "aliases": ["-1/2"]}
+{"id": "c22", "topic": "analysis", "question": "Evaluate the improper integral of 1 / (1 + x^2) from x = 0 to infinity. Give the answer as a decimal to 4 decimal places.", "answer": "1.5708", "aliases": []}
+{"id": "c23", "topic": "probability", "question": "What is the variance of a binomial random variable with n = 10 and p = 0.3? Give the answer as a decimal.", "answer": "2.1", "aliases": []}
+{"id": "c24", "topic": "probability", "question": "A Poisson random variable has mean 2. What is the probability that it equals 0? Give the answer as a decimal to 4 decimal places.", "answer": "0.1353", "aliases": []}
+{"id": "c25", "topic": "probability", "question": "A disease affects 1% of a population. A test has 99% sensitivity and 95% specificity. Given a positive test, what is the probability the person has the disease? Give the answer as a decimal to 4 decimal places.", "answer": "0.1667", "aliases": ["1/6"]}
+{"id": "c26", "topic": "probability", "question": "What is the expected number of rolls of a fair six-sided die needed to see the first 6?", "answer": "6", "aliases": []}
+{"id": "c27", "topic": "probability", "question": "X is a continuous random variable uniform on [0, 1]. What is the variance of X? Give the answer as a fraction or a decimal to 4 decimal places.", "answer": "0.0833", "aliases": ["1/12"]}
+{"id": "c28", "topic": "complex analysis", "question": "What is the value of the modulus |1 + i| raised to the 8th power?", "answer": "16", "aliases": []}
+{"id": "c29", "topic": "abstract algebra", "question": "How many elements of order exactly 2 are there in the cyclic group Z/12Z under addition?", "answer": "1", "aliases": []}
+{"id": "c30", "topic": "abstract algebra", "question": "How many subgroups does the cyclic group Z/12Z have?", "answer": "6", "aliases": []}

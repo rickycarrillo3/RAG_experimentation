@@ -204,7 +204,7 @@ Kept short — each links to where the reasoning lives.
 |---|---|---|
 | Chroma grew 66 → 136 → 210 on uploads of 66/4/4 chunks | `build_chroma` re-added the user's whole accumulated corpus; no explicit ids | `DEPLOYMENT.md §7` |
 | Re-uploading a PDF raised `DuplicateIDError` | surfaced by the ids fix above; previously silent duplication | `ingest.merge_chunks` |
-| Uploaded PDFs and `.mmd` vanished after ingest | `shutil.rmtree(tmp_dir)` deleted the only copy | now persisted under `$DATA_DIR/docs/{raw,extracted}/<user>/` |
+| Uploaded PDFs and `.mmd` vanished after ingest | `shutil.rmtree(tmp_dir)` deleted the only copy | fixed by persisting them, then **deliberately reverted** on 2026-08-19 — see the entry above |
 | Every entry point raised `NameError` after a merge | `resolve_device()` called but never imported — a textually clean, semantically broken merge | found by importing, not reading |
 | `startup.sh` could not run at all | `ALLOW_CPU`/`DO_PULL`/`DO_PREFETCH` read but never assigned; fatal under `set -u`. `bash -n` passed | recovered from commit `eb9044c` |
 | Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
@@ -214,3 +214,4 @@ Kept short — each links to where the reasoning lives.
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |
 | Every question paid a 4.4 s cold model load | `keep_alive` unset, so Ollama unloaded after 5 min idle | `LATENCY.md`, `DEPLOYMENT.md §5` |
 | Math PDFs routed to the wrong extractor | math detected by grepping LaTeX tokens in `pymupdf4llm` output, which contains **no LaTeX at all** | `CLAUDE.md` — the repeat offender |
+| Gradio died with `Cannot find empty port in range: 7860-7860` | `APP_HOST` was `0.0.0.0.` — a trailing dot, so `getaddrinfo` failed (Errno -2); gradio's port loop swallows the bind error and blames the port | `DEPLOYMENT.md §4`, `SETUP.md` troubleshooting |

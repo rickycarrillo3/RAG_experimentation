@@ -88,6 +88,15 @@ class DoneEvent(BaseModel):
     sources: list[Source]
     timings: Timings
     event_id: str = Field(..., description="Telemetry id; pass to POST /feedback to rate this answer")
+    truncated: bool = Field(
+        False,
+        description="Generation hit the token limit and could not be finished within "
+                    "KBM_MAX_CONTINUATIONS. `answer` already carries a visible marker, so "
+                    "a client that ignores this field still shows an honest answer.",
+    )
+    continuations: int = Field(
+        0, description="Continuation passes used to finish the answer (0 = finished first try)"
+    )
 
 
 class ErrorEvent(BaseModel):
@@ -113,6 +122,29 @@ class Job(BaseModel):
     user: str
     detail: str = ""
     n_chunks: int | None = None
+    # Added rather than encoded as a new JobStatus member on purpose: adding an enum
+    # variant breaks an exhaustive switch in the generated TS client, while an optional
+    # field is ignored by clients that predate it. A half-good ingest is `status=done`
+    # plus `degraded=true`, never a fifth status.
+    extractor: str | None = Field(
+        None,
+        description="Which extractor produced the text: 'marker' (LaTeX-faithful) or "
+                    "'pymupdf4llm' (equations flattened to Unicode)",
+    )
+    degraded: bool = Field(
+        False,
+        description="Indexed, but at lower fidelity than intended — currently means Marker "
+                    "failed and pymupdf4llm was used, so the chunks contain no LaTeX",
+    )
+    stage: str | None = Field(
+        None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index"
+    )
+    diagnostic: str | None = Field(
+        None,
+        description="Technical cause — exception text, tool errors, install URLs. For "
+                    "operators and logs. NOT for display: `detail` is the user-facing "
+                    "sentence, and clients should render that instead.",
+    )
 
 
 class UserStatus(BaseModel):

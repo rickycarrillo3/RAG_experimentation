@@ -1,4 +1,11 @@
-marker-pdf
+# Pinned <2.0 deliberately. marker-pdf 2.0.0 (2026-07-20) stopped running Surya
+# in-process: it now spawns an inference server on first use — vLLM **in Docker** on
+# NVIDIA GPUs. A RunPod pod is itself a container with no Docker daemon, so every
+# extraction dies with "docker binary not found" and falls back to pymupdf4llm, which
+# produces NO LaTeX (CLAUDE.md). It surfaces only on the first upload: prefetch's
+# create_model_dict() succeeds because the Docker spawn happens at conversion time,
+# not at model load. See ERRORS.md.
+marker-pdf<2.0
 pymupdf4llm
 langchain-core
 langchain-community
@@ -15,7 +22,15 @@ sentence-transformers
 # then reports the reranker as a missing config.json. See ERRORS.md 2026-08-19.
 hf_transfer
 pylatexenc
-gradio==6.18.0
+# 6.17.3, NOT 6.18.0. This is a three-way pin, not a preference:
+#   marker-pdf<2.0 (above) -> transformers<5.0.0 -> huggingface-hub<1.0
+#   gradio 6.18.0          -> huggingface-hub>=1.2.0
+# Those are unsatisfiable together, and pip does not say so. It backtracks through
+# ~30 sentence-transformers versions hunting for an escape that does not exist, stalls
+# for minutes, then fails with ResolutionImpossible pointing at sentence-transformers —
+# a package that is not the problem. 6.17.3 is the last release accepting hub>=0.33.5.
+# If marker-pdf<2.0 is ever lifted, this can move forward again. See ERRORS.md.
+gradio==6.17.3
 torch
 # torchvision is a marker-pdf dependency, listed explicitly because it is a trap:
 # it ships compiled C++ ops linked against one exact torch build. Installed from PyPI

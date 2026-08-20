@@ -21,6 +21,8 @@ Usage:
 import argparse
 import os
 import sys
+from dataclasses import dataclass
+
 import pymupdf4llm
 
 
@@ -64,26 +66,66 @@ def extract_pymupdf(pdf_path: str, out_dir: str) -> str:
     return out_path
 
 
-def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR) -> str:
+@dataclass(frozen=True)
+class ExtractResult:
+    """What came out, and which extractor produced it.
+
+    The second field is the point. `extract()` used to return a bare path on both the
+    Marker path and the pymupdf4llm fallback, so no caller could tell them apart — and
+    since the fallback does not raise, an ingest whose equations had been flattened to
+    Unicode reported "Indexed. N total chunks" like any success. A return type that
+    cannot express degradation guarantees the caller will report success.
+    """
+
+    path: str
+    extractor: str                      # "marker" | "pymupdf4llm"
+    marker_error: str | None = None     # why Marker was skipped, when it was tried and failed
+
+    @property
+    def degraded(self) -> bool:
+        """True when the text contains no LaTeX, whatever the reason.
+
+        `--force-pymupdf` is a deliberate choice rather than a failure, but the chunks
+        are equally unusable for math either way, so it counts as degraded too. Why it
+        happened is `marker_error`'s job, not this flag's.
+        """
+        return self.extractor != "marker"
+
+
+def extract_detailed(
+    pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR
+) -> ExtractResult:
+    """Extract, reporting which extractor won. See `extract()` for the plain-path form.
+
+    Mirrors the retrieve()/retrieve_detailed() split in retrieval.py: the simple entry
+    point stays simple, and the caller that needs to act on the details asks for them.
+    """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
 
     if not force_pymupdf:
         print(f"[marker] Extracting {os.path.basename(pdf_path)} (LaTeX-faithful; slow on CPU)...")
         try:
             out_path = extract_marker(pdf_path, out_dir)
             print(f"Saved to {out_path}")
-            return out_path
+            return ExtractResult(path=out_path, extractor="marker")
         except Exception as e:
             # pymupdf flattens equations, so this is a degraded result, not an equivalent one.
             print(f"WARNING: Marker failed ({e}).")
             print("Falling back to pymupdf4llm — EQUATIONS WILL BE MANGLED. Re-run once Marker works.")
+            marker_error = str(e)
+    else:
+        marker_error = None
 
     print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
     out_path = extract_pymupdf(pdf_path, out_dir)
     print(f"Saved to {out_path}")
-    return out_path
+    return ExtractResult(path=out_path, extractor="pymupdf4llm", marker_error=marker_error)
+
+
+def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR) -> str:
+    """Extract and return the .mmd path. Unchanged signature for the CLI and eval scripts."""
+    return extract_detailed(pdf_path, force_pymupdf=force_pymupdf, out_dir=out_dir).path
 
 
 if __name__ == "__main__":
