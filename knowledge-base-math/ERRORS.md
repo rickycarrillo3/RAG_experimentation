@@ -17,6 +17,56 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-19 · `pip install` hung for minutes, blaming `sentence-transformers`
+
+**Symptom.** On a fresh pod, `pip install -r requirements.txt` printed a wall of
+`Downloading sentence_transformers-X.Y.Z...metadata` lines, walking backwards from 6.0.0
+through 5.7.0, 5.6.1, 5.5.1, … 5.1.1, with pip's own advice to "provide the dependency
+resolver with stricter constraints". It reads as a slow network or a
+`sentence-transformers` problem. It is neither.
+
+**What it actually was.** Two pins in `requirements.txt` had become unsatisfiable
+together, through a chain neither one mentions:
+
+```
+marker-pdf<2.0  ->  marker-pdf 1.10.2  ->  transformers<5.0.0  ->  huggingface-hub<1.0
+gradio==6.18.0                                                 ->  huggingface-hub>=1.2.0
+```
+
+Gradio raised its `huggingface-hub` floor from `>=0.33.5` to `>=1.2.0` in **6.18.0** — the
+exact version that had been pinned to fix an unrelated `Blocks`/`launch()` crash. Nothing
+can satisfy `hub<1.0` and `hub>=1.2.0` at once, so pip backtracks looking for an escape,
+and `sentence-transformers` is simply the package it chose to pivot on. It has ~30
+releases and its own `huggingface-hub` floor (6.0.0 needs `>=1.3.0`), so it looks like the
+constrained package while contributing nothing to the conflict.
+
+The `marker-pdf<2.0` pin is not the one to loosen: it exists because marker-pdf 2.0 needs
+a Docker daemon a RunPod pod does not have (see the 2026-08-18 entry below).
+
+**Fix.** Pin Gradio to the last release that still accepts `hub>=0.33.5`, and pin
+`sentence-transformers` so the resolver stops exploring at all:
+
+```
+gradio==6.17.3
+sentence-transformers==5.5.1
+```
+
+Still Gradio 6, so `app.py`'s Gradio-6 API usage is unaffected. To unblock an install
+without editing the file, append the pins on the command line:
+
+```bash
+pip install -r requirements.txt gradio==6.17.3 sentence-transformers==5.5.1
+```
+
+**Lesson.** When pip backtracks, the package it names is almost never the cause — it is
+whichever package has the most versions to walk. Read the *constraints*, not the log:
+`pip index versions` and each candidate's `requires_dist` find the real pair in a minute,
+while watching the download log finds nothing. And a version pin added to fix an API
+crash is still a dependency edge; this one silently re-opened a conflict on a transitive
+package neither pin names.
+
+---
+
 ## 2026-08-19 · Long answers stopped mid-sentence, and the API called it a success
 
 **Symptom.** Answers to derivation-style questions ended abruptly, mid-word or mid-step.

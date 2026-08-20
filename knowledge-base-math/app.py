@@ -228,7 +228,7 @@ def send_feedback(event_id: str | None, rating: str) -> str:
 # ── UI layout ──────────────────────────────────────────────────────────────────
 
 # Gradio moved `theme` from Blocks to launch() in 6.0, and dropped Chatbot's `type`
-# argument (messages is now the only format). requirements.txt pins gradio==6.18.0 — if
+# argument (messages is now the only format). requirements.txt pins gradio==6.17.3 — if
 # this file raises TypeError on a Chatbot or Blocks argument, the environment is on 5.x
 # and needs `pip install -r requirements.txt`, not a code change. See ERRORS.md.
 with gr.Blocks(title="Math Tutor") as app:
