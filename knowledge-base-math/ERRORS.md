@@ -17,6 +17,42 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-19 · `prefetch_models.py` failed on a second pod: hf_transfer, then a "missing config.json"
+
+**Symptom.** Stage 4 of `startup.sh` on a freshly built pod:
+
+```
+↓ embedder BAAI/bge-small-en-v1.5
+  FAILED: ValueError: Fast download using 'hf_transfer' is enabled
+  (HF_HUB_ENABLE_HF_TRANSFER=1) but 'hf_transfer' package is not available
+↓ reranker BAAI/bge-reranker-v2-m3
+  FAILED: OSError: Can't load the configuration of 'BAAI/bge-reranker-v2-m3' ...
+  make sure ... is the correct path to a directory containing a config.json file
+```
+
+**Cause.** One cause, two faces. RunPod's images export `HF_HUB_ENABLE_HF_TRANSFER=1` to
+speed up model downloads; `huggingface_hub` honours it by raising on *every* download
+when the `hf_transfer` package is absent. It was absent because nothing in
+`requirements.txt` asked for it — our code never imports it.
+
+**What made it confusing.** The second error names the wrong problem. Nothing is wrong
+with the model id or the cache: the download never ran, so there is no `config.json` on
+disk, and `transformers` reports the empty cache as if the repo were bad. Chasing the
+reranker message leads to checking model names and clearing caches, none of which is the
+issue. **When several models fail in sequence, fix the first failure and re-run before
+reading the rest** — later entries in a prefetch list are usually echoes of the first.
+
+**Fix.** `hf_transfer` added to `requirements.txt`, with a comment saying why a package
+we never import is there. On a pod that already exists, `pip install hf_transfer` inside
+the venv. Unsetting `HF_HUB_ENABLE_HF_TRANSFER` also works but only for that shell — the
+variable comes from the image, so the failure returns next session.
+
+**General lesson.** The pod image's environment is part of the dependency set. A variable
+someone else exported can make a correct `requirements.txt` incomplete, and the resulting
+error names our config rather than theirs.
+
+---
+
 ## 2026-08-18 · Gradio UI crashed on startup; `/healthz` returned 401
 
 Two unrelated bugs surfaced by the first full `startup.sh` run on the pod.

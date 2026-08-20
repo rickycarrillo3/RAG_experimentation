@@ -9,6 +9,11 @@ langchain-ollama
 chromadb
 rank-bm25
 sentence-transformers
+# Not imported by any of our code. It is here because RunPod's images export
+# HF_HUB_ENABLE_HF_TRANSFER=1, and huggingface_hub raises on every download when that
+# is set without this package installed — prefetch_models.py fails on the embedder and
+# then reports the reranker as a missing config.json. See ERRORS.md 2026-08-19.
+hf_transfer
 pylatexenc
 gradio==6.18.0
 torch

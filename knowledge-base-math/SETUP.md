@@ -317,6 +317,14 @@ it; `127.0.0.1` will bind successfully and be unreachable from outside.
 gradio **5.x** while the code targets the pinned 6.18.0. `pip install -r requirements.txt`.
 A `UserWarning` about `theme` moving to `launch()` just above it is the same mismatch. See §7.
 
+**`ValueError: ... 'hf_transfer' package is not available`** during `prefetch_models.py`
+(usually followed by the reranker failing with "Can't load the configuration of
+`BAAI/bge-reranker-v2-m3`") — the pod image exports `HF_HUB_ENABLE_HF_TRANSFER=1` and the
+package is missing, so every HuggingFace download raises. The reranker's message is a
+red herring: the download never ran, so there is no `config.json` to load. `pip install
+hf_transfer` in the venv (it is in `requirements.txt`, so `pip install -r
+requirements.txt` also fixes it) and re-run. See `ERRORS.md 2026-08-19`.
+
 **`ResolutionImpossible` when installing** — something has been added or bumped that
 re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the
 `requirements.txt` header before loosening a pin to make the error go away.
