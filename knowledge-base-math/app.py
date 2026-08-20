@@ -152,8 +152,9 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
     """Stream one answer from the API, yielding Gradio state as tokens arrive.
 
     Yields (cleared input, display history, clean history, event_id). `clean_history`
-    holds the plain answers with the sources footer stripped — that is what gets sent
-    back as conversation context, so the model never re-reads its own citation noise.
+    holds model text only — token frames flagged `server_marker` (the sources footer,
+    the truncation notice) are displayed but kept out of it, so the model is never sent
+    back a transcript in which it appears to have written the server's own words.
     """
     username = (username or "").strip().lower()
     if not username:
@@ -166,8 +167,8 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
     base = history + [_msg("user", message)]
     yield "", base + [_msg("assistant", "_Searching your documents…_")], clean_history, None
 
-    answer = ""
-    sources_text = ""
+    answer = ""   # what the student sees: model text plus the server's footer
+    clean = ""    # model text only; this is what goes back as conversation context
     event_id = None
     payload = {
         "user": username,
@@ -188,13 +189,15 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
                     data = json.loads(line[5:].strip())
                     kind = data.get("type")
 
-                    if kind == "sources":
-                        if data["sources"]:
-                            sources_text = "\n\n**Sources retrieved:**\n" + "\n".join(
-                                f"- {s['source']} (score={s['score']:.4f})" for s in data["sources"]
-                            )
-                    elif kind == "token":
+                    if kind == "token":
                         answer += data["text"]
+                        # The server names the sources itself, in one line at the end of
+                        # the answer (api/chat.py:sources_footer). Building a second list
+                        # here from the `sources` frame only printed the same filename
+                        # five times, once per retrieved chunk, under the one the student
+                        # was actually meant to read.
+                        if not data.get("server_marker"):
+                            clean += data["text"]
                         yield "", base + [_msg("assistant", answer)], clean_history, event_id
                     elif kind == "done":
                         event_id = data["event_id"]
@@ -202,10 +205,14 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
                         raise RuntimeError(data["message"])
     except Exception as e:
         answer = f"Error: {e}"
-        sources_text = ""
+        clean = ""
 
-    new_clean = clean_history + [_msg("user", message), _msg("assistant", answer)]
-    yield "", base + [_msg("assistant", answer + sources_text)], new_clean, event_id
+    # A failed turn is not conversation. Recording "Error: ..." — or an empty reply —
+    # as the tutor's turn would put it in the transcript the model continues from.
+    new_clean = (
+        clean_history + [_msg("user", message), _msg("assistant", clean)] if clean else clean_history
+    )
+    yield "", base + [_msg("assistant", answer)], new_clean, event_id
 
 
 def send_feedback(event_id: str | None, rating: str) -> str:

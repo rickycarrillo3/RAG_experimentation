@@ -35,8 +35,9 @@ When answering:
 # The two modes differ only in this trailing block, and it is deliberately the *last*
 # part of the static prefix: two prompts that share a prefix also share the KV cache
 # for that prefix, so alternating modes mid-conversation costs less than a full reload.
-_GROUNDED_RULES = """- Context from the student's uploaded documents is provided below. Answer from it and cite the source you used.
+_GROUNDED_RULES = """- Context from the student's uploaded documents is provided below. Answer from it.
 - If the context does not cover part of the question, say so explicitly rather than filling the gap silently.
+- Do not write a source list or citation of your own: the server appends the exact one below your answer.
 
 Conversation so far:
 {history}"""
@@ -47,17 +48,23 @@ _GENERAL_RULES = """- No relevant material was found in the student's uploaded d
 Conversation so far:
 {history}"""
 
-# The provenance marker is prepended by the server, NOT requested from the model.
-# Measured: asked to open with this line verbatim, deepseek-math-7b-rl ignored the
+# Provenance is written by the server, NOT requested from the model.
+# Measured: asked to state its provenance verbatim, deepseek-math-7b-rl ignored the
 # instruction and answered directly ("The Battle of Hastings took place in 1066 AD.").
 # That is consistent with what EVALUATION.md already says about the model — it is a
 # solver, not an instruction-follower. Provenance is a fact the server knows from
 # `decide_mode`, so making it depend on the generator's compliance would be both
 # unreliable and untestable. Emitting it deterministically also means the honesty of
 # the label is guaranteed rather than merely measured.
-GENERAL_MODE_MARKER = "_Not from your uploaded documents — answering from general knowledge._\n\n"
+#
+# It is one `Sources:` line rather than a sentence of explanation because the student
+# is already looking at the answer that came out of their own documents — the line
+# only has to name which document, and say so plainly when the answer came from none.
+# The long "not from your uploaded documents" banner it replaces said, at length, what
+# the absence of a filename says by itself.
+GENERAL_SOURCES_FOOTER = "\n\n_Sources: general knowledge_"
 
-# Same reasoning as GENERAL_MODE_MARKER, for the same reason: the server knows the
+# Same reasoning as the sources footer, for the same reason: the server knows the
 # answer was cut off (Ollama says so, via done_reason == "length"), and the model cannot
 # be relied on to say it. Appended — not prepended — because it is a fact about the end
 # of the answer, and because prepending it would change the prompt prefix that the next
@@ -115,14 +122,118 @@ class PrefillEcho:
         return self._buf[len(self._prefill):]
 
 
+# Below this length a question is not distinctive enough to recognise as an echo:
+# "hi" is a prefix of half the greetings a model might open with, and swallowing it
+# would damage a perfectly good answer to save nothing.
+ECHO_MIN_CHARS = 20
+
+# What the student gets instead of an empty bubble. Reached when the model produced
+# nothing, or produced only a restatement of the question, which comes to the same
+# thing from the student's side.
+NO_ANSWER_TEXT = (
+    "_No answer came back this time — try asking the question a different way._"
+)
+
+
+def _norm(text: str) -> str:
+    """Whitespace- and case-insensitive form, for comparing text to the question."""
+    return " ".join(text.split()).casefold()
+
+
+class QuestionEcho:
+    """Drops a verbatim restatement of the question from the head of an answer.
+
+    Reported from the running app: with no documents ingested, an answer came back that
+    was the student's own question and nothing else. It is not reproducible here — a
+    dozen prompts through the shipped general-mode path all answered normally — so this
+    is a guard on the symptom, not a fix for a diagnosed cause. It costs a good answer
+    nothing: the only text it can ever remove is an exact copy of the question.
+
+    Related to PrefillEcho but the opposite contract, and they must not be merged.
+    PrefillEcho *expects* the prefix and treats its absence as a reason to abandon the
+    continuation. This one expects nothing: it holds text back only while that text is
+    still a prefix of the question, and flushes everything the moment it diverges — which
+    for a real answer is within a character or two.
+
+    A question restated *inside* a longer answer is left alone. Opening with "What is a
+    derivative? A derivative is..." is how a teacher talks, and only the leading copy is
+    dropped; text after it streams through untouched.
+    """
+
+    def __init__(self, question: str) -> None:
+        self._question = question
+        self._buf = ""
+        # Short questions are not distinctive enough to match on — pass everything.
+        self._done = len(question.strip()) < ECHO_MIN_CHARS
+        self.fired = False
+
+    def feed(self, text: str) -> str:
+        """Return the part of `text` that is safe to show the student."""
+        if self._done:
+            return text
+
+        self._buf += text
+        nq = _norm(self._question)
+        nb = _norm(self._buf)
+
+        # Still on track to be the question: hold it back and wait for more.
+        if nq.startswith(nb):
+            return ""
+
+        self._done = True
+        cut = self._echo_cut()
+        if cut is None:
+            # Diverged — never was an echo. Release everything held back.
+            return self._flush_buf()
+        self.fired = True
+        # The echo, plus whatever punctuation and whitespace trailed it, is dropped;
+        # a real answer that followed it streams on from here.
+        return self._buf[cut:].lstrip(" .:\n")
+
+    def flush(self) -> str:
+        """Whatever is still held back when the stream ends.
+
+        The model can stop part-way through a copy of the question, which is a prefix
+        and therefore still buffered. Dropping it silently would turn a bad answer into
+        no answer at all, so it is released — the empty-answer path is what handles the
+        case where there was never anything else.
+        """
+        if self._done:
+            return ""
+        self._done = True
+        if _norm(self._buf) == _norm(self._question):
+            self.fired = True
+            return ""
+        return self._flush_buf()
+
+    def _flush_buf(self) -> str:
+        buf, self._buf = self._buf, ""
+        return buf
+
+    def _echo_cut(self) -> int | None:
+        """Index just past a verbatim copy of the question at the head of the buffer.
+
+        Scans rather than slicing at `len(question)` because normalisation moves the
+        boundary: the model's copy can differ from the original in whitespace and case
+        and still be the same sentence.
+        """
+        nq = _norm(self._question)
+        for i in range(1, len(self._buf) + 1):
+            if _norm(self._buf[:i]) == nq:
+                return i
+        return None
+
+
 SYSTEM_PROMPTS = {
     Mode.GROUNDED: _TEACHING_STYLE + _GROUNDED_RULES,
     Mode.GENERAL: _TEACHING_STYLE + _GENERAL_RULES,
 }
 
-HUMAN_PROMPT = """{context}
-
-Question: {input}"""
+# `context` carries its own trailing blank line (see build_context) rather than the
+# template hard-coding one. In `general` mode the context is empty, and a template with
+# the blank line baked in handed the model a human turn that opened with two blank lines
+# before "Question:" — a continuation prompt with nothing above it to continue.
+HUMAN_PROMPT = "{context}Question: {input}"
 
 # History is trimmed in blocks, not one message at a time — see history_window().
 # These count *messages* (a turn is two: student + tutor).
@@ -211,4 +322,24 @@ def build_context(results: list[tuple[Document, float]], mode: Mode) -> str:
     for doc, _ in results:
         source = os.path.basename(doc.metadata.get("source", "unknown"))
         parts.append(f"[Source: {source}]\n{doc.page_content}")
-    return "\n\n".join(parts)
+    # Trailing blank line, so HUMAN_PROMPT does not have to supply one that `general`
+    # mode would then emit with nothing in front of it.
+    return "\n\n".join(parts) + "\n\n"
+
+
+def sources_footer(sources: list[Source], mode: Mode) -> str:
+    """The provenance line appended to every answer, in both modes.
+
+    Deduped because the top-N chunks usually come from the same document, and a footer
+    that named `calculus.pdf` five times would say nothing five times. Ordered by
+    retrieval rank rather than sorted: the first name is the document the answer leans
+    on hardest. Scores and chunk ids stay off it — they are in the `sources` SSE frame
+    for any client that wants to show them, and they mean nothing to a student.
+
+    No sources means nothing grounded the answer, whatever `mode` claims, so the
+    general-knowledge line is the honest one in that case.
+    """
+    if mode is Mode.GENERAL or not sources:
+        return GENERAL_SOURCES_FOOTER
+    names = list(dict.fromkeys(s.source for s in sources))
+    return "\n\n_Sources: " + ", ".join(names) + "_"

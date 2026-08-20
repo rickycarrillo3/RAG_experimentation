@@ -677,10 +677,12 @@ correctness, the judge is needed only for faithfulness and relevance.
 
 ### 10.8 Dependency on answer provenance (already shipped)
 
-`api/` now labels every answer `grounded` or `general` (`api/chat.py:decide_mode`), and in
-`general` mode **the server prepends the marker itself** rather than asking the model to.
-Measured: instructed to emit that line, `deepseek-math-7b-rl` ignored it and answered
-directly — it is a solver, not an instruction-follower, exactly as §3 says.
+`api/` now labels every answer `grounded` or `general` (`api/chat.py:decide_mode`), and
+**the server writes the provenance itself** rather than asking the model to — one
+`Sources:` line appended to every answer, naming the documents in `grounded` mode and
+reading `Sources: general knowledge` in `general` mode. Measured: instructed to state its
+provenance, `deepseek-math-7b-rl` ignored the instruction and answered directly — it is a
+solver, not an instruction-follower, exactly as §3 says.
 
 This is what makes faithfulness measurable at all. Without a trustworthy label, an answer
 grounded in documents and one confabulated from parametric memory are indistinguishable,

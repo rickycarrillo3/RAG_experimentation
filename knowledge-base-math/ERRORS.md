@@ -17,6 +17,41 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-19 · The answer came back as the student's own question — not reproduced
+
+**Symptom.** Reported from the running app, with no documents ingested yet: the tutor's
+reply was the question that had just been asked, and nothing else. No answer under it, no
+error frame.
+
+**Status: open.** No reproduction. The shipped `general`-mode path was driven through
+`t1c/deepseek-math-7b-rl:Q4` on ~15 prompts chosen to provoke it — bare greetings,
+one-word turns, statements with a wrong premise, multi-turn histories, word problems — and
+every one answered normally. `app.handle_chat` was driven against a live API for a user
+with no index, and the displayed history was correct. So the cause is **not** in prompt
+construction or the Gradio client as they stand here, and may be environment-specific
+(a different Ollama or `langchain-core` build on the pod).
+
+**What was done about it anyway.** Two guards, neither of which can damage a good answer:
+
+- `chat.QuestionEcho` (wired in `routes._chat_stream`) holds back the head of the stream
+  only while it is still a prefix of the question, and drops it only if it turns out to be
+  a verbatim copy. A real answer diverges within a character or two and streams through
+  untouched. When it fires it logs a warning naming the mode — **if this symptom recurs,
+  that line in the server log is the first thing to look for.**
+- An answer that comes back empty — or that was nothing but the question — now says so
+  (`chat.NO_ANSWER_TEXT`) instead of rendering an empty bubble with a sources footer
+  under it.
+
+**What would settle it.** The `question` and `n_completion_chars` of the offending event
+in `$DATA_DIR/telemetry/events.jsonl` (a completion length within a few characters of the
+question length is the fingerprint), plus `ollama --version` and `pip show langchain-core`
+from the machine it happened on.
+
+**Lesson.** A guard on the symptom is not a diagnosis, and saying so in writing is what
+keeps it from being mistaken for one later.
+
+---
+
 ## 2026-08-19 · `prefetch_models.py` failed on a second pod: hf_transfer, then a "missing config.json"
 
 **Symptom.** Stage 4 of `startup.sh` on a freshly built pod:
@@ -209,7 +244,7 @@ Kept short — each links to where the reasoning lives.
 | `startup.sh` could not run at all | `ALLOW_CPU`/`DO_PULL`/`DO_PREFETCH` read but never assigned; fatal under `set -u`. `bash -n` passed | recovered from commit `eb9044c` |
 | Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
 | Abstention was structurally impossible | `KBM_RELEVANCE_FLOOR` documented as a raw logit, default `0.0`; the reranker applies a Sigmoid, so every score passed | `api/settings.py`, `CLAUDE.md` |
-| Answers claimed document grounding they didn't have | deepseek-math ignores the "say this isn't from your documents" instruction — it is a solver, not an instruction-follower | server prepends the marker; `api/chat.py` |
+| Answers claimed document grounding they didn't have | deepseek-math ignores the "say this isn't from your documents" instruction — it is a solver, not an instruction-follower | server appends the `Sources:` line itself; `api/chat.py:sources_footer` |
 | Gradio UI crashed on startup | `theme=` passed to `launch()` instead of `Blocks()` on gradio 6.18 | `app.py` |
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |
 | Every question paid a 4.4 s cold model load | `keep_alive` unset, so Ollama unloaded after 5 min idle | `LATENCY.md`, `DEPLOYMENT.md §5` |
