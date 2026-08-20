@@ -870,8 +870,10 @@ verdict does **not** carry over — see the scoping note at the end of this sect
 because it is a real measurement and the easy tier's regression role needs a reference point.
 
 20 questions × (1 greedy + 10 sampled at T=0.8/top_p=0.95), 220 generations, 31.6 min wall
-clock, ~8.2 s/generation. `--report-only evaluation/results/self_consistency_easy.json`
-re-prints this without regenerating anything.
+clock, ~8.2 s/generation. `--report-only
+evaluation/results/self_consistency_easy_deepseek-math-7b-rl_Q4.json` re-prints this without
+regenerating anything. (Result files gained the model name in §12; a run from before that
+change is at the old `self_consistency_easy.json`.)
 
 | setting | accuracy | vs greedy | gens/q | est. serial s/query |
 |---|---|---|---|---|
@@ -950,3 +952,169 @@ Two things this section does *not* measure, and both matter before shipping:
    cannot stream — the answer does not exist until every sample is complete — so adopting it
    changes the UX from "tokens appear immediately" to "nothing for k× the latency, then an
    answer." That is a product decision, not just a cost one.
+
+---
+
+## 12. Model bake-off: is another 7B generator better than deepseek-math?
+
+§11.6 ended with a diagnosis rather than a fix. deepseek-math-7b-rl:Q4's errors on the easy
+tier were *execution* errors — right method, wrong long division — and *knowledge* errors,
+and it named two levers that could move them: tool-integrated reasoning, and a better
+generator. `evaluation/model_bakeoff.py` measures the second.
+
+```bash
+# from knowledge-base-math/
+python evaluation/model_bakeoff.py --check        # published numbers + which arms are pulled
+python evaluation/model_bakeoff.py --dry-run      # plan and cost, generates nothing
+python evaluation/model_bakeoff.py                # the run
+python evaluation/model_bakeoff.py --report-only  # re-compare saved runs, generates nothing
+python evaluation/model_bakeoff.py --easy         # regression tripwire, AFTER a baseline win
+```
+
+### 12.1 The arms, and why each one
+
+All Q4_K_M, because the incumbent is a Q4 GGUF and comparing it against an fp16 challenger
+measures the quantization and calls it the model.
+
+| arm | role | the question it answers |
+|---|---|---|
+| `t1c/deepseek-math-7b-rl:Q4` | incumbent | the thing to beat |
+| `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M` | math specialist, newer | does a year-newer specialist close §11.6's arithmetic gap? |
+| `qwen2.5:7b-instruct-q4_K_M` | strong generalist | does a generalist beat a math specialist *at math*? |
+
+`qwen2-math:7b-instruct-q4_K_M` is a fallback for the second row: Qwen2.5-Math has no entry
+in the official Ollama library (Ollama pulls its GGUF from HuggingFace directly), and if that
+route is unavailable on the pod, Qwen2-Math is one library `pull` away at a small cost in
+paper score.
+
+The generalist arm is not a throwaway. **Qwen2.5-7B-Instruct has a 128K context window;
+deepseek-math and Qwen2.5-Math both have 4,096.** For a closed-book reasoning tier that is
+irrelevant, but the serving path sends retrieved chunks *plus* conversation history *plus*
+the prompt, and 4K is the budget `api/chat.py` is already working inside. A challenger that
+ties on math and gives 32× the context is not a tie.
+
+### 12.2 Published benchmarks — reference, not evidence
+
+From the **Qwen2.5-Math Technical Report ([arXiv:2409.12122](https://arxiv.org/abs/2409.12122),
+Table 3)**, few-shot chain-of-thought, English, unquantized. The value of this particular
+table is that *one harness scored every row*, so the rows are comparable to each other —
+which is exactly what a table assembled from each model's own README would not be.
+
+| model | GSM8K | MATH | context |
+|---|---|---|---|
+| **DeepSeekMath-7B-RL** (incumbent) | 88.2 | 52.4 | 4,096 |
+| **Qwen2.5-Math-7B-Instruct** | **95.2** | **83.6** | 4,096 |
+| Qwen2.5-7B-Instruct | 91.6 | 75.5 | 131,072 |
+| Qwen2-Math-7B-Instruct | 89.9 | 75.1 | 4,096 |
+| Mathstral-7B-v0.1 | 84.9 | 56.6 | 32,768 |
+| Llama-3.1-8B-Instruct | 76.6 | 47.2 | 131,072 |
+
+Two footnotes on the incumbent row: DeepSeekMath's own paper
+([arXiv:2402.03300](https://arxiv.org/abs/2402.03300)) reports **88.2 / 51.7**, and Qwen's
+re-scoring gives 52.4 — the sub-point difference between a model's self-report and an
+independent harness is itself a useful calibration. Qwen2.5-Math-7B-Instruct also reports
+**94.6 / 85.2 under TIR** (tool-integrated reasoning, i.e. the model writes and executes
+Python), which is the *other* lever §11.6 named, and TIR is worth +1.6 MATH on top of an
+already-strong CoT score.
+
+**Why these numbers do not decide anything here:**
+
+1. **Wrong distribution.** GSM8K is grade-school word problems; MATH is competition problems.
+   The college tier samples multivariable calculus, linear algebra, ODEs, analysis and
+   probability. A model tuned for competition tricks is not obviously the model for a
+   family's textbook questions.
+2. **Contamination.** Both are public test sets with known leakage into training corpora.
+   The 30 college questions are hand-written and not on the internet, which is the entire
+   reason they exist (§11.1).
+3. **Quantization.** Every published row is unquantized; every arm here is Q4. §11.6 already
+   flags 4-bit as a suspect in the multi-digit-arithmetic failures this bake-off is trying to
+   fix, so the Q4 gap could differ from the fp16 gap in either direction.
+4. **Prompting.** Table 3 is **few-shot** CoT; `SC_PROMPT` is **zero-shot** — one instruction
+   and the problem, no worked exemplars. Few-shot exemplars mostly buy *format compliance*,
+   which is the exact axis §12.4's parse-rate guard watches, so a model that looks strong at
+   5-shot can lose points here for reasons that have nothing to do with mathematics. Zero-shot
+   is the right choice anyway, because it is what `api/chat.py` actually sends — but it means
+   our absolute numbers should be expected to sit *below* every published row, for all arms.
+
+And the one confusion this table invites, stated explicitly: **every number in it is CoT, not
+TIR.** Qwen2.5-Math's TIR scores (94.6 / 85.2) are quoted above and were deliberately *not*
+used to choose arms, because nothing in this system executes tool calls — picking a model on
+its TIR column would be choosing on a capability we have not built. If TIR is ever adopted
+(`MAIN_LLM_ANALYSIS.md §4.3`), the arms must be re-chosen against the TIR column, and this
+bake-off's result does not carry over.
+
+Read as: a +31 MATH gap on paper is a strong reason to spend two hours of GPU time. It is not
+a result.
+
+### 12.3 Why a separate script, and the statistics that force it
+
+`self_consistency.py --model X` already runs any generator, and the `--model` flag was added
+for exactly that. What it cannot do is *rank* two of them, and reading two of its reports
+side by side is the wrong test.
+
+**On 30 questions, an unpaired comparison needs roughly an 18-point gap to clear 95%
+confidence.** A real 10-point improvement would be dismissed as noise, and a fluke would look
+like a win. But both models answer the *same* 30 questions, which makes this a paired design
+— and the paired test is both the honest one and the far more sensitive one.
+
+`model_bakeoff.py` uses **McNemar's exact test**. It throws away every question both models
+got right and every question both got wrong (those carry no information about which model is
+better — and they are what makes the unpaired test so blunt) and asks only about the
+disagreements: if the models were equally good, each disagreement is a coin flip. Six wins
+and zero losses is p = 0.031 and decides the question; six wins and four losses is p = 0.75
+and decides nothing, no matter how good the accuracy column looks.
+
+The output reports `+wins / −losses / =ties` **with the question ids**, because *which*
+questions a challenger fixes and breaks is more informative than the count. Six wins spread
+across topics is a better model; six wins all in linear algebra is a model to route to.
+
+### 12.4 The confound that ruins naive bake-offs: parse rate
+
+`SC_PROMPT` asks for the answer in `\boxed{}`. deepseek-math emits that natively (it is
+RL-trained on the format) and both Qwen math models are trained on it — but a **general**
+instruct model may reason correctly and answer in prose, extracting to `None` and scoring
+zero. That is a prompting failure reported as a reasoning failure, and it would show up as a
+clean, believable, entirely wrong accuracy table.
+
+So the report prints per-model unparseable rates **above** the accuracy table, and refuses to
+declare a winner when the spread exceeds 5 points. If the generalist arm trips this, the fix
+is a prompt change for that arm and a re-run — not a footnote.
+
+The same principle in the other direction: the prompt is held *identical* across arms, along
+with the questions, extraction, scoring, sample count, temperature and top_p. Only the model
+tag varies. Per-model prompt tuning would be a fairer comparison of best-case behaviour and a
+worse comparison of *this system* — but if an arm can only be scored fairly with its own
+prompt, that is a finding to record, not to hide.
+
+### 12.5 What "better" has to mean before anything ships
+
+A win on the college tier is necessary, not sufficient. Before swapping `OLLAMA_MODEL`:
+
+1. **`beyond` must shrink, not just accuracy rise.** The report's `beyond` column is
+   §11.3's BEYOND VOTING'S REACH count — questions the model is stably wrong about or never
+   gets right. A challenger that wins on accuracy while `beyond` holds steady won the
+   decoding lottery; one that shrinks `beyond` actually raised the ceiling.
+2. **The `--easy` regression tier must not fall.** A generator that wins on college
+   questions and breaks grade-school arithmetic is a loss for a family QA system. This is
+   the tier's only job (§11.1) — run it second, never first.
+3. **Context length against the real serving prompt.** 4K is the budget for retrieved chunks
+   + history + system prompt in `api/chat.py`. Verify the winner inside that budget, not
+   just closed-book.
+4. **Output style against `api/chat.py`.** deepseek-math's `\boxed{}` habit and its
+   documented refusal to follow the provenance instruction (CLAUDE.md, `chat.decide_mode`)
+   are things the serving layer is *built around*. A model with different habits may make
+   `chat.PrefillEcho`/`QuestionEcho` and the truncation-continuation logic behave differently.
+5. **Re-run the retrieval eval.** `eval.py --answers` judges end-to-end answers; the generator
+   is half of that number.
+
+### 12.6 Cost
+
+330 generations per arm (30 questions × (1 greedy + 10 sampled)), 990 for the three-arm
+default. At the ~8 s/generation measured on the Mac in §11.5 that is ~2.2 hours; a 4090-class
+pod is roughly 10× faster, so ~15 minutes plus model pulls (~4.5GB each). Arms are unloaded
+between runs (`keep_alive=0`) so three 7B models do not sit in VRAM at once.
+
+`--skip-existing` reuses an arm's saved results JSON, which is how a fourth model gets added
+later without paying for the first three again. Results are per (tier, model) —
+`self_consistency_<tier>_<model>.json` — so no arm can overwrite the arm it is measured
+against.
