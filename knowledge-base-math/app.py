@@ -64,30 +64,37 @@ def handle_upload(pdf_file, username: str, last_ingested):
     """Ingest a selected PDF, streaming status back as it goes.
 
     A generator rather than a plain function so a multi-minute Marker run shows progress
-    instead of an empty box. Yields (status_text, last_ingested); `last_ingested` is what
-    makes auto-fire safe — see the guard below.
+    instead of an empty box. Yields (status_text, last_ingested, file_update);
+    `last_ingested` is what makes auto-fire safe — see the guard below.
+
+    The third value is almost always `gr.update()` (leave the file box alone). It is
+    `gr.update(value=None)` only where the upload definitively failed, because clearing
+    the box is what lets the user retry by dropping the same file again — there is no
+    retry button any more. Do NOT clear it on a *polling* failure: the job may still be
+    running on the server.
     """
     username = (username or "").strip().lower()
 
     if pdf_file is None:
         # Also the "clear" path: forget what we ingested so re-selecting it works.
-        yield "No file selected.", None
+        yield "No file selected.", None, gr.update()
         return
     if not username:
         # Named recovery action, because this fires on file selection now: a user who
         # picks the file first would otherwise hit a dead end with nothing to re-trigger.
-        yield "Enter your name above, then press Enter (or click Ingest / retry).", last_ingested
+        yield "Enter your name above, then press Enter.", last_ingested, gr.update()
         return
     if pdf_file.name == last_ingested:
         # This function is wired to three triggers, one of which is the name box's submit
         # event, so it can fire repeatedly for one file. Without this guard every Enter
         # press would re-run Marker — minutes of GPU for a document already indexed.
-        yield f"Already ingested {os.path.basename(pdf_file.name)}. Choose another file to add more.", last_ingested
+        yield f"Already ingested {os.path.basename(pdf_file.name)}. Choose another file to add more.", last_ingested, gr.update()
         return
 
+    job_id = None
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
-            yield f"Uploading {os.path.basename(pdf_file.name)}...", last_ingested
+            yield f"Uploading {os.path.basename(pdf_file.name)}...", last_ingested, gr.update()
             with open(pdf_file.name, "rb") as fh:
                 r = client.post(
                     f"{API_URL}/upload",
@@ -102,7 +109,12 @@ def handle_upload(pdf_file, username: str, last_ingested):
                     why = r.json().get("detail") or "the server rejected it"
                 except Exception:
                     why = "the server rejected it"
-                yield f"Could not upload {os.path.basename(pdf_file.name)} — {why}", last_ingested
+                yield (
+                    f"Could not upload {os.path.basename(pdf_file.name)} — {why}"
+                    "\n\nPlease try uploading the file again.",
+                    last_ingested,
+                    gr.update(value=None),
+                )
                 return
             job_id = r.json()["job_id"]
 
@@ -120,10 +132,15 @@ def handle_upload(pdf_file, username: str, last_ingested):
                     # still lands here — the pymupdf4llm fallback indexes fine, it just
                     # produces no LaTeX — so the warning prefix is what distinguishes it.
                     prefix = "⚠️ " if job.get("degraded") else "✅ "
-                    yield prefix + job["detail"] + _diagnostic(job), pdf_file.name
+                    yield prefix + job["detail"] + _diagnostic(job), pdf_file.name, gr.update()
                     return
                 if status == "failed":
-                    yield "❌ " + job["detail"] + _diagnostic(job), last_ingested
+                    yield (
+                        "❌ " + job["detail"] + _diagnostic(job)
+                        + "\n\nPlease try uploading the file again.",
+                        last_ingested,
+                        gr.update(value=None),
+                    )
                     return
 
                 if elapsed > UPLOAD_POLL_TIMEOUT:
@@ -131,19 +148,30 @@ def handle_upload(pdf_file, username: str, last_ingested):
                         f"Still working after {elapsed / 60:.0f} minutes. The import has "
                         f"not been cancelled — it should finish on its own.",
                         last_ingested,
+                        gr.update(),
                     )
                     return
 
-                yield f"{status.title()}... ({elapsed / 60:.1f} min elapsed)", last_ingested
+                yield f"{status.title()}... ({elapsed / 60:.1f} min elapsed)", last_ingested, gr.update()
     except Exception as e:
-        # httpx/JSON errors from the polling loop itself. The upload may well still be
-        # running on the server, so do not claim it failed.
-        log.warning("upload status polling failed", exc_info=e)
-        yield (
-            "Lost contact with the server while importing. The import may still be "
-            "running — wait a moment, then press Ingest / retry to check.",
-            last_ingested,
-        )
+        # Where this landed decides what to say. Before the server handed back a job id
+        # nothing was ever accepted, so it is an ordinary upload failure and the box gets
+        # cleared for a retry. After that, the job may well still be running on the
+        # server — say so, and do NOT clear the file the user would then re-send.
+        log.warning("upload failed (job_id=%s)", job_id, exc_info=e)
+        if job_id is None:
+            yield (
+                "Could not reach the server. Please try uploading the file again.",
+                last_ingested,
+                gr.update(value=None),
+            )
+        else:
+            yield (
+                "Lost contact with the server while importing. The import may still be "
+                "running — wait a moment, then re-upload the file to check.",
+                last_ingested,
+                gr.update(),
+            )
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
@@ -238,7 +266,10 @@ def send_feedback(event_id: str | None, rating: str) -> str:
 # argument (messages is now the only format). requirements.txt pins gradio==6.17.3 — if
 # this file raises TypeError on a Chatbot or Blocks argument, the environment is on 5.x
 # and needs `pip install -r requirements.txt`, not a code change. See ERRORS.md.
-with gr.Blocks(title="Math Tutor") as app:
+# `analytics_enabled=False`: Gradio otherwise POSTs usage pings to its own servers on
+# launch. Nothing here needs that, and a family's private pod should not be talking to a
+# third party at all.
+with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
     gr.Markdown("# Math Tutor\nYour personal math knowledge base. Upload your textbooks and ask anything.")
 
     clean_history_state = gr.State([])  # LLM-facing history, no sources noise
@@ -252,7 +283,6 @@ with gr.Blocks(title="Math Tutor") as app:
         with gr.Column(scale=1):
             gr.Markdown("### Upload a document")
             upload_box = gr.File(label="PDF file", file_types=[".pdf"])
-            upload_btn = gr.Button("Ingest / retry")
             upload_status = gr.Textbox(label="Status", interactive=False)
 
         with gr.Column(scale=2):
@@ -270,29 +300,48 @@ with gr.Blocks(title="Math Tutor") as app:
                 down_btn = gr.Button("👎", scale=0)
             feedback_status = gr.Markdown("")
 
+    # `api_name=False` on every binding below. Without it Gradio turns each event into a
+    # named, externally callable route and lists it in the schema it serves at
+    # /gradio_api/info — the whole backend surface, published to anyone who loads the page.
+    # It lives inside these dicts so the multi-trigger bindings cannot drift apart.
+    # This does not empty the page source: `window.gradio_config` still carries the
+    # component tree and unnamed dependency indices, because that is how the Gradio client
+    # bootstraps itself. What goes away is the documented, callable API.
     chat_io = dict(
         fn=handle_chat,
         inputs=[msg_box, chatbot, clean_history_state, username_box],
         outputs=[msg_box, chatbot, clean_history_state, event_id_state],
+        api_name=False,
     )
 
-    # Three triggers, one handler. Selecting a file starts ingestion immediately, which
-    # is the common case; submitting the name box rescues the user who picked the file
-    # before typing their name; the button stays as an explicit retry for when the API
-    # was down. `change` (not `upload`) because it also fires on clear, which is what
-    # resets last_ingested_state.
+    # Selecting a file *is* the request to ingest it — there is no separate button, and a
+    # failure is answered by clearing the box and asking for another upload. Submitting the
+    # name box is the one other trigger: it rescues the user who picked a file before
+    # typing their name.
+    #
+    # `upload` (not `change`) is load-bearing. handle_upload clears the file box on
+    # failure, and a programmatic value change fires `change` — which would re-enter this
+    # handler with pdf_file=None and instantly overwrite the error with "No file selected."
+    # `upload` fires only on a real user upload, so it cannot loop. The clear path that
+    # `change` used to cover is wired explicitly below.
     upload_io = dict(
         fn=handle_upload,
         inputs=[upload_box, username_box, last_ingested_state],
-        outputs=[upload_status, last_ingested_state],
+        outputs=[upload_status, last_ingested_state, upload_box],
+        api_name=False,
     )
-    upload_box.change(**upload_io)
+    upload_box.upload(**upload_io)
     username_box.submit(**upload_io)
-    upload_btn.click(**upload_io)
+    # Clearing by hand forgets what was ingested, so re-selecting the same file works.
+    upload_box.clear(
+        lambda: ("No file selected.", None),
+        outputs=[upload_status, last_ingested_state],
+        api_name=False,
+    )
     send_btn.click(**chat_io)
     msg_box.submit(**chat_io)
-    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status)
-    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status)
+    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status, api_name=False)
+    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status, api_name=False)
 
 
 if __name__ == "__main__":
@@ -305,4 +354,8 @@ if __name__ == "__main__":
         share=False,
         auth=app_auth(),
         theme=gr.themes.Soft(),
+        # Drops the "Use via API" footer link, and leaves /gradio_api/info serving an
+        # empty schema ({"named_endpoints": {}, "unnamed_endpoints": {}}) rather than a
+        # description of every handler. The route itself stays — Gradio owns it.
+        show_api=False,
     )

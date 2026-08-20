@@ -142,8 +142,10 @@ Gradio client on 7860. Open the public URL in your browser:
 
 **Expose HTTP port `7860` only.** The Gradio client reaches the API over loopback inside
 the container, so 8000 never needs to be public — and 11434 (Ollama, unauthenticated)
-must never be. To poke the API or `/docs`, SSH in and use `localhost:8000`. Full
-reasoning in `DEPLOYMENT.md §4`.
+must never be. To poke the API, SSH in and use `localhost:8000`. `/docs` is *off*
+whenever `KBM_API_TOKEN` is set — those routes sit outside the token — so add
+`KBM_ENABLE_DOCS=1` if you need them, and only over the SSH tunnel. Full reasoning in
+`DEPLOYMENT.md §4`.
 
 `startup.sh` **installs nothing** — it starts things. Creating the venv and the two `pip
 install` steps in §1 are one-time; this is what runs every session. Note that a missing

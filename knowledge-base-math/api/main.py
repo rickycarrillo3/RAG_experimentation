@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .deps import models
 from .routes import router
-from .settings import API_TOKEN, DATA_DIR, IDLE_STOP_MINUTES
+from .settings import API_TOKEN, DATA_DIR, ENABLE_DOCS, IDLE_STOP_MINUTES
 
 
 @contextlib.asynccontextmanager
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
             file=sys.stderr,
         )
     print(f"[api] data dir: {DATA_DIR}")
+    print(f"[api] OpenAPI docs: {'/docs (open)' if ENABLE_DOCS else 'disabled'}")
     print("[api] loading embeddings, reranker, LLM client...")
     models.load()
     print("[api] ready.")
@@ -45,6 +46,12 @@ app = FastAPI(
     description="Math RAG QA: hybrid retrieval + cross-encoder rerank + local LLM.",
     version="0.1.0",
     lifespan=lifespan,
+    # None removes the route entirely rather than hiding a link to it. See
+    # settings.ENABLE_DOCS: these are the one part of the surface the bearer token does
+    # not cover, because they belong to the app and the token guards the router.
+    docs_url="/docs" if ENABLE_DOCS else None,
+    redoc_url="/redoc" if ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
 
 # The TypeScript frontend will be served from a different origin during development.
