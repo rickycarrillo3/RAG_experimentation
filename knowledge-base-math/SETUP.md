@@ -247,13 +247,13 @@ pull never touches them.
 
 ## 7. Syncing an existing local venv
 
-**`requirements.txt` pins `gradio==6.18.0`, and `app.py` targets Gradio 6.** That pin is
+**`requirements.txt` pins `gradio==6.17.3`, and `app.py` targets Gradio 6.** That pin is
 the contract: a venv on 5.x will fail on Gradio-6 API changes, and vice versa. The two
 that bite are `theme` (moved from `Blocks` to `launch()` in 6.0) and `Chatbot`'s `type`
 argument (removed — messages is now the only format).
 
 This mattered because the Mac and the pod drifted apart: the Mac had 5.x while the pod
-installed the pinned 6.18.0, so `app.py` could only work on one of them at a time. If you
+installed the pin, so `app.py` could only work on one of them at a time. If you
 hit a `TypeError` on a `Chatbot` or `Blocks` argument, sync the environment rather than
 editing the code:
 
@@ -264,10 +264,17 @@ pip install -r requirements.txt
 pip check          # should print "No broken requirements found."
 ```
 
-`pip check` is worth running once: the pre-pin environment reported
-`gradio 6.18.0 has requirement huggingface-hub<2.0,>=1.2.0, but you have 0.36.2` — an
-inconsistent install that pip's resolver would never produce from scratch, which is
-exactly what pinning is meant to prevent.
+**Why 6.17.3 and not something newer.** Gradio raised its `huggingface-hub` floor to
+`>=1.2.0` in **6.18.0**, and `marker-pdf<2.0` caps `transformers<5.0.0`, which in turn caps
+`huggingface-hub<1.0`. Those cannot both hold, so 6.18.0 makes the install unresolvable —
+see the comment block in `requirements.txt` and the ERRORS.md entry. 6.17.3 is the newest
+release still accepting `hub>=0.33.5`, and it is still Gradio 6, so the API changes above
+are unaffected.
+
+`pip check` is worth running once after installing; it should print "No broken
+requirements found." An install that reports a `huggingface-hub` version outside a
+package's declared range is inconsistent in a way pip's resolver would never produce from
+scratch, which is exactly what pinning is meant to prevent.
 
 ---
 
@@ -314,9 +321,12 @@ Python buffers the diagnostics until the process exits.
 it; `127.0.0.1` will bind successfully and be unreachable from outside.
 
 **`Chatbot.__init__() got an unexpected keyword argument 'type'`** — the environment is on
-gradio **5.x** while the code targets the pinned 6.18.0. `pip install -r requirements.txt`.
+gradio **5.x** while the code targets the pinned 6.17.3. `pip install -r requirements.txt`.
 A `UserWarning` about `theme` moving to `launch()` just above it is the same mismatch. See §7.
 
-**`ResolutionImpossible` when installing** — something has been added or bumped that
-re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the
-`requirements.txt` header before loosening a pin to make the error go away.
+**`pip install` stalls for minutes on `sentence-transformers`, then `ResolutionImpossible`**
+— something has been added or bumped that re-opens the gradio/`marker-pdf` conflict. The
+stall looks like a network problem and the error names `sentence-transformers`, but that
+package is only pip's backtracking pivot; the real conflict is the `huggingface-hub`
+chain documented in `requirements.txt`. Read that comment block before loosening a pin to
+make the error go away.
