@@ -231,6 +231,44 @@ come from the same index, and the CUDA install has to be the last thing that run
 
 ---
 
+## 2026-08-19 · `Blocks.launch() got an unexpected keyword argument 'show_api'` — and the silent half of the same change
+
+**Symptom.** `python app.py` died at launch on gradio 6.17.3 with
+`TypeError: Blocks.launch() got an unexpected keyword argument 'show_api'`. The local venv
+had been on 5.50, where the argument exists; installing the pinned 6.17.3 surfaced it.
+
+**Cause.** Gradio 6 reworked how an app declares what it publishes. `launch(show_api=...)`
+is gone, replaced by `footer_links` — a list of the links to *keep* (`"api"`, `"gradio"`,
+`"settings"`) rather than a flag for the one to remove.
+
+**The part that did not raise anything.** The same release narrowed event bindings'
+`api_name` to `str | None` and moved visibility to a new `api_visibility` argument
+(`"public"` / `"private"` / `"undocumented"`). It does **not** reject the old value.
+`api_name=False` — the 5.x spelling of "do not publish this handler", used on all six
+bindings in `app.py` — was accepted, stringified, and published each handler as a
+**public endpoint literally named `/False`**. Verified on the unfixed file:
+
+```
+$ python -c "...; print(json.dumps(app.get_api_info()))"
+{"named_endpoints": {"/False": {...,"api_visibility": "public"}}, "unnamed_endpoints": {}}
+```
+
+So the loud failure was the harmless one. The argument protecting the backend surface
+inverted its meaning in silence, and only the crash on the *neighbouring* line led here.
+
+**Fix.** `footer_links=["gradio", "settings"]` on `launch()`, and
+`api_visibility="private"` on every binding. `get_api_info()` is empty again and
+`/gradio_api/info` serves `{"named_endpoints":{},"unnamed_endpoints":{}}` on a real launch.
+
+**Lesson.** A security-relevant argument is not verified by reading the call site — it is
+verified by asking the framework what it ended up exposing (`Blocks.get_api_info()`, or
+the `/gradio_api/info` route). And when a major version renames one argument in a pair,
+check the other: the one that still *accepts* the old value is more dangerous than the one
+that raises. Related: the 2026-08-18 gradio-6 entry above — same version boundary, and
+this file's own summary line for it says `theme=` moved the other way.
+
+---
+
 ## Earlier · fixed, documented elsewhere
 
 Kept short — each links to where the reasoning lives.
@@ -249,4 +287,5 @@ Kept short — each links to where the reasoning lives.
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |
 | Every question paid a 4.4 s cold model load | `keep_alive` unset, so Ollama unloaded after 5 min idle | `LATENCY.md`, `DEPLOYMENT.md §5` |
 | Math PDFs routed to the wrong extractor | math detected by grepping LaTeX tokens in `pymupdf4llm` output, which contains **no LaTeX at all** | `CLAUDE.md` — the repeat offender |
+| Gradio published every handler as a public `/False` endpoint | `api_name=False` (the gradio 5 spelling) is silently accepted by gradio 6, which wants `api_visibility="private"` | entry above; found only because the neighbouring `show_api` raised |
 | Gradio died with `Cannot find empty port in range: 7860-7860` | `APP_HOST` was `0.0.0.0.` — a trailing dot, so `getaddrinfo` failed (Errno -2); gradio's port loop swallows the bind error and blames the port | `DEPLOYMENT.md §4`, `SETUP.md` troubleshooting |

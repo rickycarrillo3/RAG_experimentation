@@ -300,10 +300,15 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
                 down_btn = gr.Button("👎", scale=0)
             feedback_status = gr.Markdown("")
 
-    # `api_name=False` on every binding below. Without it Gradio turns each event into a
-    # named, externally callable route and lists it in the schema it serves at
+    # `api_visibility="private"` on every binding below. Without it Gradio turns each event
+    # into a named, externally callable route and lists it in the schema it serves at
     # /gradio_api/info — the whole backend surface, published to anyone who loads the page.
     # It lives inside these dicts so the multi-trigger bindings cannot drift apart.
+    # ⚠️ On Gradio 5 this was `api_name=False`. Gradio 6 narrowed `api_name` to `str | None`
+    # and moved visibility to `api_visibility`, but it does *not* reject the old value — it
+    # accepts `api_name=False` and publishes the handler as a public endpoint literally
+    # named `/False`, i.e. the exact opposite of what the argument used to mean. Silent
+    # inversion, so verify with `Blocks.get_api_info()`, never by reading the argument.
     # This does not empty the page source: `window.gradio_config` still carries the
     # component tree and unnamed dependency indices, because that is how the Gradio client
     # bootstraps itself. What goes away is the documented, callable API.
@@ -311,7 +316,7 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
         fn=handle_chat,
         inputs=[msg_box, chatbot, clean_history_state, username_box],
         outputs=[msg_box, chatbot, clean_history_state, event_id_state],
-        api_name=False,
+        api_visibility="private",
     )
 
     # Selecting a file *is* the request to ingest it — there is no separate button, and a
@@ -328,7 +333,7 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
         fn=handle_upload,
         inputs=[upload_box, username_box, last_ingested_state],
         outputs=[upload_status, last_ingested_state, upload_box],
-        api_name=False,
+        api_visibility="private",
     )
     upload_box.upload(**upload_io)
     username_box.submit(**upload_io)
@@ -336,12 +341,12 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
     upload_box.clear(
         lambda: ("No file selected.", None),
         outputs=[upload_status, last_ingested_state],
-        api_name=False,
+        api_visibility="private",
     )
     send_btn.click(**chat_io)
     msg_box.submit(**chat_io)
-    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status, api_name=False)
-    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status, api_name=False)
+    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status, api_visibility="private")
+    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status, api_visibility="private")
 
 
 if __name__ == "__main__":
@@ -354,8 +359,9 @@ if __name__ == "__main__":
         share=False,
         auth=app_auth(),
         theme=gr.themes.Soft(),
-        # Drops the "Use via API" footer link, and leaves /gradio_api/info serving an
-        # empty schema ({"named_endpoints": {}, "unnamed_endpoints": {}}) rather than a
-        # description of every handler. The route itself stays — Gradio owns it.
-        show_api=False,
+        # Drops the "Use via API" footer link. Gradio 6 replaced launch(show_api=False)
+        # with footer_links, which names the links to keep rather than the one to remove;
+        # passing show_api here is a TypeError. This is cosmetic — what actually empties
+        # /gradio_api/info is api_visibility="private" on the bindings above.
+        footer_links=["gradio", "settings"],
     )
