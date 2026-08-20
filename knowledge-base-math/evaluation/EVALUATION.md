@@ -721,3 +721,230 @@ because it **cannot be backfilled**. Two payoffs:
    should reproduce within noise; a shift means the harness changed, not the system.
 
 Step 1 gates 2–4. Nothing in 2–4 is safe to interpret before step 1 lands.
+
+---
+
+## 11. Self-consistency: is majority voting worth k× the decode?
+
+Everything above measures **retrieval**. This section measures the other half of a wrong
+answer: the generator. `deepseek-math-7b-rl` is a solver, and when it is wrong it is often
+wrong *unstably* — re-sample the same question at a non-zero temperature and the wrong
+answers scatter while the right one repeats. **Self-consistency** (Wang et al., 2022)
+exploits that: sample k chains of thought, take the majority final answer.
+
+It is the cheapest accuracy fix available to this project — no new model, no fine-tune, no
+labelled data — and also a **k× multiplier on the single most expensive stage in the
+system**: generation is ~95% of query time (`LATENCY.md`). So the question is never "does
+it help" but "does it help *enough here*". `evaluation/self_consistency.py` answers that.
+
+```bash
+# from knowledge-base-math/
+python evaluation/self_consistency.py                    # 20 questions × (1 greedy + 10 sampled)
+python evaluation/self_consistency.py --easy              # grade-school regression tier
+python evaluation/self_consistency.py --limit 5          # smoke run
+python evaluation/self_consistency.py --dry-run          # validate the set, generate nothing
+python evaluation/verify_reasoning_set.py                # recompute every gold answer
+bash evaluation/eval.sh --skip-sweep --self-consistency  # on the pod (baseline tier)
+bash evaluation/eval.sh --skip-sweep --self-consistency --sc-easy
+```
+
+### 11.1 Two tiers, and why the distinction decides what a number means
+
+| flag | file | n | role |
+|---|---|---|---|
+| `--baseline` (default) | `reasoning_set_college.jsonl` | 30 | **The set that decides things.** |
+| `--easy` | `reasoning_set_easy.jsonl` | 20 | Regression tier. Not a quality score. |
+
+**`--baseline` is college-level** — multivariable calculus, linear algebra, ODEs, analysis,
+probability, abstract algebra — because that is the real target distribution. A benchmark
+only discriminates near the incumbent's ~50% mark: DeepSeek scores **0.85 on the easy tier**,
+which means three candidate models would all land in 0.85–0.95 and every difference would sit
+inside the noise. A set the incumbent nearly aces cannot rank anything.
+
+**`--easy` is kept, not deleted, as a regression tier.** A change that lifts hard questions
+while breaking basic arithmetic is a bad change, and only the easy tier can see it. Read it
+as a tripwire, never as evidence of quality — it is near ceiling by design.
+
+Both tiers are **closed-book, deliberately.** The thing under test is the model's reasoning
+stability. Route these through the RAG pipeline and a wrong answer could be the retriever's
+fault, which is exactly the confound that makes a result unactionable. Retrieval quality is
+§4's job; this is the generator in isolation.
+
+They are also a **different kind of gold set from `goldset.jsonl`**: §3's caveats
+(machine-generated questions, vocabulary leakage, hand-cleaning) do not apply, because these
+were written by hand against known answers rather than generated *from* chunks.
+
+**The answer key is derived, not trusted.** `evaluation/verify_reasoning_set.py` recomputes
+every answer in both tiers with sympy, from an independent formulation that never reads the
+JSONL, and exits non-zero on any disagreement or any question lacking a verification. This is
+not ceremony: a wrong key marks a *right* model wrong, sends you hunting a model bug that
+does not exist, and silently corrupts accuracy, the self-consistency delta, and the model
+bake-off alike. It has already earned its place — it caught a bad determinant in the first
+draft of the college set. **Edit a question, edit the verification, and keep them agreeing.**
+
+What still applies is size: 30 questions is a small exam, and a ±0.05 difference is inside
+the noise. Treat the output as a go/no-go signal, not an effect size.
+
+### 11.1b Scope: closed-ended only
+
+College math is substantially proof-based, and "prove that the sequence converges" has no
+boxed answer. Both tiers are therefore **closed-ended by construction**, which bounds what
+this section can speak to:
+
+- Closed-ended numeric/symbolic questions → this harness works, and self-consistency applies.
+- Proof and derivation questions → need LLM-judged grading (§10.6), and **majority voting is
+  simply inapplicable** — you cannot vote on a proof.
+
+Before treating a self-consistency result as a decision about the product, check what
+fraction of real queries is which. `telemetry.py` is already logging real questions; that is
+the only thing that can answer it (§8, §10.9).
+
+### 11.2 How k=1 / 5 / 10 are compared fairly
+
+The naive protocol generates 1, then 5, then 10 answers per question — 16 generations, and a
+k=1 number estimated from a single sample, which on 20 questions is almost pure variance.
+
+Instead the script draws **N samples once** per question and estimates majority-vote accuracy
+at each k by **resampling k of those N without replacement** (400 draws per question × k).
+Same generations, far tighter estimates, and every k is scored against the *identical* pool
+of model outputs — so a gap between k=1 and k=10 is the voting, not sampling luck.
+
+A **greedy (temperature 0) run is scored separately**, because that is what ships today. The
+sampled k=1 row is the control for the voting mechanism itself (same temperature, no vote);
+greedy is the baseline the change would have to beat in production. Reporting only sampled
+k=1 would flatter self-consistency, since raising the temperature costs accuracy before
+voting wins it back.
+
+Voting details that decide whether the measurement is honest at all:
+
+- **Answers are normalized to numbers before they vote.** If `5/16` and `0.3125` count as
+  different votes the majority splits and self-consistency measures the parser, not the
+  model. `\boxed{}` first (deepseek-math emits it natively), then a `Final answer:` line,
+  then the last number in the text; LaTeX fractions and `$…$` are stripped, values compared
+  numerically with tolerance.
+- **Unparseable samples do not vote.** A model that never stated an answer has not cast one.
+  The unparseable rate is reported next to accuracy — if it is high, fix the prompt before
+  reading anything else.
+- **Ties break toward the first-seen answer**, which is what a real streaming implementation
+  would do.
+
+### 11.3 Reading the output
+
+The table gives accuracy for greedy and for each k, with the generation count and estimated
+serial seconds per query. The part that decides the answer is the **ERROR STRUCTURE** block:
+
+- **fixed by voting** (greedy wrong → vote right) — the win, question by question.
+- **broken by voting** (greedy right → vote wrong) — the cost nobody budgets for. Sampling
+  can lose a question greedy got right.
+- **confidently wrong** (≥80% of samples agree on a wrong answer) — stable errors: the model
+  is not guessing, it is reliably mistaken.
+- **never right** (≤10% of samples correct) — the samples scatter across many *wrong*
+  answers and the right one is essentially absent. Voting reorders a pool; it cannot add to
+  it. These look nothing like the confident case (low modal share, high diversity) but are
+  just as unreachable — counting only unanimity understates the ceiling, which is why both
+  are reported and summed into **BEYOND VOTING'S REACH**. That count, not the accuracy
+  delta, is the hard limit on what self-consistency can ever deliver on this set.
+- **mean distinct answers per question** — the diversity the method depends on. Near 1.0
+  means the samples are effectively deterministic and voting is a no-op; raise the
+  temperature or stop.
+
+### 11.4 How to act on the result
+
+- **Gain < 5 points** → **don't implement.** A multi-x bill on the stage that already owns
+  95% of latency, for a difference inside the noise of a 20-question set.
+- **5–10 points** → **make it opt-in, not the default.** A "check my work" button that
+  spends 5× decode on demand, rather than paying it on every family question.
+- **> 10 points** → **implement**, and check whether a smaller k captures most of it — the
+  accuracy/k curve is usually steeply diminishing (k=5 typically gets most of k=10's win at
+  half the cost).
+- **Most errors are BEYOND VOTING'S REACH** → self-consistency is the wrong lever entirely.
+  Look at the prompt, at a larger/better generator, or at whether retrieval should have been
+  supplying the fact in the first place.
+
+### 11.5 EASY-TIER run — 2026-08-19, Mac (Metal), `t1c/deepseek-math-7b-rl:Q4`
+
+⚠️ **This is the `--easy` tier, not `--baseline`.** It predates the college set and its
+verdict does **not** carry over — see the scoping note at the end of this section. Kept
+because it is a real measurement and the easy tier's regression role needs a reference point.
+
+20 questions × (1 greedy + 10 sampled at T=0.8/top_p=0.95), 220 generations, 31.6 min wall
+clock, ~8.2 s/generation. `--report-only evaluation/results/self_consistency_easy.json`
+re-prints this without regenerating anything.
+
+| setting | accuracy | vs greedy | gens/q | est. serial s/query |
+|---|---|---|---|---|
+| greedy (ships today) | 0.85 | — | 1 | 8.2 |
+| majority vote k=1 | 0.85 | −0.00 | 1 | 8.7 |
+| majority vote k=5 | 0.88 | +0.03 | 5 | 43.3 |
+| majority vote k=10 | 0.90 | +0.05 | 10 | 86.5 |
+
+Error structure: 1/20 fixed by voting, **0/20 broken** by voting, 2/20 beyond reach
+(r03 inclusion–exclusion, r07 modular exponentiation — both scattered, 0% and 10% of samples
+correct). Mean 2.0 distinct answers per question, 0% unparseable.
+
+**Verdict: do not implement as the default path.** Three greedy errors; voting fixes exactly
+one (r04, a decoding slip the samples unanimously got right), and the other two are number
+theory the model simply cannot do — it never produces the right answer at any temperature, so
+k could be 100 and they would still be wrong. +5 points is inside the noise of a 20-question
+set, and it costs 10× the decode on the stage that already owns ~95% of query time: ~86 s per
+answer serially, versus 8. Even k=5's +3 points costs 43 s.
+
+### 11.6 What the failures actually are — execution, not knowledge
+
+Worth reading the wrong answers, not just counting them. The answer distributions say the
+model is not ignorant of the methods; it cannot execute arithmetic reliably.
+
+**r07 — remainder of 7^100 mod 13** (gold 9). Ten samples returned 1 ×3, 3 ×3, 7 ×3, 9 ×1 —
+every one of those is a member of the cycle of 7 mod 13, i.e. the model found the right
+*structure* every time and picked the wrong position in it. The greedy trace is unambiguous:
+
+> find the smallest k with 7^k ≡ 1 (mod 13) … k = 12 … divide 100 by 12, quotient 8
+> remainder 4 … so 7^100 ≡ 7^4 … 7^4 = 2401 ≡ 3 (mod 13)
+
+Order of the group: right. Exponent reduction: right. 2401 = 13·184 + **9**, not 3. The
+entire method is correct and one long division at the end is wrong.
+
+**r03 — sum of 1..100 divisible by 3 or 5** (gold 2418). Samples included 2385 and 2413 —
+inclusion–exclusion applied, arithmetic slipped. 285 is the sum of the multiples of 5 alone,
+i.e. a run that stopped before the union.
+
+The implication for this project: **sampling is the wrong lever for an arithmetic-execution
+error.** Voting helps when errors are random *and* the right answer is in the pool; here the
+model reaches a different wrong number each time, so the pool never contains the answer to
+vote for. The lever that matches this failure is **tool-integrated reasoning** — let the
+model emit Python for the arithmetic step and execute it. DeepSeekMath's own paper reports a
+large program-aided gain over chain-of-thought on MATH for exactly this reason. Second lever:
+this is a **Q4 quantization**, and 4-bit degrades multi-digit arithmetic more than prose —
+re-running §11.5 at Q8 or fp16 would separate "the model can't" from "the quantization can't"
+and is a cheap experiment.
+
+Two findings that generalize beyond the go/no-go:
+
+1. **Sampling at T=0.8 is free here** (k=1 sampled ≈ greedy, and 0/20 broken by voting). The
+   usual objection — "raising the temperature loses questions greedy got right" — did not
+   materialize, so an opt-in path would not be trading accuracy away.
+2. **The model's failures are knowledge-shaped, not decoding-shaped.** 2 of 3 errors are
+   "doesn't know the method", which sampling cannot touch. That is an argument for a better
+   generator or for making sure retrieval supplies the method — not for spending 10× decode.
+
+The actionable form, if it is wanted later, is an opt-in **"check my work"** button at k=5:
+paid per request rather than per query, on the questions a user already doubts.
+
+**Scope warning — this verdict is measured on the wrong population.** Self-consistency pays
+off in the *middle* of the accuracy range: it needs the right answer to be present in the
+sample pool but not to be the single-sample favourite. At 0.85 there is almost no headroom,
+and the two failures here were "never right" — the answer absent from the pool entirely.
+Both are regimes where voting is structurally useless, and this tier contained only those
+two regimes. On `--baseline`, where the model is expected nearer 0.5, the same measurement
+could land very differently. **Re-run on the college tier before treating "don't implement"
+as settled.** The harness is unchanged; it is one command.
+
+Two things this section does *not* measure, and both matter before shipping:
+
+1. **Interaction with retrieval.** These questions are closed-book; a grounded question's
+   errors may be differently distributed (the context may already stabilize the model,
+   shrinking the win). Re-check on grounded questions before making it the default path.
+2. **Streaming.** `/chat` streams SSE token-by-token (`api/routes.py`). Majority voting
+   cannot stream — the answer does not exist until every sample is complete — so adopting it
+   changes the UX from "tokens appear immediately" to "nothing for k× the latency, then an
+   answer." That is a product decision, not just a cost one.

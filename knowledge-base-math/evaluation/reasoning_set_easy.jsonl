@@ -1,0 +1,20 @@
+{"id": "r01", "topic": "arithmetic", "question": "Compute 17 * 23 - 15 * 19.", "answer": "106", "aliases": []}
+{"id": "r02", "topic": "calculus", "question": "Let f(x) = x^3 * ln(x). What is f'(1)?", "answer": "1", "aliases": []}
+{"id": "r03", "topic": "number theory", "question": "What is the sum of all integers from 1 to 100 that are divisible by 3 or by 5?", "answer": "2418", "aliases": []}
+{"id": "r04", "topic": "calculus", "question": "Evaluate the definite integral of (3x^2 + 2x) from x = 0 to x = 1.", "answer": "2", "aliases": []}
+{"id": "r05", "topic": "probability", "question": "A fair coin is flipped 5 times. What is the probability of getting exactly two heads? Give the answer as a fraction or a decimal.", "answer": "0.3125", "aliases": ["5/16", "10/32"]}
+{"id": "r06", "topic": "algebra", "question": "Solve the system 2x + 3y = 12 and x - y = 1. What is the value of x + y?", "answer": "5", "aliases": []}
+{"id": "r07", "topic": "number theory", "question": "What is the remainder when 7^100 is divided by 13?", "answer": "9", "aliases": []}
+{"id": "r08", "topic": "combinatorics", "question": "How many distinct arrangements are there of the letters in the word BANANA?", "answer": "60", "aliases": []}
+{"id": "r09", "topic": "calculus", "question": "Evaluate the limit of sin(3x) / (5x) as x approaches 0. Give the answer as a fraction or a decimal.", "answer": "0.6", "aliases": ["3/5"]}
+{"id": "r10", "topic": "word problem", "question": "A train travels 60 km at 30 km/h, then another 60 km at 60 km/h. What is its average speed for the whole trip, in km/h?", "answer": "40", "aliases": []}
+{"id": "r11", "topic": "linear algebra", "question": "What is the determinant of the 2x2 matrix with first row (2, 3) and second row (4, 5)?", "answer": "-2", "aliases": []}
+{"id": "r12", "topic": "algebra", "question": "What is the sum of the roots of 2x^2 - 8x + 6 = 0?", "answer": "4", "aliases": []}
+{"id": "r13", "topic": "algebra", "question": "Compute log base 2 of 8, plus log base 3 of 81.", "answer": "7", "aliases": []}
+{"id": "r14", "topic": "number theory", "question": "How many positive divisors does 360 have?", "answer": "24", "aliases": []}
+{"id": "r15", "topic": "algebra", "question": "If f(x) = x^2 + 1 and g(x) = 2x - 3, what is f(g(2))?", "answer": "2", "aliases": []}
+{"id": "r16", "topic": "calculus", "question": "What is the area of the region enclosed between the curves y = x and y = x^2 for x between 0 and 1? Give the answer as a fraction or a decimal.", "answer": "0.1667", "aliases": ["1/6"]}
+{"id": "r17", "topic": "word problem", "question": "You invest $1000 at 10% annual interest compounded yearly. How many dollars do you have after 3 years?", "answer": "1331", "aliases": []}
+{"id": "r18", "topic": "probability", "question": "Two fair six-sided dice are rolled. What is the probability that the sum is exactly 8? Give the answer as a fraction or a decimal.", "answer": "0.1389", "aliases": ["5/36"]}
+{"id": "r19", "topic": "algebra", "question": "Solve for x: 3^(2x) = 81.", "answer": "2", "aliases": []}
+{"id": "r20", "topic": "word problem", "question": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How many dollars does the ball cost?", "answer": "0.05", "aliases": ["1/20"]}
