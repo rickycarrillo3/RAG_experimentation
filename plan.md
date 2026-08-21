@@ -12,7 +12,7 @@
 > the eval that `kbm/retrieval.py` exists to prevent.
 >
 > For how retrieval actually works today, read `CLAUDE.md` § Architecture and
-> `knowledge-base-math/retrieval.py`.
+> `knowledge-base-math/kbm/retrieval.py`.
 
 # Plan: Add a cross-encoder reranking stage to the math RAG pipeline
 
