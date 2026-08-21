@@ -17,6 +17,71 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-21 · The model searched once in six, because another tool's description told it not to
+
+**Symptom.** Reported from the running app as "the model is not searching properly", after
+an unrelated edit to the system prompt (XML-ish section tags, and a strengthened
+`_GROUNDED_RULES` line about naming the part of the question the context does not cover).
+The obvious reading was that the prompt edit had suppressed the tool — the tags were
+unclosed, so `<tool_calling_rules>` swallowed the mode block and `{history}`, and the last
+instruction before the history now told the model to *announce* a gap where `AGENT_RULES`
+told it to *search* one.
+
+That reading was wrong. The model was calling a tool the whole time. It was calling
+`list_documents`.
+
+**What it actually is.** `list_documents`' schema description read:
+
+> "List the documents the student has uploaded. Use it to check whether they have material
+> on a topic **before searching**, or to tell them what you can see."
+
+That last clause is an instruction to list *first*. It is also the only zero-argument tool
+in `TOOL_SCHEMAS`, so it is the cheapest call a model can emit — nothing to get wrong.
+Measured on `qwen3:8b` at temperature 0, six questions that should search plus two controls
+that should not, counting `search_documents` on the **first** round:
+
+```
+your prompt as-is                          1/6      0/2 false positives
+list_documents description fixed           4/6      0/2
++ an AGENT_RULES line saying the same       4/6      0/2   (byte-identical outputs)
+tags closed, description fixed             3/6      0/2
+```
+
+Two things fall out of that table besides the fix.
+
+**The prose rules do not drive tool choice.** Adding "if the student refers to their own
+notes, search before you answer, and do not list file names instead" to `AGENT_RULES`
+changed nothing at all — the same calls, on the same questions. A tools-trained model picks
+from the *schemas*. `AGENT_RULES` exists for the three things a schema cannot say
+(over-eager calling, print-or-nothing, the general-mode override); it is not where tool
+selection is tuned, and lengthening it to fix a selection problem buys nothing but tokens.
+
+**The tags were not the cause, and closing them did not help** (3/6 against 4/6; stripping
+them entirely measured worse still). They are worth tidying for readability. They are not a
+behaviour fix, and treating the most recent edit as the cause would have burned the
+investigation on them.
+
+**Why it stayed invisible.** It was recoverable. Handed the listing, the model went on to
+call `search_documents` on the next round, 2 for 2 — so the student still got a grounded,
+correct answer. The cost was one pass out of `MAX_PASSES` (6) and one full transcript
+re-prefill per question, which shows up as latency and as a shorter tool budget, never as a
+wrong answer. A failure that only makes things slower is one nobody reports for weeks.
+
+**Fix.** `kbm/tools/agent.py` — the description now says what the tool returns and names the
+other tool for what it does not: *"It returns names, NOT content — to find out what a
+document SAYS, use search_documents."* One string; no code path changed.
+
+**Lesson.** A tool description is a prompt, and it is the prompt the model actually reads
+when choosing between tools. Every schema in `TOOL_SCHEMAS` is competing with every other
+one, so a sentence that mentions a sibling tool ("before searching") is a routing
+instruction whether or not it was written as one — and the cheapest-to-call tool wins ties.
+Read the descriptions **together**, as the model receives them, not one at a time as they
+are edited. And when a symptom appears right after an unrelated edit, measure the arms:
+the edit was the obvious suspect here, it was the wrong one, and only holding it fixed while
+varying the schemas showed that.
+
+---
+
 ## 2026-08-20 · A tool call with no text would have been thrown away
 
 **Symptom.** None, on any shipped model — found by the spike run *before* the native
