@@ -309,6 +309,21 @@ export PATH=/workspace/ollama/bin:$PATH
 `startup.sh` now adds `$WORKSPACE/ollama/bin` to `PATH` when it exists, and fails with
 these instructions when it doesn't — so no future session needs the export.
 
+**It kept happening anyway, and that sentence is why.** "No future session needs the
+export" is true of `startup.sh` and false of everything else: the export dies with the
+shell, so every later SSH session gets `ollama: command not found` the moment someone runs
+`ollama pull` or `ollama list` by hand. The script was fixed and the *shell* was not.
+`SETUP.md §1` now appends the export to `~/.bashrc`, which is the part that actually stops
+the recurrence:
+
+```bash
+grep -q '/ollama/bin' ~/.bashrc || echo 'export PATH=/workspace/ollama/bin:$PATH' >> ~/.bashrc
+```
+
+Two related traps worth naming, because both have been hit: any instruction that begins
+with a bare `ollama …` assumes a PATH the pod does not have by default — and most of the
+time it is not needed at all, because `startup.sh` pulls whatever `KBM_LLM_MODEL` names.
+
 **Lesson.** The same rule that governs `DATA_DIR`, `HF_HOME` and `OLLAMA_MODELS` governs
 *binaries*: on a pod, anything installed outside `/workspace` is temporary. A vendor
 install script that assumes a normal machine will put it in the wrong place.

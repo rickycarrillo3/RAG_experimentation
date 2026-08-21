@@ -73,10 +73,17 @@ curl -fL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-
 # If tar lacks --zstd:  apt-get install -y zstd  then  zstd -dc file | tar -x -C ...
 export PATH=$WORKSPACE/ollama/bin:$PATH
 ollama --version
-# startup.sh adds this to PATH itself when $WORKSPACE/ollama/bin/ollama exists, so this
-# export is only needed for the rest of this one-time setup session.
+
+# PERSIST IT. The line above lasts until this shell closes, and the next SSH session gets
+# `ollama: command not found` all over again — the single most repeated error in this
+# project. startup.sh does not need it (it adds the directory itself), but every
+# interactive `ollama` command does, and that is the one nobody remembers.
+grep -q '/ollama/bin' ~/.bashrc || echo "export PATH=$WORKSPACE/ollama/bin:\$PATH" >> ~/.bashrc
 
 # ── Models ────────────────────────────────────────────────────────────────────
+# Optional: `startup.sh` pulls whichever generator KBM_LLM_MODEL names, so you can skip
+# straight to §2 and let it do this. Pulling here just pays the download now, on a volume
+# you are already watching, rather than inside someone's first question.
 ollama serve &
 sleep 3
 ollama pull t1c/deepseek-math-7b-rl:Q4   # generator, the default (~4.2GB)
@@ -139,8 +146,13 @@ So every future session inherits them without re-exporting:
 
 ```bash
 cd /workspace/RAG_experimentation/knowledge-base-math
-bash startup.sh
+bash startup.sh                             # default generator (deepseek-math)
+KBM_LLM_MODEL=qwen3:8b bash startup.sh      # agent mode: tools + document search
 ```
+
+You do **not** need to `ollama pull` first — stage 3 pulls whatever `KBM_LLM_MODEL` names.
+And if a bare `ollama …` gives you `command not found`, the `~/.bashrc` line from §1 is
+missing on this pod; `startup.sh` itself is unaffected either way.
 
 `startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
 Gradio client on 7860. Open the public URL in your browser:
