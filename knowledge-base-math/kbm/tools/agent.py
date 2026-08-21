@@ -123,10 +123,21 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": TOOL_LIST,
+            # ⚠️ Do NOT reintroduce "use it to check whether they have material before
+            # searching". That sentence read as an instruction to list FIRST, and since
+            # this is the only zero-argument tool it is also the cheapest call to emit —
+            # measured on qwen3:8b, it took search_documents on the first round from 4/6
+            # of the questions that needed it down to 1/6, spending a pass and a full
+            # transcript re-prefill on a listing. The model does recover and search on
+            # the next round, which is exactly what made it hard to see: the answer is
+            # right, just slower and a pass poorer. Naming the OTHER tool in this
+            # description is what fixes it — a tools-trained model picks from the schemas,
+            # not from AGENT_RULES (a rules line saying the same thing measured 4/6, i.e.
+            # no change at all).
             "description": (
-                "List the documents the student has uploaded. Use it to check whether "
-                "they have material on a topic before searching, or to tell them what "
-                "you can see."
+                "List the file names of the documents the student has uploaded. Use it "
+                "only to tell the student what you can see. It returns names, NOT "
+                "content — to find out what a document SAYS, use search_documents."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -182,11 +193,12 @@ SEARCH_RESULT_CHARS = 1200
 # NO BRACES. This string goes through ChatPromptTemplate, where { and } are variable
 # syntax and a literal brace raises at format time (kbm/tools/tir.py:130 learned this the hard way).
 AGENT_RULES = """- You have tools. Use them when they help and answer directly when they do not — a conceptual "why" question usually needs an explanation, not a computation.
-- Run Python for arithmetic or algebra you are not certain of by hand. Print what you want to see; a program that prints nothing returns nothing.
-- Search the student's documents when the question is about their own material, or when the context below does not cover it. Search with the terms the textbook would use, not the student's phrasing.
+<tool_calling_rules>
+- Run Python (use run_python) for arithmetic or algebra you are not certain of by hand. Print what you want to see; a program that prints nothing returns nothing.
+- Search the student's documents (search_documents) when the question is about their own material, or when the context below does not cover it. Search with the terms the textbook would use, not the student's phrasing.
 - The student reads your answer, not your tool calls. Explain what came back in your own words.
-- If a tool returns nothing useful or refuses, say so and answer from what you have. Never repeat a call with the same arguments.
-- If a search does find something the context below did not, use it and say which document it came from.
+- If a tool returns nothing useful or refuses, say so and answer from what you have (say you could not find a proper answer). Never repeat a call with the same arguments.
+- If a search does find something the context below did not, use it and state which document it came from.
 """
 
 

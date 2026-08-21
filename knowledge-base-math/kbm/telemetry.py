@@ -58,6 +58,7 @@ def log_query(
     tool_counts: dict | None = None,
     search_queries: list | None = None,
     late_sources: list | None = None,
+    tool_log: list | None = None,
 ) -> None:
     _append({
         "kind": "query",
@@ -105,6 +106,17 @@ def log_query(
         # It is the model's phrasing, not the student's, so it carries no PII that the
         # `question` field above does not already carry.
         "search_queries": search_queries or [],
+        # The calls themselves, in order, one record each — not just how many there were.
+        # `tool_counts` says a program ran; this says WHICH program, what it printed, and
+        # how long it took, which is the difference between knowing the sandbox was used
+        # and being able to see why an answer went wrong.
+        #
+        # Written for both protocols, so a TIR run and an agent run produce comparable
+        # rows and EVALUATION.md §13's arms can be compared verbatim rather than by
+        # counting. Bodies are truncated (`code` here, and the sandbox already caps its
+        # own output at 400 chars) because one runaway program must not make a log line
+        # unreadable — an append-only file is only useful if you can still grep it.
+        "tool_log": tool_log or [],
         # Chunks a mid-answer search retrieved, UNFILTERED and with scores, for the same
         # reason the `sources` field above is unfiltered: the floor can be re-applied
         # offline, but a chunk that was dropped and never logged is gone. Without this,

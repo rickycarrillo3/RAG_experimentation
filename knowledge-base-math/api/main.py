@@ -8,6 +8,8 @@ from knowledge-base-math/, with the venv active and Ollama running.
 """
 
 import contextlib
+import logging
+import os
 import sys
 
 from fastapi import FastAPI
@@ -16,6 +18,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from .deps import models
 from .routes import router
 from .settings import API_TOKEN, DATA_DIR, ENABLE_DOCS, IDLE_STOP_MINUTES
+
+# Give the application's loggers a handler and a level. Without this the root logger has
+# none, so Python falls back to its handler-of-last-resort — which emits WARNING and above
+# and drops INFO entirely. Every `log.info` in api/routes.py was therefore invisible,
+# including the sandbox-failure line whose own comment says it is logged, and every tool
+# call. Errors still appeared, which is exactly why nobody noticed the rest was missing.
+#
+# basicConfig and not dictConfig: uvicorn owns its own loggers and this must not fight
+# them. It only installs a handler on the ROOT logger, which is what `logging.getLogger(
+# __name__)` in this package resolves to. KBM_LOG_LEVEL=WARNING restores the old quiet.
+logging.basicConfig(
+    level=os.environ.get("KBM_LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s:     %(name)s - %(message)s",
+)
 
 
 @contextlib.asynccontextmanager
