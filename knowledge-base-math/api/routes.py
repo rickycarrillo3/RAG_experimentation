@@ -212,6 +212,21 @@ async def _chat_stream(user: str, req: ChatRequest):
         search_seconds = 0.0
         tool_counts: dict[str, int] = {}
         search_queries: list[str] = []
+        # One record per executed tool call, in order, for BOTH protocols. `tool_counts`
+        # answers "did it use the tool"; this answers "what did it actually do", which is
+        # the question you have when an answer is wrong.
+        tool_log: list[dict] = []
+
+        def _log_tool(name: str, ok: bool, ms: float, **fields) -> None:
+            entry = {"n": len(tool_log) + 1, "tool": name, "ok": ok,
+                     "ms": round(ms * 1000, 1), **fields}
+            tool_log.append(entry)
+            # Also to the server log, at INFO. Only failures were visible before, so a
+            # tool-using answer looked identical to a plain one while it was happening —
+            # and on the pod the uvicorn log is what you are watching, not the JSONL.
+            log.info("tool %s#%d %s in %sms (user=%s)%s", name, entry["n"],
+                     "ok" if ok else "FAILED", entry["ms"], user,
+                     "" if ok else f" — {fields.get('reason')}")
         late_results: list = []
         late_source_count = 0
         notice_sent: set[str] = set()
@@ -378,7 +393,11 @@ async def _chat_stream(user: str, req: ChatRequest):
                             # the wrong program — and this one runs code.
                             lambda c=code: sandbox.run_python(c, timeout_s=SANDBOX_TIMEOUT_S)
                         )
-                        tool_seconds += time.perf_counter() - t_tool
+                        elapsed = time.perf_counter() - t_tool
+                        tool_seconds += elapsed
+                        _log_tool(agent.TOOL_PYTHON, result.ok, elapsed,
+                                  code=code[:1000], output=result.output,
+                                  reason=result.reason)
                         if not result.ok:
                             tool_errors += 1
                             log.info("sandbox %s for user=%s: %s",
@@ -427,7 +446,8 @@ async def _chat_stream(user: str, req: ChatRequest):
                                     bm25_index=b, store=st,
                                 )
                         )
-                        search_seconds += time.perf_counter() - t_search
+                        elapsed = time.perf_counter() - t_search
+                        search_seconds += elapsed
                         _add_retrieval_timings(timings, detail2.timings)
                         # Unfiltered, for telemetry: the floor can be re-applied offline,
                         # a chunk that was never logged cannot.
@@ -438,6 +458,12 @@ async def _chat_stream(user: str, req: ChatRequest):
                         # because the model chose to look is the failure select_context
                         # exists to prevent.
                         kept = chatmod.select_context(detail2.final)
+                        # `hits` is what retrieval returned, `kept` what cleared the floor.
+                        # Logging both is what makes the floor re-calibratable against the
+                        # queries the MODEL wrote, not just the ones the student typed.
+                        _log_tool(agent.TOOL_SEARCH, True, elapsed, query=query,
+                                  hits=len(detail2.final), kept=len(kept),
+                                  top_score=round(detail2.final[0][1], 4) if detail2.final else None)
                         new_sources = chatmod.to_sources(kept)
                         before = len(sources)
                         sources = chatmod.merge_sources(sources, new_sources)
@@ -456,8 +482,11 @@ async def _chat_stream(user: str, req: ChatRequest):
                             yield _sse("token", TokenEvent(text=marker, server_marker=True))
 
                     else:  # agent.TOOL_LIST
+                        t_list = time.perf_counter()
                         n_chunks, names = await anyio.to_thread.run_sync(
                             lambda: index_summary(user))
+                        _log_tool(agent.TOOL_LIST, True, time.perf_counter() - t_list,
+                                  n_docs=len(names), n_chunks=n_chunks)
                         tool_msgs.append(ToolMessage(
                             content=agent.format_documents(names, n_chunks),
                             tool_call_id=call_id,
@@ -526,12 +555,16 @@ async def _chat_stream(user: str, req: ChatRequest):
                 result = await anyio.to_thread.run_sync(
                     lambda: sandbox.run_python(program, timeout_s=SANDBOX_TIMEOUT_S)
                 )
-                tool_seconds += time.perf_counter() - t_tool
+                elapsed = time.perf_counter() - t_tool
+                tool_seconds += elapsed
+                # Same record shape as the native arm, deliberately: EVALUATION.md §13
+                # compares the two protocols, and that comparison is only as good as the
+                # rows being identically shaped. `tool` is agent.TOOL_PYTHON in both —
+                # the protocol is already on the record, once, at top level.
+                _log_tool(agent.TOOL_PYTHON, result.ok, elapsed,
+                          code=program[:1000], output=result.output, reason=result.reason)
                 if not result.ok:
                     tool_errors += 1
-                    log.info(
-                        "sandbox %s for user=%s: %s", result.reason, user, result.output
-                    )
 
                 # The model gets the real text — a traceback line, a refused import — in
                 # Qwen's own ```output shape, because that is what it can act on. The
@@ -641,7 +674,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             truncated=truncated, continuations=continuations,
             tool_calls=tool_rounds, tool_errors=tool_errors,
             protocol=models.protocol, tool_counts=tool_counts,
-            search_queries=search_queries,
+            search_queries=search_queries, tool_log=tool_log,
             late_sources=[s.model_dump() for s in chatmod.to_sources(late_results)],
         )
 
