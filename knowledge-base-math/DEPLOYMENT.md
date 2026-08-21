@@ -83,7 +83,13 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
-| `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. |
+| `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `t1c/deepseek-math-7b-rl:Q4`. |
+| `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. `NUM_PREDICT` now defaults per model (350 for deepseek, 1024 for a TIR model, which needs room to reason, write a program, and reason again). |
+| `KBM_NUM_CTX` | Context window sent to Ollama. Defaults to the model's real window. **Do not raise it above what the model was trained for** — Ollama will not refuse, it will degrade. Ollama also shifts an overflowing context from the *left*, which eats the system prompt first and silently. |
+| `KBM_TIR` | `1`/`0` forces tool-integrated reasoning on or off, overriding the model's profile. On, the generator may write Python and have it executed between passes (§8). |
+| `KBM_TOOLS` | `1`/`0` forces **native tool calling** on or off, overriding the model's profile. On, the generator gets `search_documents`, `run_python` and `list_documents` as JSON tools — it can compute, and it can search the family's documents again mid-answer (`AGENT.md`, §8). **Takes precedence over `KBM_TIR`**, which is forced off whenever this is on: a model must never be handed both protocols. Forced onto a model with no tools template, the server logs an error and downgrades rather than failing every answer. |
+| `KBM_SANDBOX_TIMEOUT` | Wall-clock seconds for one sandboxed program. Default `10`. |
+| `KBM_SHOW_TOOL_CODE` | `1` shows the student the raw ```python block instead of just the computed result. Off by default — the same escape hatch as `KBM_SHOW_DIAGNOSTICS`, for the same reason. |
 | `KBM_MAX_CONTINUATIONS` | How many times the server may resume an answer cut off at `KBM_NUM_PREDICT`. `0` = label it truncated instead. |
 | `KBM_SHOW_DIAGNOSTICS` | `1` appends the technical cause to upload status messages. Off by default — the family sees plain sentences, the log keeps the exception. |
 | `KBM_ENABLE_DOCS` | `1` serves `/docs`, `/redoc`, `/openapi.json`. Defaults **on** with no `KBM_API_TOKEN` (laptop) and **off** once one is set — those routes belong to the app, not the router, so the token never covered them. |
@@ -272,8 +278,13 @@ Worth building when "text me and I'll turn it on" gets annoying — not before.
   the BM25 pickle and Chroma directory are not derived data any more — they are the only
   copy on the pod. Back *those* up. Losing them means asking the family to re-upload every
   document and paying for Marker again.
-- **`KBM_RELEVANCE_FLOOR` is uncalibrated.** See `api/settings.py`; the `no_answer` slice
-  of gold set v3 is what settles it.
+- **`KBM_RELEVANCE_FLOOR` is calibrated but on a thin sample.** 0.15, set from
+  `evaluation/calibrate_floor.py`; see `api/settings.py` for the measurements. The
+  deployment-shaped half of that calibration is 19 on-topic and 18 off-topic questions
+  against a single chapter — wide separation, small n. Re-run it against real logged
+  questions once telemetry has collected them (`EVALUATION.md §10.9`), and re-run it
+  after any change of reranker, since the number is a property of that model's output
+  scale and does not survive swapping it.
 
 ---
 
@@ -322,3 +333,58 @@ in the chunk id would fix it properly.
 top of a resident generator and reranker (`evaluation/EVALUATION.md §6`), so two
 concurrent extractions would race for memory on a 24 GB card. Several uploads at once
 queue rather than fail; `GET /jobs/{id}` reports each one's position by status.
+
+---
+
+## 8. The Python sandbox — what it is, and what it is not
+
+With `KBM_TIR` **or `KBM_TOOLS`** on, the generator writes Python and the server executes
+it. Two protocols reach the same sandbox — `tir.py`'s text blocks and `agent.py`'s native
+`run_python` tool — and `config.py` guarantees a model gets exactly one of them, never
+both. That is the point — `evaluation/EVALUATION.md §11.6`
+traced the model's errors to arithmetic *execution*, and a model that can call Python does
+not compute `2401 mod 13` as 3. It also means **a language model now decides what code
+this pod runs**, so be exact about what protects it.
+
+**What is in place.** Three independent layers, in order:
+
+1. An **AST allow-list**, checked before anything runs. Imports are whitelisted (`math`,
+   `sympy`, `numpy`, `fractions`, … — the list is short on purpose); `open`, `eval`,
+   `exec`, `compile`, `__import__` and any dunder attribute are rejected. Blocking dunder
+   access closes the `().__class__.__bases__[0].__subclasses__()` route back to arbitrary
+   code without having to enumerate the escapes.
+2. A **separate short-lived process** — never a thread — in its own session, its own empty
+   temp cwd, and a **scrubbed environment**. The pod's real environment carries HF tokens,
+   a `RUNPOD_API_KEY` with the power to stop the pod, and the paths to the family's
+   indexes; none of it is visible to generated code.
+3. **rlimits** (CPU, address space, file size) plus a wall-clock kill of the whole process
+   group, so a program that ignores signals still burns a bounded number of CPU seconds.
+
+**What is not in place.** There is no namespace, no seccomp filter, no container, and
+**no network isolation** — outbound sockets are prevented by the import allow-list, which
+is a policy check and not a kernel boundary. This is a gate, not a jail.
+
+**The threat it is actually sized for** is a 7B math model emitting a runaway loop or a
+typo. There is a second, narrower path worth naming rather than leaving implied: the model
+writes code after reading text the family **uploaded**, so a PDF containing instructions
+aimed at the model is a prompt-injection route to the sandbox. The layers above bound what
+that could achieve on a single-tenant family pod. They would not be sufficient if this were
+ever exposed to untrusted users — at that point the execution belongs in a container with
+no network, not in this process.
+
+**Agent mode shortens that path, and adds a second thing worth protecting.** With
+`KBM_TOOLS` on the model can call `search_documents`, so within a single turn it can read
+uploaded text, choose what to search for next, and choose what to execute — the retrieval
+and the execution are no longer separated by a request boundary. Two consequences:
+
+- The sandbox's exposure is unchanged in *kind* but reached more readily. The three layers
+  above apply identically to both protocols; there is one gate, not two.
+- **The second asset is now the other family members' indexes.** `search_documents` takes a
+  `query` and nothing else: `user` is closed over from the HTTP request and is not a tool
+  parameter, so a poisoned PDF cannot instruct the model to read someone else's documents —
+  there is no argument in which to say so. This is the control, it is structural rather than
+  a validation check, and `agent.TOOL_SCHEMAS` must never gain a `user` field. Isolation
+  here is directory naming, not auth (`CLAUDE.md`), so nothing downstream would catch it.
+
+`KBM_TIR=0` **and `KBM_TOOLS=0`** turns the whole thing off and costs only the accuracy the
+tools were buying. `GET /healthz` reports which arm is actually live as `protocol`.

@@ -62,6 +62,9 @@ Percentages are each stage's share of wall-clock time, measured on the Mac
 | 5 | Cross-encoder rerank → top 5 | **GPU** | ~850 ms · 4% |
 | 6 | Prompt prefill (1.9k–3.4k tokens) | **GPU** | ~7 s · 30% |
 | 7 | Decode (≤350 tokens) | **GPU** | 12–20 s · 60% |
+| 7a | *(tools only)* Run the model's Python | CPU, **separate process** | ~0.05–0.5 s per program |
+| 7b | *(agent only)* Search again — **re-enters rows 3a–5** | CPU + **GPU** | ~0.9–3 s per search |
+| 7c | *(tools only)* Re-prefill the grown transcript and decode on | **GPU** | ×1–3 of rows 6–7 |
 | 8 | SSE frames out + one telemetry line | CPU | — |
 | 9 | LaTeX renders in the tab | Your Mac | — |
 
@@ -75,6 +78,29 @@ pipeline, exactly one touches the GPU.
 **Retrieval is ~4% of a query; generation is ~90%.** Retrieval is scrutinised so hard
 not because it is slow, but because it decides *what the model is allowed to know*.
 Optimising it for speed is optimising the wrong 4%.
+
+**Tool use (rows 7a–7c) is the only thing that loops.** Every other row runs once. With a
+tool protocol on, the model can stop mid-answer, hand work to the CPU, and continue from
+the result. The tools themselves are cheap and live off the GPU; what costs is that each
+round re-enters rows 6–7 with a longer transcript.
+
+**Row 7b is new, and it is the structural change.** Until agent mode, retrieval ran exactly
+once per request, before generation — rows 3a–5 were strictly upstream of row 6. With
+`KBM_TOOLS` on, `search_documents` puts them *inside* the generation loop: the model can
+decide the retrieval the server already did was not the one the question needed, rewrite the
+query, and send the embedder and the cross-encoder round again mid-answer. That is why
+`_add_retrieval_timings` accumulates rather than assigns — `bm25_ms`/`dense_ms`/`rerank_ms`
+are now per-request totals across every search, not the cost of one.
+
+It also means the **rerank is the expensive part of a re-search**: ~850 ms of the ~0.9–3 s
+in row 7b is the cross-encoder, on the GPU, competing with nothing else because decode is
+paused. `agent.MAX_SEARCH_ROUNDS = 2` is that budget as much as it is a context budget.
+
+Three timing fields keep these apart, and they must stay apart: `tool_ms` is sandbox only,
+`search_ms` is model-initiated retrieval, `generate_ms` is everything. Folding retrieval
+into `tool_ms` would make every previously logged `tool_ms` incomparable. Both tools run in
+a thread (`anyio.to_thread`), like the upfront retrieval — a `subprocess.communicate` or a
+cross-encoder forward pass on the event loop would stall every other client's token stream.
 
 ---
 
@@ -121,7 +147,7 @@ Numbers from `evaluation/EVALUATION.md §6`.
 
 | Component | Tier | Why there |
 |---|---|---|
-| `deepseek-math-7b-rl:Q4` | GPU | 7B params of matrix multiply per token |
+| The generator (`KBM_LLM_MODEL`) | GPU | 7–8B params of matrix multiply per token |
 | `bge-reranker-v2-m3` | GPU | 568M-param transformer, 20 pairs per query |
 | `bge-small-en-v1.5` | GPU | 33M-param encoder, query + ingest |
 | Marker / Surya | GPU | vision models over page images; ingest only |
@@ -130,6 +156,8 @@ Numbers from `evaluation/EVALUATION.md §6`.
 | RRF fusion | CPU | arithmetic on ~20 rank positions |
 | FastAPI + SSE framing | CPU | HTTP, auth, streaming |
 | Chunk splitting | CPU | string operations over the `.mmd` |
+| Python sandbox (`sandbox.py`) | CPU, own process | executes model-written code, reached from either tool protocol; a forked interpreter with rlimits and a scrubbed env, never a thread and never the GPU. See `DEPLOYMENT.md §8`. |
+| Tool protocols (`tir.py`, `agent.py`) | CPU, negligible | pure string and schema handling — deciding what the transcript looks like. The work they trigger is the sandbox (CPU) and, for `agent.search_documents`, a full re-entry of the retrieval rows above (CPU + GPU). See `AGENT.md`. |
 | Telemetry writer | CPU | one JSON line appended per answer |
 | Idle-stop watchdog | CPU | a timer — the cheapest thing here, and the entire cost model |
 | Uploaded PDFs | — | **not retained**; held in a temp dir for the length of the ingest |

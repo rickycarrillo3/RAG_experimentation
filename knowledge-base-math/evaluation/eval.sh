@@ -13,6 +13,8 @@
 #     bash evaluation/eval.sh --skip-sweep --answers   # answers only
 #     bash evaluation/eval.sh --skip-sweep --self-consistency           # college tier (the deciding one)
 #     bash evaluation/eval.sh --skip-sweep --self-consistency --sc-easy  # grade-school regression tier
+#     GEN_MODEL=hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M \
+#       bash evaluation/eval.sh --skip-sweep --self-consistency --tir   # a bake-off arm (EVALUATION.md §12)
 #     bash evaluation/eval.sh --allow-cpu     # run even if CUDA is absent (for a local dry-run)
 #
 # Overridable via env:
@@ -21,6 +23,8 @@
 #     EVAL_DOC      source .mmd for the --answers ingest     (default: docs/extracted/calculus_chainrule.mmd)
 #     NORMALIZE=1   LaTeX-normalize embeddings in the --answers run (matches ingest+query)
 #     SC_SAMPLES    samples per question for --self-consistency   (default: 10)
+#     GEN_MODEL     generator to pull and benchmark          (default: $KBM_LLM_MODEL,
+#                   else deepseek-math — the app's own default)
 #
 set -euo pipefail
 
@@ -29,6 +33,7 @@ RUN_SWEEP=1
 RUN_ANSWERS=0
 RUN_SC=0
 SC_TIER="--baseline"
+SC_TIR=""
 ALLOW_CPU=0
 for arg in "$@"; do
   case "$arg" in
@@ -36,8 +41,9 @@ for arg in "$@"; do
     --skip-sweep) RUN_SWEEP=0 ;;
     --self-consistency) RUN_SC=1 ;;
     --sc-easy)    SC_TIER="--easy" ;;
+    --tir)        SC_TIR="--tir" ;;
     --allow-cpu)  ALLOW_CPU=1 ;;
-    -h|--help)    sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -48,6 +54,10 @@ EVAL_DOC="${EVAL_DOC:-docs/extracted/calculus_chainrule.mmd}"
 GOLDSET="evaluation/goldset.jsonl"
 NORMALIZE="${NORMALIZE:-0}"
 SC_SAMPLES="${SC_SAMPLES:-10}"
+# The generator was a literal in the pull below, which meant a bake-off pulled deepseek
+# and then benchmarked whatever KBM_LLM_MODEL actually pointed at — a run that looks
+# clean and measures the wrong model. One name, used for both.
+GEN_MODEL="${GEN_MODEL:-${KBM_LLM_MODEL:-t1c/deepseek-math-7b-rl:Q4}}"
 
 # ── Model caches on the persistent volume (survive pod restarts) ────────────────
 export OLLAMA_MODELS="${OLLAMA_MODELS:-/workspace/ollama-models}"
@@ -133,7 +143,7 @@ if [ "$RUN_ANSWERS" -eq 1 ] || [ "$RUN_SC" -eq 1 ]; then
     ollama serve > /dev/null 2>&1 &
     until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
   fi
-  ollama pull t1c/deepseek-math-7b-rl:Q4   # generator (~4.5GB)
+  ollama pull "$GEN_MODEL"                 # generator (~4.5GB at Q4)
   # The judge is only needed for --answers; self-consistency grades against known answers.
   if [ "$RUN_ANSWERS" -eq 1 ]; then
     ollama pull qwen2:7b                     # LLM judge (~4.4GB)
@@ -170,7 +180,7 @@ fi
 
 # ── 6. Self-consistency: does majority voting beat greedy? (generator only) ─────
 if [ "$RUN_SC" -eq 1 ]; then
-  hr; echo "6. Self-consistency ($SC_TIER, $SC_SAMPLES samples/question, closed-book — no retrieval)"
+  hr; echo "6. Self-consistency ($GEN_MODEL, $SC_TIER, $SC_SAMPLES samples/question,${SC_TIR:+ TIR,} closed-book — no retrieval)"
 
   # A wrong answer key marks a right model wrong. Verify before spending GPU hours on it.
   $PY evaluation/verify_reasoning_set.py
@@ -180,7 +190,8 @@ if [ "$RUN_SC" -eq 1 ]; then
     until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
   fi
 
-  $PY evaluation/self_consistency.py $SC_TIER --samples "$SC_SAMPLES"
+  $PY evaluation/self_consistency.py $SC_TIER --samples "$SC_SAMPLES" \
+      --model "$GEN_MODEL" $SC_TIR
   echo "   → evaluation/results/self_consistency_*.json  (read the VERDICT block, not just the table)"
 fi
 

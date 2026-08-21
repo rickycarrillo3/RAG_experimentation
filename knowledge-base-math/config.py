@@ -20,11 +20,16 @@ Env vars
     APP_PORT          Gradio port                         (default: 7860)
     APP_AUTH          "user:pass" pairs, comma-separated  (default: unset = no auth)
     REQUIRE_GPU       1 = refuse to run on CPU            (default: unset = allow CPU)
-    KBM_NUM_PREDICT   decode cap, in tokens               (default: 350)
+    KBM_LLM_MODEL     the generator's Ollama tag          (default: deepseek-math)
+    KBM_NUM_PREDICT   decode cap, in tokens               (default: per llm_profiles)
+    KBM_NUM_CTX       context window, in tokens           (default: per llm_profiles)
+    KBM_TIR           1/0 = force the Python sandbox on/off (default: per llm_profiles)
     KBM_KEEP_ALIVE    how long Ollama holds the weights   (default: 30m)
 """
 
 import os
+
+from llm_profiles import profile_for
 
 # ── Where the indexes live ─────────────────────────────────────────────────────
 # On a pod these must sit on the persistent volume, or every pod restart silently
@@ -38,6 +43,32 @@ BM25_DIR = os.environ.get("BM25_DIR") or os.path.join(DATA_DIR, "bm25_indexes")
 # box, sharing the GPU). Set it to point the app at a separate inference host.
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# ── Which generator, and what it needs ─────────────────────────────────────────
+# This lived as a literal in retrieval.py, which was fine while there was one model and
+# it needed nothing special. It is here now because it is a deployment knob like every
+# other one in this file, and because swapping generators is a thing we do on purpose
+# (EVALUATION.md §12) rather than a code edit per experiment. retrieval.py re-exports it,
+# so every existing `from retrieval import OLLAMA_MODEL` keeps working.
+#
+# The default stays deepseek-math until the college-tier bake-off says otherwise. A
+# measured swap or none at all.
+OLLAMA_MODEL = os.environ.get("KBM_LLM_MODEL", "t1c/deepseek-math-7b-rl:Q4").strip()
+
+# Everything else about the model — window size, decode budget, whether it can drive the
+# Python sandbox — comes from its profile, so naming a model configures it. Env vars
+# still win: the table supplies each model's right default, not a policy.
+PROFILE = profile_for(OLLAMA_MODEL)
+
+
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    return default
+
+
 # ── Generation ─────────────────────────────────────────────────────────────────
 # These lived in three places at once (api/settings.py, query.py, and test_chat.py via
 # query.py), one of which hardcoded 350 — so raising the cap fixed the API and silently
@@ -48,7 +79,48 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # target: hitting it means the answer was cut off, which api/routes.py now detects via
 # Ollama's done_reason and continues from. Do not raise this to "fix" truncation — it
 # moves the cliff without removing it.
-NUM_PREDICT = int(os.environ.get("KBM_NUM_PREDICT", "350"))
+#
+# The default is now the model's, not a constant: 350 is what deepseek needs and roughly
+# a third of what a TIR trace needs, since that spends tokens on reasoning, then a
+# program, then reasoning about the result.
+NUM_PREDICT = int(os.environ.get("KBM_NUM_PREDICT") or PROFILE.num_predict)
+
+# Ollama does NOT read the window size from the model — it applies its own default and
+# silently shifts the context from the left when a prompt overflows. Left-shifting eats
+# the system prompt first, so an over-long TIR trace does not error, it just quietly
+# stops the model being a tutor. Setting this explicitly is what makes the overflow
+# bounded and diagnosable instead.
+NUM_CTX = int(os.environ.get("KBM_NUM_CTX") or PROFILE.num_ctx)
+
+# Which tool protocol the generator gets, and the one place that decides it.
+#
+# There are two, they are different mechanisms, and a model must never be given both:
+#
+#   tir.py    a TEXT protocol — the model writes a ```python block, generation stops at
+#             the ```output stop word, and the result is spliced into the same turn.
+#             Works on a completion-only model, because it is just text.
+#   agent.py  NATIVE tool calling — a JSON schema goes out with the request and the model
+#             answers with a structured tool_calls array in a new turn. Needs a tools
+#             template in the model, and reaches retrieval as well as the sandbox.
+#
+# llm_profiles carries them as independent capabilities because qwen3 genuinely has both.
+# Handing a model both at once is what must not happen: it would be given a `tools` array
+# AND a ```output stop word, and it will interleave the two mid-answer — unreadable for
+# the student, and un-attributable for the eval, which could no longer say which protocol
+# produced an answer. So the exclusivity lives here, in one line, downstream of every
+# environment variable. KBM_TOOLS=1 KBM_TIR=1 resolves to tools.
+#
+# Native tools win the tie because they are the strictly larger capability: the sandbox is
+# reachable either way, and only agent.py reaches retrieval.
+TOOLS_ENABLED = _flag("KBM_TOOLS", PROFILE.tools)
+
+# Whether the generator may run Python via tir.py + sandbox.py. Off for any model without
+# TIR training: asked for a ```python block, deepseek-math writes prose about Python.
+# Also off whenever native tools are on — see above.
+TIR_ENABLED = False if TOOLS_ENABLED else _flag("KBM_TIR", PROFILE.tir)
+
+# Qwen3-style thinking mode. None means the model has none and the knob is not sent.
+THINK = PROFILE.think
 # Keep this >= KBM_IDLE_STOP_MINUTES: a keep-alive shorter than the idle window unloads
 # the model while the pod keeps billing, so the next question pays a reload for nothing.
 KEEP_ALIVE = os.environ.get("KBM_KEEP_ALIVE", "30m")

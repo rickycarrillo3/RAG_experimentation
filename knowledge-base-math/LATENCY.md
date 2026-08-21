@@ -139,6 +139,32 @@ while the new one is flat.
 
 ---
 
+## 3b. Agent mode changes what these numbers mean
+
+Two things, both worth knowing before reading a `done` frame from a tools model.
+
+**`ttft_ms` stops meaning "time until the student sees something".** A native tool call
+often arrives with no text beside it (measured: two of three probe questions on qwen2:7b),
+so the first pass can emit *zero* visible tokens. The student watches an empty bubble
+through a full prefill, a tool round, and a re-prefill. `chat.search_marker` and
+`chat.tool_output_marker` are doing double duty as progress indicators because of this. If
+the gap is felt in practice, the cheap fix is a marker emitted *before* the call rather than
+after — deliberately not done yet, since it costs a frame on every answer to help some.
+
+**A tool round is not the cheap append TIR's is.** `tir.format_result` adds a sandbox
+result capped at 400 characters. `agent.search_documents` adds up to
+`agent.SEARCH_RESULT_CHARS = 1200` of retrieved textbook, and the transcript carries it for
+every remaining round. The prefix rule still holds — everything is appended, nothing is
+mutated, so the cached prefix survives — but the *tail* being re-prefilled is several times
+larger. That, plus qwen3's 8192-token window, is why `MAX_SEARCH_ROUNDS` is 2 and not 4.
+
+**Measurement to take on the pod**, once agent mode is used in anger: per-answer
+`generate_ms` vs `search_ms` vs `tool_ms`, split by `done.searches`. The question is whether
+a searching answer costs more than the grounding is worth, and the fields are already
+logged (`telemetry.py`) to answer it without new instrumentation.
+
+---
+
 ## 4. Not done, and why
 
 **Swapping the reranker.** 850 ms of a 20 s problem — the wrong end. If it ever matters, measured

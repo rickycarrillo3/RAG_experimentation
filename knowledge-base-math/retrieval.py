@@ -29,11 +29,20 @@ from sentence_transformers import CrossEncoder
 # knobs live. ingest.py and api/ import them from *here* rather than re-reading the
 # environment, because a second opinion about where the data lives means writes and
 # reads silently diverge.
-from config import BM25_DIR, CHROMA_DIR, resolve_device  # noqa: F401  (re-exported)
+from config import (  # noqa: F401  (re-exported)
+    BM25_DIR,
+    CHROMA_DIR,
+    OLLAMA_MODEL,
+    resolve_device,
+)
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-OLLAMA_MODEL = "t1c/deepseek-math-7b-rl:Q4"
+# OLLAMA_MODEL is re-exported from config.py above, not declared here. It used to be a
+# literal on this line, which made "which generator?" a code edit — and put it in the one
+# module that has nothing to do with generation. It is a deployment knob (KBM_LLM_MODEL)
+# now; the import stays so the eight callers that do `from retrieval import OLLAMA_MODEL`
+# are unaffected.
 
 TOP_K = 10         # candidates from each retriever
 RERANK_TOP_C = 20  # candidate pool taken from RRF and fed to the reranker

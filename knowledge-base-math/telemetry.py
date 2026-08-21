@@ -52,6 +52,12 @@ def log_query(
     *,
     truncated: bool = False,
     continuations: int = 0,
+    tool_calls: int = 0,
+    tool_errors: int = 0,
+    protocol: str = "none",
+    tool_counts: dict | None = None,
+    search_queries: list | None = None,
+    late_sources: list | None = None,
 ) -> None:
     _append({
         "kind": "query",
@@ -70,6 +76,41 @@ def log_query(
         # someone to notice. These two fields turn that into a query over the log.
         "truncated": truncated,
         "continuations": continuations,
+        # Tool-integrated reasoning: how many Python programs the model ran, and how many
+        # of those failed. The pair is the only place the running system records whether
+        # the sandbox is earning its keep — a corpus of real questions where tool_calls is
+        # always 0 says the model does not reach for it, and a high tool_errors rate says
+        # it reaches for things the sandbox policy refuses. Neither is visible in an
+        # offline benchmark, which is the same argument that put this module here.
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        # Which tool arm actually ran: "tools", "tir" or "none". Logged rather than
+        # inferred from `model`, because it is the product of a profile, two environment
+        # variables and a startup capability probe — and "which arm produced this answer?"
+        # is the first question to ask of any row during the generator bake-off.
+        "protocol": protocol,
+        # Per-tool call counts, e.g. {"search_documents": 2, "run_python": 1}. One field
+        # rather than a counter per tool, so adding a tool does not change this schema.
+        "tool_counts": tool_counts or {},
+        # The search queries THE MODEL WROTE, when it decided the question needed another
+        # look at the documents. The most valuable field added here.
+        #
+        # EVALUATION.md §8 names "LLM-generated questions are not how your family talks"
+        # as the limitation the protocol cannot fix from the inside, and §10.9 makes the
+        # logged questions the fix. This is a second and different signal: the gap between
+        # what the student typed and the words that actually found the right chunk is
+        # exactly the training pair a query-rewriting step or an embedding fine-tune
+        # needs, and — like everything else in this file — it cannot be backfilled.
+        #
+        # It is the model's phrasing, not the student's, so it carries no PII that the
+        # `question` field above does not already carry.
+        "search_queries": search_queries or [],
+        # Chunks a mid-answer search retrieved, UNFILTERED and with scores, for the same
+        # reason the `sources` field above is unfiltered: the floor can be re-applied
+        # offline, but a chunk that was dropped and never logged is gone. Without this,
+        # re-calibrating KBM_RELEVANCE_FLOOR from real traffic would silently cover only
+        # the retrievals the server initiated.
+        "late_sources": late_sources or [],
         "error": error,
     })
 

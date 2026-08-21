@@ -6,6 +6,7 @@ CLAUDE.md is explicit about why: a second copy drifts, and then the CLI, the web
 and the eval quietly stop describing the same system.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -17,11 +18,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+import agent
 import retrieval
+import sandbox
 import telemetry
+import tir
 from retrieval import OLLAMA_MODEL
 
 from . import chat as chatmod
@@ -39,7 +43,12 @@ from .schemas import (
     TokenEvent,
     UserStatus,
 )
-from .settings import MAX_CONTINUATIONS
+from .settings import (
+    MAX_CONTINUATIONS,
+    SANDBOX_TIMEOUT_S,
+    SHOW_TOOL_CODE,
+    TIR_ENABLED,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +70,19 @@ _STAGE_BLAME = {
 
 # Set by the idle-stop watchdog; every /chat touches it. See ops/idle_stop.py.
 last_chat_at = time.monotonic()
+
+
+def _add_retrieval_timings(timings: dict, stage_seconds: dict) -> None:
+    """Fold one retrieval's per-stage seconds into the request's millisecond totals.
+
+    ADDING, not assigning. Retrieval used to run exactly once per request, so `update`
+    was correct; in agent mode the model can search again mid-answer, and an assignment
+    would report the last search's cost as though it were the whole request's — an answer
+    that searched three times would look as cheap as one that searched once.
+    """
+    for stage, seconds in stage_seconds.items():
+        key = f"{stage}_ms"
+        timings[key] = round(timings.get(key, 0.0) + seconds * 1000, 2)
 
 
 def _sse(event: str, payload) -> str:
@@ -110,15 +132,18 @@ async def _chat_stream(user: str, req: ChatRequest):
                 )
             )
             results = detail.final
-            # RetrievalResult.timings is in seconds; the API reports milliseconds.
-            timings.update({f"{k}_ms": round(v * 1000, 2) for k, v in detail.timings.items()})
+            _add_retrieval_timings(timings, detail.timings)
 
-        mode = chatmod.decide_mode(results, user_has_index)
-        sources = chatmod.to_sources(results) if mode is Mode.GROUNDED else []
+        # Filter once, here, and let mode / sources / context / footer all derive from
+        # the same list — otherwise the answer can cite a chunk the model never saw.
+        selected = chatmod.select_context(results)
+        mode = chatmod.decide_mode(selected, user_has_index)
+        sources = chatmod.to_sources(selected) if mode is Mode.GROUNDED else []
         yield _sse("sources", SourcesEvent(mode=mode, sources=sources))
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", chatmod.SYSTEM_PROMPTS[mode]),
+            ("system", chatmod.system_prompt(mode, tir=TIR_ENABLED,
+                                             tools=models.tools_enabled)),
             ("human", chatmod.HUMAN_PROMPT),
         ])
         # Messages, not `prompt | llm | StrOutputParser()`. The parser maps each
@@ -131,7 +156,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # static text -> history -> context -> question, and continuation only ever
         # APPENDS after it. LATENCY.md's prefix rule depends on that and is load-bearing.
         base_messages = prompt.format_messages(
-            context=chatmod.build_context(results, mode),
+            context=chatmod.build_context(selected, mode),
             history=chatmod.format_history(req.history),
             input=req.message,
         )
@@ -146,24 +171,109 @@ async def _chat_stream(user: str, req: ChatRequest):
         generated = ""
         truncated = False
         continuations = 0
+        # Closed assistant turns and their tool results, in agent mode only — always
+        # empty on the TIR and no-tool paths, which is what keeps those byte-identical.
+        #
+        # It exists because the two tool protocols end a turn differently. TIR pauses
+        # INSIDE the assistant turn: the ```output block is spliced into `generated` and
+        # the same turn resumes, which is why one string was enough. A native tool call
+        # ENDS the turn — the transcript needs a real AIMessage carrying the structured
+        # call, then a ToolMessage per result, then a fresh assistant turn.
+        #
+        # Append-only, and always after the human message, so LATENCY.md's prefix rule
+        # holds exactly as it does for TIR: `base_messages` is never mutated and
+        # everything before the append point is unchanged, so only new tokens prefill.
+        # The one visible difference is that the chat template renders a genuine turn
+        # boundary here instead of more text inside one turn; both are pure appends at
+        # the end of the prompt.
+        turns: list = []
 
         # Guards the head of the answer against coming back as a copy of the question —
         # see chat.QuestionEcho. It filters what is *shown*, never `generated`: the
         # continuation prefill has to be the model's own text, byte for byte, or
         # PrefillEcho will not recognise it.
         qecho = chatmod.QuestionEcho(req.message)
+        # Hides ```python blocks from the student while leaving them in `generated`,
+        # which is where the protocol and the next prefill both need them. Disabled
+        # outright by KBM_SHOW_TOOL_CODE, and irrelevant for a model without TIR.
+        fences = chatmod.CodeFenceFilter() if (TIR_ENABLED and not SHOW_TOOL_CODE) else None
         shown = ""
 
-        for attempt in range(MAX_CONTINUATIONS + 1):
-            messages = base_messages if not generated else [
-                *base_messages, AIMessage(content=generated)
-            ]
+        # Tool rounds and continuations are two reasons to re-enter the SAME loop, and
+        # they are budgeted separately because they mean different things: a continuation
+        # is "the answer did not fit", a tool round is "the model asked a question of the
+        # interpreter". Sharing one budget would let a talkative answer starve the
+        # arithmetic, or three computations eat the room the answer needed to finish.
+        tool_rounds = 0
+        tool_errors = 0
+        tool_seconds = 0.0
+        # Agent mode only. Search and Python are budgeted apart for the same reason tool
+        # rounds and continuations are: three sympy calls must not eat the search the
+        # answer actually needed. `notice_sent` is the one-shot budget notice, per tool.
+        search_rounds = 0
+        python_rounds = 0
+        search_seconds = 0.0
+        tool_counts: dict[str, int] = {}
+        search_queries: list[str] = []
+        late_results: list = []
+        late_source_count = 0
+        notice_sent: set[str] = set()
+        # Loaded on the first mid-answer search and reused by the second, so a re-search
+        # does not re-open the BM25 pickle and the Chroma collection each time.
+        bm25_index = None
+        chroma_store = None
+        budget_notice_sent = False
+        # Backstop. Every arm below either breaks or consumes a budget, so this should be
+        # unreachable — which is exactly why it is here. The loop is `while True` around a
+        # network call driven by model output, and the cost of being wrong about "should
+        # be unreachable" is a request that never returns and a pod that bills for it.
+        passes = 0
+        max_passes = MAX_CONTINUATIONS + (
+            agent.MAX_PASSES if models.tools_enabled else tir.MAX_TOOL_ROUNDS
+        ) + 2
+        # Stop the moment the model opens an output block, or it invents the interpreter's
+        # answer and reasons on from a number nobody computed — strictly worse than having
+        # no tool at all. Ollama strips the stop text and reports done_reason == "stop",
+        # the same value it reports for EOS, so the loop below must detect a tool call
+        # from the TEXT (tir.pending_program) and never from done_reason.
+        stop_words = tir.STOP_WORDS if TIR_ENABLED else None
+
+        while True:
+            passes += 1
+            if passes > max_passes:
+                log.error(
+                    "generation loop hit the pass ceiling (%d) for user=%s — "
+                    "tool_rounds=%d continuations=%d", max_passes, user, tool_rounds, continuations,
+                )
+                break
+            prefix = [*base_messages, *turns]
+            messages = prefix if not generated else [*prefix, AIMessage(content=generated)]
+            # In agent mode the tool arm below closes the turn and resets `generated` to
+            # "", so PrefillEcho is constructed empty and is a pass-through: it carries
+            # continuations, exactly as it does today, and is structurally absent from the
+            # native tool path. No flag, no branch — which matters, because ERRORS.md
+            # 2026-08-20 is the record of what a wrong PrefillEcho verdict costs (every
+            # continuation silently emitting nothing, on one model only).
             echo = chatmod.PrefillEcho(generated)
             done_reason = None
             produced = ""
+            calls: list[dict] = []
+            seen_calls: set[tuple] = set()
 
-            async for chunk in models.llm.astream(messages):
+            stream = (models.llm_tools if models.tools_enabled else models.llm)
+            async for chunk in stream.astream(messages, stop=stop_words):
                 done_reason = chunk.response_metadata.get("done_reason") or done_reason
+                for tc in (getattr(chunk, "tool_calls", None) or []):
+                    # Deduped on (name, args) and NEVER on id: langchain_ollama mints a
+                    # fresh uuid4 every time it parses a response (chat_models.py:218), so
+                    # the id is a runtime artefact, not the model's. If Ollama ever
+                    # repeated a tool_calls block on the terminal chunk, id-keyed dedupe
+                    # would run the program twice. Measured on qwen2:7b it does not — but
+                    # this costs nothing and the failure it prevents is a double execution.
+                    key = (tc["name"], json.dumps(tc.get("args") or {}, sort_keys=True))
+                    if key not in seen_calls:
+                        seen_calls.add(key)
+                        calls.append(tc)
                 text = echo.feed(str(chunk.text))
                 if not text:
                     continue
@@ -173,6 +283,8 @@ async def _chat_stream(user: str, req: ChatRequest):
                 produced += text
 
                 visible = qecho.feed(text)
+                if fences is not None and visible:
+                    visible = fences.feed(visible)
                 if not visible:
                     continue
                 shown += visible
@@ -185,18 +297,253 @@ async def _chat_stream(user: str, req: ChatRequest):
             # model that immediately emits EOS-at-length would spin to the cap emitting
             # nothing; without `echo.mismatch` a build that restates instead of
             # prefilling would duplicate the answer.
-            if echo.mismatch or not produced:
+            #
+            # `and not calls` is load-bearing, and it is the whole feature. A native tool
+            # call very often arrives with NO text beside it — measured on qwen2:7b,
+            # two of three probe questions produced zero content characters alongside
+            # the call. Without this clause the loop breaks here, before the tool arm is
+            # ever reached, and the student gets NO_ANSWER_TEXT instead of an answer. The
+            # symptom would be silent, model-dependent, and would look like the model
+            # failing rather than the server discarding its request — the same shape as
+            # ERRORS.md 2026-08-20.
+            if echo.mismatch or (not produced and not calls):
                 truncated = done_reason == "length"
                 break
+
+            # ── Native tool arm (agent mode) ──────────────────────────────────
+            # The third arm, and the sibling of the TIR arm below rather than a rival to
+            # it: both mean "the model asked something of the world and is waiting", and
+            # config.py guarantees only one of the two can ever be live. Ahead of the
+            # length arm for the same reason TIR is — a pass can end with tool calls AND
+            # done_reason == "length", and the tool call is the live request.
+            #
+            # THE INVARIANT: every tool_call in the AIMessage appended below gets exactly
+            # one ToolMessage — including refusals, bad arguments, unknown names and
+            # budget denials. A dangling call breaks the chat template's rendering, and a
+            # model left waiting on a result it never receives stops mid-sentence. This is
+            # the native form of the TIR arm splicing an output block rather than leaving
+            # a ```python fence open.
+            if models.tools_enabled and calls:
+                tool_msgs = []
+                for tc in calls[: agent.MAX_CALLS_PER_PASS]:
+                    name = tc["name"]
+                    call_id = tc.get("id") or uuid.uuid4().hex
+                    args, err = agent.coerce_args(name, tc.get("args"))
+                    if err:
+                        # The model's mistake, addressed to the model. Nothing is shown to
+                        # the student: a malformed call it will retry next round is noise,
+                        # not an event in the answer.
+                        log.info("tool call rejected for user=%s: %s", user, err)
+                        tool_msgs.append(ToolMessage(content=err, tool_call_id=call_id))
+                        continue
+
+                    spent = {agent.TOOL_SEARCH: search_rounds,
+                             agent.TOOL_PYTHON: python_rounds}.get(name, 0)
+                    cap = {agent.TOOL_SEARCH: agent.MAX_SEARCH_ROUNDS,
+                           agent.TOOL_PYTHON: agent.MAX_PYTHON_ROUNDS}.get(name)
+                    if cap is not None and spent >= cap:
+                        # Once per tool. This arm consumes no budget, so a model that
+                        # answers the notice with another call of the same tool would spin
+                        # for as long as the pod stayed up — telling it twice is a loop
+                        # with no exit, exactly as in the TIR arm.
+                        if name in notice_sent:
+                            log.warning("model asked for %s again after its cap (%d), "
+                                        "user=%s — ending the answer here", name, cap, user)
+                            tool_msgs.append(ToolMessage(content=agent.budget_notice(name),
+                                                         tool_call_id=call_id))
+                            continue
+                        notice_sent.add(name)
+                        log.warning("%s round cap (%d) reached for user=%s", name, cap, user)
+                        tool_msgs.append(ToolMessage(content=agent.budget_notice(name),
+                                                     tool_call_id=call_id))
+                        continue
+
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+
+                    if name == agent.TOOL_PYTHON:
+                        python_rounds += 1
+                        tool_rounds += 1
+                        code = args["code"]
+                        t_tool = time.perf_counter()
+                        # Threaded for the same reason the TIR arm is: the sandbox forks a
+                        # process and waits on it, and inline that stalls every other
+                        # client's token stream.
+                        result = await anyio.to_thread.run_sync(
+                            # Loop variables bound as defaults, not captured. Correct today
+                            # either way because the lambda is awaited immediately, but a
+                            # closure over a loop variable is one refactor away from running
+                            # the wrong program — and this one runs code.
+                            lambda c=code: sandbox.run_python(c, timeout_s=SANDBOX_TIMEOUT_S)
+                        )
+                        tool_seconds += time.perf_counter() - t_tool
+                        if not result.ok:
+                            tool_errors += 1
+                            log.info("sandbox %s for user=%s: %s",
+                                     result.reason, user, result.output)
+                        tool_msgs.append(ToolMessage(content=result.output,
+                                                     tool_call_id=call_id))
+                        if SHOW_TOOL_CODE:
+                            # The code is never in the token stream in agent mode — it
+                            # arrives in tool_calls[i]["args"] — so the operator switch
+                            # needs its own renderer or it silently stops working here.
+                            code_marker = chatmod.tool_code_marker(code, after=answer)
+                            if code_marker:
+                                answer += code_marker
+                                yield _sse("token", TokenEvent(text=code_marker,
+                                                               server_marker=True))
+                        marker = chatmod.tool_output_marker(result.output, result.ok,
+                                                            after=answer)
+                        if marker:
+                            answer += marker
+                            yield _sse("token", TokenEvent(text=marker, server_marker=True))
+
+                    elif name == agent.TOOL_SEARCH:
+                        search_rounds += 1
+                        query = args["query"]
+                        search_queries.append(query)
+                        if not user_has_index:
+                            tool_msgs.append(ToolMessage(content=agent.format_documents([], 0),
+                                                         tool_call_id=call_id))
+                            continue
+                        t_search = time.perf_counter()
+                        if bm25_index is None:
+                            bm25_index = await anyio.to_thread.run_sync(
+                                lambda: retrieval.load_bm25(user))
+                        if chroma_store is None:
+                            chroma_store = await anyio.to_thread.run_sync(
+                                lambda: retrieval.load_chroma(user, models.embeddings))
+                        detail2 = await anyio.to_thread.run_sync(
+                            lambda q=query, b=bm25_index, st=chroma_store:
+                                retrieval.retrieve_detailed(
+                                    q, user, models.embeddings,
+                                    reranker=models.reranker,
+                                    bm25_index=b, store=st,
+                                )
+                        )
+                        search_seconds += time.perf_counter() - t_search
+                        _add_retrieval_timings(timings, detail2.timings)
+                        # Unfiltered, for telemetry: the floor can be re-applied offline,
+                        # a chunk that was never logged cannot.
+                        late_results.extend(detail2.final)
+                        # The SAME floor as the upfront retrieval, applied per chunk. A
+                        # search the model asked for is not evidence that what came back
+                        # is relevant, and pasting a 0.006 chunk into the transcript
+                        # because the model chose to look is the failure select_context
+                        # exists to prevent.
+                        kept = chatmod.select_context(detail2.final)
+                        new_sources = chatmod.to_sources(kept)
+                        before = len(sources)
+                        sources = chatmod.merge_sources(sources, new_sources)
+                        late_source_count += len(sources) - before
+                        tool_msgs.append(ToolMessage(
+                            content=agent.format_search_result(
+                                [(os.path.basename(d.metadata.get("source", "unknown")),
+                                  d.page_content) for d, _ in kept],
+                                len(kept),
+                            ),
+                            tool_call_id=call_id,
+                        ))
+                        marker = chatmod.search_marker(query, len(kept), after=answer)
+                        if marker:
+                            answer += marker
+                            yield _sse("token", TokenEvent(text=marker, server_marker=True))
+
+                    else:  # agent.TOOL_LIST
+                        n_chunks, names = await anyio.to_thread.run_sync(
+                            lambda: index_summary(user))
+                        tool_msgs.append(ToolMessage(
+                            content=agent.format_documents(names, n_chunks),
+                            tool_call_id=call_id,
+                        ))
+                        # No student-facing marker. tool_output_marker exists so a wrong
+                        # sandbox answer cannot be mistaken for a hallucination; "which
+                        # files do I have" carries no such risk, and narrating it would
+                        # clutter the answer. It stays visible in telemetry.
+
+                # Anything past MAX_CALLS_PER_PASS still needs a result, per the invariant.
+                for tc in calls[agent.MAX_CALLS_PER_PASS:]:
+                    tool_msgs.append(ToolMessage(
+                        content=agent.budget_notice(tc["name"]),
+                        tool_call_id=tc.get("id") or uuid.uuid4().hex,
+                    ))
+
+                # Close the turn. `generated` becomes the assistant message carrying the
+                # calls, and resets — so the next pass opens a fresh turn and
+                # PrefillEcho("") is inert. This is the whole reason `turns` exists.
+                turns.append(AIMessage(content=generated, tool_calls=calls))
+                turns.extend(tool_msgs)
+                generated = ""
+                truncated = False
+                continue
+
+            # ── Tool arm ──────────────────────────────────────────────────────
+            # Checked BEFORE the length arm. A model that opens a ```python block and is
+            # cut off at the cap has not asked for anything yet (pending_program requires
+            # a CLOSED block), so the two cannot both fire; checking the tool first keeps
+            # that ordering explicit rather than relying on it.
+            program = tir.pending_program(generated) if TIR_ENABLED else None
+            if program is not None:
+                if tool_rounds >= tir.MAX_TOOL_ROUNDS:
+                    # Out of budget. Splice a result saying so rather than leaving the
+                    # block dangling: the model is mid-sentence waiting on a number, and
+                    # an empty transcript there is how you get an answer that just stops.
+                    #
+                    # Once only. Telling it a second time is a loop with no exit — the
+                    # arm consumes no budget, so a model that answers the notice with
+                    # another program would spin here for as long as the pod stayed up.
+                    if budget_notice_sent:
+                        log.warning(
+                            "model asked for another program after the TIR cap (%d), "
+                            "user=%s — ending the answer here", tir.MAX_TOOL_ROUNDS, user,
+                        )
+                        break
+                    budget_notice_sent = True
+                    log.warning("TIR round cap (%d) reached for user=%s", tir.MAX_TOOL_ROUNDS, user)
+                    generated += tir.format_result(
+                        "(no more calculations available — finish from what you have)"
+                    )
+                    continue
+
+                tool_rounds += 1
+                t_tool = time.perf_counter()
+                # The sandbox forks a process and waits on it. Inline, that blocks the
+                # event loop and stalls every other client's token stream — the same
+                # reason retrieval runs in a thread above.
+                result = await anyio.to_thread.run_sync(
+                    lambda: sandbox.run_python(program, timeout_s=SANDBOX_TIMEOUT_S)
+                )
+                tool_seconds += time.perf_counter() - t_tool
+                if not result.ok:
+                    tool_errors += 1
+                    log.info(
+                        "sandbox %s for user=%s: %s", result.reason, user, result.output
+                    )
+
+                # The model gets the real text — a traceback line, a refused import — in
+                # Qwen's own ```output shape, because that is what it can act on. The
+                # student gets a sentence. Two strings for one event, as with Job.detail
+                # and Job.diagnostic.
+                generated += tir.format_result(result.output)
+                marker = chatmod.tool_output_marker(result.output, result.ok, after=answer)
+                if marker:
+                    answer += marker
+                    yield _sse("token", TokenEvent(text=marker, server_marker=True))
+                truncated = False
+                continue
+
+            # ── Continuation arm ──────────────────────────────────────────────
             if done_reason != "length":
                 truncated = False
                 break
             truncated = True
-            if attempt < MAX_CONTINUATIONS:
-                continuations += 1
+            if continuations >= MAX_CONTINUATIONS:
+                break
+            continuations += 1
 
-        # Anything QuestionEcho was still holding when the stream ended.
+        # Anything the display filters were still holding when the stream ended.
         tail = qecho.flush()
+        if fences is not None:
+            tail = fences.feed(tail) + fences.flush()
         if tail:
             shown += tail
             answer += tail
@@ -227,13 +574,32 @@ async def _chat_stream(user: str, req: ChatRequest):
         # turn's KV cache depends on (LATENCY.md).
         # Skipped when nothing was answered: there is no answer for the line to
         # attribute, and naming a document under "no answer came back" reads as though
-        # the document were the reason.
-        if shown.strip():
-            footer = chatmod.sources_footer(sources, mode)
+        # the document were the reason. Also empty in `general` mode — the footer names
+        # documents and there are none, so nothing is emitted rather than a line saying
+        # so (see chat.sources_footer). `mode` on the sources/done frames is still the
+        # authoritative provenance for any client that wants to show it.
+        # `mode` is NOT revised when a mid-answer search found documents, and that is
+        # deliberate: it records the provenance decision the calibrated relevance floor
+        # made up front, on the question as asked, and it is what EVALUATION.md §10.8
+        # depends on to make faithfulness measurable. A label that quietly means something
+        # different on answers where the model happened to search again is not a label.
+        #
+        # But the footer's own invariant is "names documents iff there are documents to
+        # name", and a `general` answer that searched and found something now has some.
+        # Passing GROUNDED here satisfies the footer without rewriting the decision;
+        # DoneEvent.late_sources is how a client sees the difference.
+        footer = chatmod.sources_footer(
+            sources, Mode.GROUNDED if sources else mode
+        ) if shown.strip() else ""
+        if footer:
             answer += footer
             yield _sse("token", TokenEvent(text=footer, server_marker=True))
 
         timings["generate_ms"] = round((time.perf_counter() - t_gen) * 1000, 1)
+        if tool_rounds:
+            timings["tool_ms"] = round(tool_seconds * 1000, 1)
+        if search_rounds:
+            timings["search_ms"] = round(search_seconds * 1000, 1)
 
         yield _sse("done", DoneEvent(
             mode=mode,
@@ -243,12 +609,25 @@ async def _chat_stream(user: str, req: ChatRequest):
             event_id=event_id,
             truncated=truncated,
             continuations=continuations,
+            tool_calls=tool_rounds,
+            tool_errors=tool_errors,
+            searches=search_rounds,
+            late_sources=late_source_count,
         ))
+        # Telemetry logs every RETRIEVED chunk, not just the ones that cleared the floor.
+        # The floor can be re-applied offline, but a chunk that was dropped and never
+        # logged is gone — and re-calibrating the floor against real family questions is
+        # exactly what this log exists to make possible (EVALUATION.md §10.9). Each row
+        # carries its score, so "what would floor=X have done" stays answerable.
         telemetry.log_query(
             event_id=event_id, user=user, question=req.message, mode=mode.value,
-            sources=[s.model_dump() for s in sources], timings=timings,
+            sources=[s.model_dump() for s in chatmod.to_sources(results)], timings=timings,
             model=OLLAMA_MODEL, n_completion_chars=len(answer),
             truncated=truncated, continuations=continuations,
+            tool_calls=tool_rounds, tool_errors=tool_errors,
+            protocol=models.protocol, tool_counts=tool_counts,
+            search_queries=search_queries,
+            late_sources=[s.model_dump() for s in chatmod.to_sources(late_results)],
         )
 
     except Exception as e:  # noqa: BLE001 - surfaced to the client as an SSE error frame
@@ -261,12 +640,17 @@ async def _chat_stream(user: str, req: ChatRequest):
 
 
 def _timings_model(t: dict):
+    """The timings dict as the wire model.
+
+    Built by name from Timings' own fields rather than by listing them here: the previous
+    version enumerated each key, so `search_ms` was collected, logged to telemetry, and
+    then silently dropped from the `done` frame — a field that exists everywhere except
+    where a client can see it. Deriving the list from the schema makes the schema the one
+    place a timing is declared.
+    """
     from .schemas import Timings
 
-    return Timings(
-        bm25_ms=t.get("bm25_ms"), dense_ms=t.get("dense_ms"), rrf_ms=t.get("rrf_ms"),
-        rerank_ms=t.get("rerank_ms"), ttft_ms=t.get("ttft_ms"), generate_ms=t.get("generate_ms"),
-    )
+    return Timings(**{k: t.get(k) for k in Timings.model_fields})
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -443,4 +827,5 @@ async def healthz():
             loaded = any(m.get("name") == OLLAMA_MODEL for m in r.json().get("models", []))
     except Exception:  # noqa: BLE001 - Ollama not up yet is a normal cold-start state
         loaded = False
-    return Health(model=OLLAMA_MODEL, model_loaded=loaded, retrieval_ready=models.ready)
+    return Health(model=OLLAMA_MODEL, model_loaded=loaded, retrieval_ready=models.ready,
+                  protocol=models.protocol)

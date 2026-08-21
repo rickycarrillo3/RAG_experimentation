@@ -59,10 +59,15 @@ Conversation so far:
 #
 # It is one `Sources:` line rather than a sentence of explanation because the student
 # is already looking at the answer that came out of their own documents — the line
-# only has to name which document, and say so plainly when the answer came from none.
-# The long "not from your uploaded documents" banner it replaces said, at length, what
-# the absence of a filename says by itself.
-GENERAL_SOURCES_FOOTER = "\n\n_Sources: general knowledge_"
+# only has to name which document.
+#
+# In `general` mode there is NO footer at all. A line reading "Sources: general
+# knowledge" is not provenance, it is the absence of provenance spelled out, and
+# printing it under every unanswered-from-documents reply trained the eye to skip the
+# footer entirely — which is the one thing it must not do when it *does* name a file.
+# Provenance stays a server fact regardless: `mode` is on the `sources` and `done` SSE
+# frames, so a client that wants to say something about general-knowledge answers has
+# what it needs without the server writing a line into the answer text.
 
 # Same reasoning as the sources footer, for the same reason: the server knows the
 # answer was cut off (Ollama says so, via done_reason == "length"), and the model cannot
@@ -75,23 +80,52 @@ TRUNCATION_MARKER = (
 )
 
 
+# How far into the stream a would-be echo may diverge before we stop believing it was
+# ever an echo. Divergence at character 0-23 means the model simply continued (see
+# PrefillEcho); divergence at character 200 of a 350-character prefill means something
+# stranger, and that is the case worth abandoning.
+#
+# 24 characters is short enough that a genuine continuation almost never collides with
+# it by chance, and long enough not to be fooled by a shared opening word.
+ECHO_PROBE_CHARS = 24
+
+
 class PrefillEcho:
-    """Strips the assistant-prefill that Ollama echoes back when resuming a generation.
+    """Reconciles the two ways Ollama can resume a generation, without duplicating text.
 
-    To continue a truncated answer we send the partial text back as an assistant
-    message and let the model keep writing. Ollama treats a trailing assistant message
-    as a *prefill* — which is what makes seamless continuation possible at all — but it
-    replays the whole prefill at the head of the stream before emitting anything new.
-    Forwarded unfiltered, the student sees the first half of the answer twice.
+    To continue a truncated answer — or to hand back a tool result mid-answer, which is
+    the same mechanism (tir.py) — we send the partial text back as a trailing assistant
+    message. Ollama treats that as a *prefill* and the model writes on from it. What
+    Ollama does with the prefill ITSELF turns out to depend on the model's chat template,
+    and both behaviours are live in this repo:
 
-    Verified on ollama 0.32.6 with deepseek-math-7b-rl: the echo is byte-identical to
-    what was sent, including a leading space, and arrives in the first one or two
-    chunks. That is an observation, not a guarantee — hence `mismatch`.
+        deepseek-math-7b-rl  replays the prefill byte-for-byte at the head of the
+                             stream, then continues. Forwarded unfiltered, the student
+                             sees the first half of the answer twice.
+        qwen2 / ChatML       emits nothing but the continuation. Prefill "…are 2, 3"
+                             came back as ", and 5, followed by 7 and 11." — diverging
+                             at index 0, because there was never an echo to match.
 
-    On mismatch (a different Ollama build that opens a fresh turn instead of prefilling,
-    or retokenisation at the boundary) this emits NOTHING and the caller abandons the
-    continuation, keeping the first-pass answer and labelling it truncated. Degrading to
-    a shorter honest answer is always correct; emitting duplicated text never is.
+    Measured locally on ollama with both models, 2026-08-20. This class used to assume
+    the first behaviour and treat its absence as a fault: anything that was not a
+    byte-identical echo set `mismatch` and emitted NOTHING for the rest of the pass. On
+    a Qwen model that silently discards every continuation and every tool round — the
+    answer just stops, with no error anywhere. So the three cases are now distinguished:
+
+        full echo               strip it, emit what follows          (deepseek)
+        diverges immediately    there was no echo; emit everything   (qwen / ChatML)
+        diverges deep in        genuinely unexpected; abandon        (mismatch)
+
+    The third case is the original conservative path, kept for what it was always for: a
+    build that restates the answer in different words, or retokenisation at the boundary.
+    It emits nothing and the caller abandons the continuation, keeping the first-pass
+    answer and labelling it truncated. Degrading to a shorter honest answer is always
+    correct; emitting duplicated text never is.
+
+    Note that a *restatement* cannot reach the second case. Text that restates the answer
+    from the beginning IS a prefix of the prefill, so it matches for far longer than
+    ECHO_PROBE_CHARS and lands in the third. Divergence at character 0 is positive
+    evidence that no echo was attempted, not merely the absence of one.
     """
 
     def __init__(self, prefill: str) -> None:
@@ -99,6 +133,7 @@ class PrefillEcho:
         self._buf = ""
         self._done = not prefill      # nothing to strip on the first pass
         self.mismatch = False
+        self.echoed: bool | None = None   # which behaviour this pass saw; None = no prefill
 
     def feed(self, text: str) -> str:
         """Return the portion of `text` that is genuinely new."""
@@ -108,18 +143,36 @@ class PrefillEcho:
             return text
 
         self._buf += text
-        # Still a prefix of what we sent: keep swallowing, emit nothing yet.
-        if len(self._buf) < len(self._prefill):
-            if not self._prefill.startswith(self._buf):
-                self.mismatch = True
+
+        # The whole prefill came back: strip it, pass on whatever trails it.
+        if self._buf.startswith(self._prefill):
+            self._done = True
+            self.echoed = True
+            buf, self._buf = self._buf, ""
+            return buf[len(self._prefill):]
+
+        # Still consistent with an echo in progress: keep swallowing, decide later.
+        if self._prefill.startswith(self._buf):
             return ""
 
-        if not self._buf.startswith(self._prefill):
-            self.mismatch = True
-            return ""
+        # Diverged. Where it diverged is what tells us which behaviour this is.
+        shared = _common_prefix_len(self._buf, self._prefill)
+        if shared < ECHO_PROBE_CHARS:
+            self._done = True
+            self.echoed = False
+            buf, self._buf = self._buf, ""
+            return buf
 
-        self._done = True
-        return self._buf[len(self._prefill):]
+        self.mismatch = True
+        return ""
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
 
 
 # Below this length a question is not distinctive enough to recognise as an echo:
@@ -224,10 +277,251 @@ class QuestionEcho:
         return None
 
 
-SYSTEM_PROMPTS = {
-    Mode.GROUNDED: _TEACHING_STYLE + _GROUNDED_RULES,
-    Mode.GENERAL: _TEACHING_STYLE + _GENERAL_RULES,
+_FENCE = "```"
+# Longest a language tag can be before we stop waiting for the newline that ends it.
+# "python" is six; the slack covers "python3" and stray whitespace without stalling the
+# stream on a line of prose that merely happens to start with three backticks.
+_TAG_LOOKAHEAD = 16
+
+
+def _partial_fence_tail(text: str) -> int:
+    """Length of the trailing run of backticks that might be the start of a fence.
+
+    The stream arrives in tokens, and "``" is a perfectly ordinary way for one to end.
+    Emitting it and then discovering the next token was "`python" would put two stray
+    backticks in the student's answer, so a possible fence start is always held back.
+    """
+    for n in range(len(_FENCE) - 1, 0, -1):
+        if text.endswith(_FENCE[:n]):
+            return n
+    return 0
+
+
+class CodeFenceFilter:
+    """Keeps ```python blocks out of what the student sees, while the model still writes them.
+
+    Third in the family, and the same contract as PrefillEcho and QuestionEcho: it
+    filters what is SHOWN and never touches `generated`. The transcript the model is
+    handed back has to contain its own code verbatim — that is the TIR protocol (tir.py)
+    and it is also what PrefillEcho matches against on the next round.
+
+    Why hide it at all: the reader is a family member asking about a derivative. They
+    want the reasoning and the number. Eight lines of sympy in the middle of the
+    explanation is something they have to learn to skip, and the thing they must NOT
+    learn to skip is the sources footer at the bottom. The computed *result* is still
+    shown (see tool_output_marker) — hiding the arithmetic entirely would make a wrong
+    sandbox answer indistinguishable from a hallucination, which is the failure this
+    whole feature exists to remove. KBM_SHOW_TOOL_CODE=1 turns the filter off.
+
+    Only a `python`-tagged fence is hidden. A bare ``` fence passes through untouched:
+    the model may legitimately quote a matrix or a table, and a filter that swallowed
+    any fenced block would eat those too.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._hiding = False
+        # A hidden block ends with "```\n", and that newline closes the block rather
+        # than opening the prose after it — left in, every computation leaves a blank
+        # line behind. It cannot be dropped at the moment the fence closes, because with
+        # small chunks the newline has not arrived yet: whether the output had a stray
+        # blank line then depended on how Ollama happened to split its tokens. So the
+        # intent is recorded and applied whenever the newline does turn up.
+        self._eat_newline = False
+
+    def feed(self, text: str) -> str:
+        self._buf += text
+        out = []
+
+        while True:
+            if self._eat_newline and self._buf:
+                if self._buf.startswith("\n"):
+                    self._buf = self._buf[1:]
+                self._eat_newline = False
+
+            if self._hiding:
+                close = self._buf.find(_FENCE)
+                if close < 0:
+                    # Hold back only what could be the start of the closing fence.
+                    keep = _partial_fence_tail(self._buf)
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                self._buf = self._buf[close + len(_FENCE):]
+                self._hiding = False
+                self._eat_newline = True
+                continue
+
+            open_at = self._buf.find(_FENCE)
+            if open_at < 0:
+                keep = _partial_fence_tail(self._buf)
+                cut = len(self._buf) - keep
+                out.append(self._buf[:cut])
+                self._buf = self._buf[cut:]
+                break
+
+            head, rest = self._buf[:open_at], self._buf[open_at:]
+            newline = rest.find("\n")
+            if newline < 0:
+                if len(rest) < len(_FENCE) + _TAG_LOOKAHEAD:
+                    # The tag is still arriving; emit what precedes it and wait.
+                    out.append(head)
+                    self._buf = rest
+                    break
+                newline = len(rest)
+
+            tag = rest[len(_FENCE):newline].strip().lower()
+            out.append(head)
+            self._buf = rest[newline + 1:]
+            if tag in ("python", "python3", "py"):
+                self._hiding = True
+            else:
+                # Not ours — put the fence line back on the wire exactly as it came.
+                out.append(rest[:newline + 1])
+            continue
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Whatever is still held when the stream ends.
+
+        An unterminated ```python block is dropped: the model was cut off mid-program,
+        and half a program shown to a student is worse than nothing. The truncation
+        marker is what tells them the answer stopped early.
+        """
+        if self._hiding:
+            self._buf = ""
+            return ""
+        buf, self._buf = self._buf, ""
+        return buf
+
+
+def tool_output_marker(result, ok: bool, after: str = "") -> str:
+    """What the student is shown in place of a raw ```output block.
+
+    Two strings for one event, exactly as Job.detail and Job.diagnostic are (CLAUDE.md):
+    this is the sentence for the family member, while the sandbox's real text — a
+    traceback line, a refused import, a timeout — goes into the model's transcript, the
+    telemetry record and the log. "Surface the error" has never meant "show the student
+    the traceback", and it does not start meaning it here.
+
+    On failure the student gets a neutral note rather than silence, because the answer
+    above and below it will read as though a number arrived; saying that it did not is
+    what keeps the two halves honest.
+
+    `after` is the answer text emitted so far. The marker needs a blank line above it to
+    be its own paragraph, and the model has usually already written one or two newlines
+    before its code block — so the separator is computed from what is actually there
+    rather than assumed, which is the difference between one paragraph break and a gap.
+    """
+    if not ok:
+        body = "_The calculation didn't run — working it through by hand instead._"
+    else:
+        text = str(result).strip()
+        if not text:
+            return ""
+        body = (f"_Computed:_\n\n{_FENCE}\n{text}\n{_FENCE}"
+                if "\n" in text else f"_Computed:_ `{text}`")
+
+    lead = "\n\n"[: max(0, 2 - (len(after) - len(after.rstrip("\n"))))]
+    return f"{lead}{body}\n\n"
+
+
+def search_marker(query: str, n_found: int, after: str = "") -> str:
+    """What the student is shown when the model searches their documents mid-answer.
+
+    Native tool calls are invisible in a way TIR never was: with TIR the model's
+    ```python block was at least IN the token stream and merely filtered out, whereas a
+    tool call lives in a structured field the stream never carries. Without this, the
+    student watches a still bubble for several seconds while retrieval and a re-prefill
+    happen, and then the answer changes direction for no visible reason.
+
+    The query is shown, not just the fact of a search. It is the model's words, not the
+    student's, and it is how someone notices that an answer came from the wrong chapter
+    because the search asked for the wrong thing — the same argument that keeps the
+    computed result visible in tool_output_marker rather than hidden as noise.
+
+    `after` computes the separator from the text already emitted, exactly as
+    tool_output_marker does; see its docstring.
+    """
+    shown = query.strip()
+    if len(shown) > 60:
+        shown = shown[:60].rsplit(" ", 1)[0] + "…"
+    if n_found:
+        body = (f'_Searched your documents for "{shown}" — '
+                f"found {n_found} passage{'s' if n_found != 1 else ''}._")
+    else:
+        body = f'_Searched your documents for "{shown}" — nothing relevant._'
+    lead = "\n\n"[: max(0, 2 - (len(after) - len(after.rstrip("\n"))))]
+    return f"{lead}{body}\n\n"
+
+
+def tool_code_marker(code: str, after: str = "") -> str:
+    """The operator escape hatch (KBM_SHOW_TOOL_CODE) for native tool calls.
+
+    CodeFenceFilter cannot serve here and inverting it would not help: in TIR the code
+    is in the token stream and the filter's job is to REMOVE it, while in agent mode the
+    code was never in the stream at all — it arrives in tool_calls[i]["args"]. So the
+    same environment variable needs its own renderer, or it silently stops working for
+    the newer arm, which is the worst outcome for a debugging switch.
+    """
+    body = code.strip()
+    if not body:
+        return ""
+    lead = "\n\n"[: max(0, 2 - (len(after) - len(after.rstrip("\n"))))]
+    return f"{lead}{_FENCE}python\n{body}\n{_FENCE}\n\n"
+
+
+_MODE_RULES = {
+    Mode.GROUNDED: _GROUNDED_RULES,
+    Mode.GENERAL: _GENERAL_RULES,
 }
+
+
+def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
+    """The system message, with the tool rules spliced in when the model can use them.
+
+    The tool block goes AFTER the teaching style and BEFORE the mode block, which keeps
+    two properties the rest of the file depends on. `history` stays the last thing in
+    the message, so it can grow by appending without moving anything in front of it; and
+    the two modes still share every token up to the mode block, so alternating between
+    grounded and general mid-conversation reuses the cached prefix instead of
+    re-prefilling (LATENCY.md).
+
+    Four literal prompts would have been the same four strings with four places to forget
+    to change one — which is why SYSTEM_PROMPTS below is derived from this function rather
+    than written out beside it.
+
+    `tir` and `tools` are the two tool protocols and are mutually exclusive — config.py
+    enforces that in one line, upstream of every caller, so this function does not
+    re-decide it. Both default False, so every existing call returns a byte-identical
+    string and the deepseek path is untouched.
+
+    A note on `tools` and `mode`, because they interact in a way TIR never did.
+    agent.search_documents can retrieve DURING the answer, which means the general-mode
+    rules ("No relevant material was found in the student's uploaded documents") can be
+    falsified after this prompt is frozen. The mode block still goes in — it is the right
+    description of what the model was handed up front, and swapping it for a
+    mode-independent block would throw away the grounding instruction in the case that
+    matters most. agent.AGENT_RULES carries the override instead, in its last line.
+    """
+    from tir import TIR_RULES
+
+    head = _TEACHING_STYLE
+    if tir:
+        head += TIR_RULES
+    if tools:
+        from agent import AGENT_RULES
+
+        head += AGENT_RULES
+    return head + _MODE_RULES[mode]
+
+
+# The no-tool prompts, by mode — what the service sent before TIR existed, and what the
+# eval reads when it wants "the prompt the model is given" without a generator in hand.
+# DERIVED, not a second copy: an independent literal here would drift from system_prompt()
+# silently, and the drift would only show up as a quietly different prompt in the eval than
+# in production. Same rule as retrieval.py.
+SYSTEM_PROMPTS = {mode: system_prompt(mode) for mode in _MODE_RULES}
 
 # `context` carries its own trailing blank line (see build_context) rather than the
 # template hard-coding one. In `general` mode the context is empty, and a template with
@@ -291,21 +585,61 @@ def to_sources(results: list[tuple[Document, float]]) -> list[Source]:
     ]
 
 
-def decide_mode(results: list[tuple[Document, float]], has_index: bool) -> Mode:
-    """Grounded only if retrieval actually produced something plausibly relevant.
+def merge_sources(existing: list[Source], new: list[Source]) -> list[Source]:
+    """Fold a mid-answer search's sources into the ones already announced.
+
+    Only agent mode produces this: retrieval used to run exactly once per request, so
+    there was never a second list to merge. Deduped on `chunk_id` and NOT re-sorted by
+    score — the order is "when the answer leaned on it", which is what the footer reads
+    top-down, and re-ranking a merged list by score would put a late chunk above the
+    context the answer actually opened from.
+
+    Lives here rather than in agent.py because this file already owns `Source` and is
+    already pure. agent.py importing api.schemas would invert the dependency that keeps
+    tir.py and retrieval.py importable from the eval harness.
+    """
+    seen = {s.chunk_id for s in existing}
+    return existing + [s for s in new if s.chunk_id not in seen]
+
+
+def select_context(results: list[tuple[Document, float]]) -> list[tuple[Document, float]]:
+    """The retrieved chunks that actually earn a place in the prompt, best first.
+
+    Retrieval always returns TOP_N chunks — that is what a top-N cut means, not a claim
+    that all N are relevant. Measured on the shipping pipeline, a top-5 routinely looks
+    like `0.9956  0.5881  0.0520  0.0089  0.0068`: one right answer, one near-miss, and
+    three chunks the reranker is actively telling us are unrelated. Every one of them
+    used to be pasted into the prompt under a "[Source: …]" heading.
+
+    So the floor is applied per chunk, not just to the best one. The same number does
+    both jobs, and that is deliberate rather than convenient: "is this chunk about what
+    was asked" is one question, and the corpus-level answer is just whether *any* chunk
+    passes it — which is why decide_mode below is now a non-empty check.
+
+    Deliberately NOT a softmax/top-p (nucleus) selection over the scores. Nucleus is
+    relative, so a chunk is dropped for having a better sibling rather than for being
+    bad: measured on the same queries, `p=0.9` discards chunks scoring 0.79 and 0.77
+    because one chunk scored 0.99, and it never keeps five chunks even when all five are
+    good. Worse, it cannot abstain at all — five garbage chunks softmax to exactly the
+    same distribution as five excellent ones, because normalising throws away the
+    absolute scale that tells them apart. See evaluation/calibrate_floor.py.
+    """
+    return [(doc, score) for doc, score in results if score >= RELEVANCE_FLOOR]
+
+
+def decide_mode(selected: list[tuple[Document, float]], has_index: bool) -> Mode:
+    """Grounded only if at least one chunk cleared the floor.
 
     Three ways to land in `general` mode, and they are genuinely different situations
     that the user experiences identically: no index at all, an index that returned
-    nothing, and an index whose best hit is below the relevance floor. The last is the
-    one that matters — it is the case where the old code would hand the model five
+    nothing, and an index whose every hit fell below the relevance floor. The last is
+    the one that matters — it is the case where the old code would hand the model five
     irrelevant chunks and let it answer as though they were sources.
 
-    RELEVANCE_FLOOR is an unmeasured default; see settings.py.
+    Takes the ALREADY-SELECTED list, so the mode and the context can never disagree
+    about which chunks counted. RELEVANCE_FLOOR is calibrated; see settings.py.
     """
-    if not has_index or not results:
-        return Mode.GENERAL
-    best = max(score for _, score in results)
-    return Mode.GROUNDED if best >= RELEVANCE_FLOOR else Mode.GENERAL
+    return Mode.GROUNDED if has_index and selected else Mode.GENERAL
 
 
 def build_context(results: list[tuple[Document, float]], mode: Mode) -> str:
@@ -328,7 +662,7 @@ def build_context(results: list[tuple[Document, float]], mode: Mode) -> str:
 
 
 def sources_footer(sources: list[Source], mode: Mode) -> str:
-    """The provenance line appended to every answer, in both modes.
+    """The provenance line appended to a grounded answer — and nothing otherwise.
 
     Deduped because the top-N chunks usually come from the same document, and a footer
     that named `calculus.pdf` five times would say nothing five times. Ordered by
@@ -336,10 +670,11 @@ def sources_footer(sources: list[Source], mode: Mode) -> str:
     on hardest. Scores and chunk ids stay off it — they are in the `sources` SSE frame
     for any client that wants to show them, and they mean nothing to a student.
 
-    No sources means nothing grounded the answer, whatever `mode` claims, so the
-    general-knowledge line is the honest one in that case.
+    Returns "" in `general` mode: the footer exists to name documents, and there are
+    none to name. No sources means nothing grounded the answer whatever `mode` claims,
+    so that is the empty case too. Callers must not emit an empty token frame.
     """
     if mode is Mode.GENERAL or not sources:
-        return GENERAL_SOURCES_FOOTER
+        return ""
     names = list(dict.fromkeys(s.source for s in sources))
     return "\n\n_Sources: " + ", ".join(names) + "_"

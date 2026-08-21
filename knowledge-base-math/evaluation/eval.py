@@ -33,6 +33,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from config import OLLAMA_BASE_URL
+from llm_profiles import profile_for
 from query import SYSTEM_PROMPT
 from retrieval import (
     EMBED_MODEL,
@@ -419,7 +420,12 @@ def main():
             ("system", SYSTEM_PROMPT),
             ("human", "{input}"),
         ]) | ChatOllama(
-            model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=1024
+            model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=1024,
+            # Retrieved context + question + a 1024-token answer is a real squeeze inside
+            # a 4096-token model, and Ollama answers an overflow by dropping tokens off the
+            # LEFT — the system prompt — instead of erroring. Stating the model's own
+            # window makes a too-long prompt visible rather than silently ungrounded.
+            num_ctx=profile_for(OLLAMA_MODEL).num_ctx,
         ) | StrOutputParser()
         judge = ChatPromptTemplate.from_template(JUDGE_PROMPT) | ChatOllama(
             model=args.judge_model, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=5
