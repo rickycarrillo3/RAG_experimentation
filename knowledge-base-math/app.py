@@ -300,7 +300,7 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
                 down_btn = gr.Button("👎", scale=0)
             feedback_status = gr.Markdown("")
 
-    # `api_name=False` on every binding below. Without it Gradio turns each event into a
+    # `api_visibility="private"` on every binding below. Without it Gradio turns each event into a
     # named, externally callable route and lists it in the schema it serves at
     # /gradio_api/info — the whole backend surface, published to anyone who loads the page.
     # It lives inside these dicts so the multi-trigger bindings cannot drift apart.
@@ -311,7 +311,7 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
         fn=handle_chat,
         inputs=[msg_box, chatbot, clean_history_state, username_box],
         outputs=[msg_box, chatbot, clean_history_state, event_id_state],
-        api_name=False,
+        api_visibility="private",
     )
 
     # Selecting a file *is* the request to ingest it — there is no separate button, and a
@@ -328,7 +328,7 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
         fn=handle_upload,
         inputs=[upload_box, username_box, last_ingested_state],
         outputs=[upload_status, last_ingested_state, upload_box],
-        api_name=False,
+        api_visibility="private",
     )
     upload_box.upload(**upload_io)
     username_box.submit(**upload_io)
@@ -336,12 +336,12 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
     upload_box.clear(
         lambda: ("No file selected.", None),
         outputs=[upload_status, last_ingested_state],
-        api_name=False,
+        api_visibility="private",
     )
     send_btn.click(**chat_io)
     msg_box.submit(**chat_io)
-    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status, api_name=False)
-    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status, api_name=False)
+    up_btn.click(lambda eid: send_feedback(eid, "up"), inputs=event_id_state, outputs=feedback_status, api_visibility="private")
+    down_btn.click(lambda eid: send_feedback(eid, "down"), inputs=event_id_state, outputs=feedback_status, api_visibility="private")
 
 
 if __name__ == "__main__":
@@ -354,8 +354,13 @@ if __name__ == "__main__":
         share=False,
         auth=app_auth(),
         theme=gr.themes.Soft(),
-        # Drops the "Use via API" footer link, and leaves /gradio_api/info serving an
-        # empty schema ({"named_endpoints": {}, "unnamed_endpoints": {}}) rather than a
-        # description of every handler. The route itself stays — Gradio owns it.
-        show_api=False,
+        # NOTE: no show_api= here. Gradio 6 removed the argument from launch()
+        # altogether, and passing it raises TypeError at startup — which is exactly
+        # what it did, so `python app.py` did not run at all. See ERRORS.md.
+        #
+        # Losing the argument costs nothing, because it was never what emptied the
+        # schema. `api_visibility="private"` on every event binding above is: with no named
+        # endpoints there is nothing for /gradio_api/info to describe, and it serves
+        # {"named_endpoints": {}, "unnamed_endpoints": {}} on its own. The route
+        # itself stays either way — Gradio owns it.
     )

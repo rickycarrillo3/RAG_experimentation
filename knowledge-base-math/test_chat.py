@@ -71,10 +71,22 @@ def selftest() -> int:
     check("echo + new text in one chunk", echo_run("Hello world", ["Hello world and more"]) == (" and more", False))
     check("echo split across chunks", echo_run("Hello world", ["Hel", "lo ", "world", " tail"]) == (" tail", False))
     check("leading space preserved", echo_run(" The chain rule", [" The chain rule is"]) == (" is", False))
-    # The one that matters: on divergence it must emit NOTHING, so the caller can abandon
-    # the continuation rather than showing the answer twice.
-    check("diverged echo -> mismatch, no output", echo_run("Hello world", ["Hello there"]) == ("", True))
-    check("divergence caught before full length", echo_run("Hello world", ["Hex"]) == ("", True))
+    # Divergence has TWO meanings, and these assertions used to conflate them — they
+    # asserted the old two-case contract and had been failing since PrefillEcho was fixed
+    # (ERRORS.md 2026-08-20). Divergence inside ECHO_PROBE_CHARS is positive evidence that
+    # no echo was attempted: ChatML models (Qwen) continue rather than replaying the
+    # prefill, so the text must be emitted in full. Treating that as a fault is what made
+    # every continuation and every tool round silently produce nothing on those models.
+    check("no echo attempted (ChatML) -> emit everything",
+          echo_run("Hello world", ["Hello there"]) == ("Hello there", False))
+    check("divergence at char 0 is not a fault",
+          echo_run("Hello world", ["Hex"]) == ("Hex", False))
+    # Divergence DEEP into a would-be echo is the case still worth abandoning: it emits
+    # nothing and sets mismatch, so the caller drops the continuation rather than showing
+    # the answer twice. 30 characters in, past the 24-char probe.
+    check("divergence past the probe -> mismatch, no output",
+          echo_run("The first three prime numbers are 2, 3",
+                   ["The first three prime numbers aXX"]) == ("", True))
 
     print("chunk ids — must not depend on the (now temporary) directory")
     text = "The chain rule states that $$\\frac{d}{dx}f(g(x)) = f'(g(x))g'(x)$$.\n\n" * 20

@@ -17,6 +17,56 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-21 · The Gradio UI would not start, and was publishing an API anyway
+
+**Symptom.** `python app.py` died immediately:
+
+```
+TypeError: Blocks.launch() got an unexpected keyword argument 'show_api'
+```
+
+Found while smoke-testing every entry point after moving the library into `kbm/`. The
+move did not cause it — the same failure reproduces on the commit before.
+
+**What it actually is.** Two separate Gradio 6 API changes, and the second is the one that
+matters. Both defeated commit `1783c86`, "Stop the frontend publishing an API".
+
+1. `show_api=` was **removed from `launch()`** in Gradio 6. `Blocks.launch()` no longer
+   accepts it at all, so passing it is a hard `TypeError` at startup.
+2. `api_name=` now takes **a string or `None`** — `False` is no longer a sentinel meaning
+   "do not expose this". Gradio stringifies it, so `api_name=False` does not disable the
+   endpoint: it **names it `/False` and leaves it public.**
+
+The second was invisible because the first stopped the app before anyone could look.
+Demonstrated in isolation on gradio 6.17.3:
+
+```
+b.click(..., api_name=False)            -> {"named_endpoints": {"/False": {... "api_visibility": "public" ...
+b.click(..., api_visibility="private")  -> {"named_endpoints": {}, "unnamed_endpoints": {}}
+```
+
+So the UI was not merely failing to hide its API — it was advertising a callable one, with
+a copy-pasteable `gradio_client` snippet, to anyone who loaded `/gradio_api/info`.
+
+**Fix.** Drop `show_api=` from `launch()`, and replace `api_name=False` with
+`api_visibility="private"` on all seven bindings. Verified: the app serves HTTP 200 and
+`/gradio_api/info` returns an empty schema.
+
+**Two lessons.** A keyword argument that silently changes meaning between major versions
+is worse than one that is removed — the removal is loud, and this project got both from
+the same upgrade, with the loud one masking the quiet one. And: a security property
+asserted in a comment is not a security property. `CLAUDE.md` said the page published no
+API; nobody had ever fetched `/gradio_api/info` to check. **Assert on the endpoint.**
+
+**A third, procedural.** Verifying this, the first two readings of `/gradio_api/info` were
+taken against a *stale* `app.py` process that had held port 7860 for over an hour, while
+the freshly launched one had already died with `OSError: Cannot find empty port`. The
+readings looked like evidence and were not. When a server is launched to test a change,
+confirm the process under test is the one answering — check the launch log, or use a port
+nothing else could be holding.
+
+---
+
 ## 2026-08-20 · A tool call with no text would have been thrown away
 
 **Symptom.** None, on any shipped model — found by the spike run *before* the native
