@@ -28,14 +28,13 @@ import time
 # This lives in evaluation/; the pipeline modules (retrieval, query, …) are one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 
-from config import OLLAMA_BASE_URL
-from llm_profiles import profile_for
-from query import SYSTEM_PROMPT
-from retrieval import (
+from kbm.config import OLLAMA_BASE_URL
+from kbm.llm_profiles import profile_for
+from kbm.retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
     RERANK_TOP_C,
@@ -48,6 +47,7 @@ from retrieval import (
     load_reranker,
     retrieve_detailed,
 )
+from query import SYSTEM_PROMPT
 
 EVAL_DIR = "evaluation"                             # gold set + review live here
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")     # machine-specific run outputs

@@ -1,5 +1,5 @@
 """
-config.py - Everything about this deployment that changes between machines.
+kbm/config.py - Everything about this deployment that changes between machines.
 
 The pipeline itself is machine-independent; what differs between a Mac laptop and a
 RunPod GPU pod is *where things live* (indexes, model caches), *what serves the LLM*
@@ -29,7 +29,7 @@ Env vars
 
 import os
 
-from llm_profiles import profile_for
+from kbm.llm_profiles import profile_for
 
 # ── Where the indexes live ─────────────────────────────────────────────────────
 # On a pod these must sit on the persistent volume, or every pod restart silently
@@ -44,10 +44,10 @@ BM25_DIR = os.environ.get("BM25_DIR") or os.path.join(DATA_DIR, "bm25_indexes")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # ── Which generator, and what it needs ─────────────────────────────────────────
-# This lived as a literal in retrieval.py, which was fine while there was one model and
+# This lived as a literal in kbm/retrieval.py, which was fine while there was one model and
 # it needed nothing special. It is here now because it is a deployment knob like every
 # other one in this file, and because swapping generators is a thing we do on purpose
-# (EVALUATION.md §12) rather than a code edit per experiment. retrieval.py re-exports it,
+# (EVALUATION.md §12) rather than a code edit per experiment. kbm/retrieval.py re-exports it,
 # so every existing `from retrieval import OLLAMA_MODEL` keeps working.
 #
 # The default stays deepseek-math until the college-tier bake-off says otherwise. A
@@ -96,10 +96,10 @@ NUM_CTX = int(os.environ.get("KBM_NUM_CTX") or PROFILE.num_ctx)
 #
 # There are two, they are different mechanisms, and a model must never be given both:
 #
-#   tir.py    a TEXT protocol — the model writes a ```python block, generation stops at
+#   kbm/tools/tir.py    a TEXT protocol — the model writes a ```python block, generation stops at
 #             the ```output stop word, and the result is spliced into the same turn.
 #             Works on a completion-only model, because it is just text.
-#   agent.py  NATIVE tool calling — a JSON schema goes out with the request and the model
+#   kbm/tools/agent.py  NATIVE tool calling — a JSON schema goes out with the request and the model
 #             answers with a structured tool_calls array in a new turn. Needs a tools
 #             template in the model, and reaches retrieval as well as the sandbox.
 #
@@ -111,10 +111,10 @@ NUM_CTX = int(os.environ.get("KBM_NUM_CTX") or PROFILE.num_ctx)
 # environment variable. KBM_TOOLS=1 KBM_TIR=1 resolves to tools.
 #
 # Native tools win the tie because they are the strictly larger capability: the sandbox is
-# reachable either way, and only agent.py reaches retrieval.
+# reachable either way, and only kbm/tools/agent.py reaches retrieval.
 TOOLS_ENABLED = _flag("KBM_TOOLS", PROFILE.tools)
 
-# Whether the generator may run Python via tir.py + sandbox.py. Off for any model without
+# Whether the generator may run Python via kbm/tools/tir.py + kbm/tools/sandbox.py. Off for any model without
 # TIR training: asked for a ```python block, deepseek-math writes prose about Python.
 # Also off whenever native tools are on — see above.
 TIR_ENABLED = False if TOOLS_ENABLED else _flag("KBM_TIR", PROFILE.tir)
@@ -124,6 +124,25 @@ THINK = PROFILE.think
 # Keep this >= KBM_IDLE_STOP_MINUTES: a keep-alive shorter than the idle window unloads
 # the model while the pod keeps billing, so the next question pays a reload for nothing.
 KEEP_ALIVE = os.environ.get("KBM_KEEP_ALIVE", "30m")
+
+# ── Telemetry ──────────────────────────────────────────────────────────────────
+# These live here rather than in api/settings.py because kbm/telemetry.py needs them and
+# kbm/ must not import from api/. That import used to run the other way — a library
+# module reaching into the HTTP service's settings, while api/routes.py imported the
+# library — which made `telemetry` un-importable from anything that was not the service.
+# api/settings.py re-exports both, so nothing that reads them had to change.
+#
+# The path follows DATA_DIR for the same reason the indexes do: on the pod the container
+# filesystem is wiped on restart, and an event log that cannot be backfilled is exactly
+# the thing not to lose (EVALUATION.md §10.9).
+TELEMETRY_PATH = os.environ.get(
+    "KBM_TELEMETRY_PATH", os.path.join(DATA_DIR, "telemetry", "events.jsonl")
+)
+# Salt for hashing usernames before they are written to the event log. Set this on
+# the pod; the default makes hashes non-portable between machines, which is fine —
+# they only ever need to be consistent within one deployment.
+TELEMETRY_SALT = os.environ.get("KBM_TELEMETRY_SALT", "kbm-local-dev-salt")
+
 
 # ── Serving ────────────────────────────────────────────────────────────────────
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")

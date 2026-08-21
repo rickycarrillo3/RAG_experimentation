@@ -1,5 +1,5 @@
 """
-retrieval.py - The retrieval pipeline, in one place.
+kbm/retrieval.py - The retrieval pipeline, in one place.
 
 Hybrid BM25 + dense search, fused with Reciprocal Rank Fusion, then rescored by a
 cross-encoder reranker:
@@ -25,11 +25,11 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 
-# Index locations and device selection come from config.py — the one place deployment
+# Index locations and device selection come from kbm/config.py — the one place deployment
 # knobs live. ingest.py and api/ import them from *here* rather than re-reading the
 # environment, because a second opinion about where the data lives means writes and
 # reads silently diverge.
-from config import (  # noqa: F401  (re-exported)
+from kbm.config import (  # noqa: F401  (re-exported)
     BM25_DIR,
     CHROMA_DIR,
     OLLAMA_MODEL,
@@ -38,7 +38,7 @@ from config import (  # noqa: F401  (re-exported)
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-# OLLAMA_MODEL is re-exported from config.py above, not declared here. It used to be a
+# OLLAMA_MODEL is re-exported from kbm/config.py above, not declared here. It used to be a
 # literal on this line, which made "which generator?" a code edit — and put it in the one
 # module that has nothing to do with generation. It is a deployment knob (KBM_LLM_MODEL)
 # now; the import stays so the eight callers that do `from retrieval import OLLAMA_MODEL`
@@ -113,7 +113,7 @@ def load_embeddings(model_name: str = EMBED_MODEL, normalize_latex: bool = False
         encode_kwargs={"normalize_embeddings": True},
     )
     if normalize_latex:
-        from latex_norm import normalize_latex as _normalize
+        from kbm.latex_norm import normalize_latex as _normalize
         return NormalizingEmbeddings(base, _normalize)
     return base
 

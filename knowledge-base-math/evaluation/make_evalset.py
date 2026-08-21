@@ -40,8 +40,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_ollama import ChatOllama
 
-from config import OLLAMA_BASE_URL
-from retrieval import chunk_id, load_bm25
+from kbm.config import OLLAMA_BASE_URL
+from kbm.retrieval import chunk_id, load_bm25
 
 EVAL_DIR = "evaluation"
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")

@@ -17,7 +17,7 @@ from the model, and why it is hand-rolled rather than a LangGraph agent.
 There are two ways a model in this repo reaches a tool, they are different mechanisms, and
 **a model is never given both**:
 
-| | `tir.py` | `agent.py` |
+| | `kbm/tools/tir.py` | `kbm/tools/agent.py` |
 |---|---|---|
 | shape | text: a ` ```python ` block, stop word ` ```output `, result spliced into the same turn | native: a JSON schema goes out, a structured `tool_calls` array comes back, results as `ToolMessage`s in new turns |
 | needs | nothing — it is just text | a `tools` template in the model |
@@ -26,9 +26,9 @@ There are two ways a model in this repo reaches a tool, they are different mecha
 | Qwen2.5-Math | ✓ fine-tuned on this exact shape | ✗ no tools template |
 | qwen3:8b | ✓ | ✓ ← gets this one |
 
-`llm_profiles.py` carries `tir` and `tools` as independent **capabilities**, because qwen3
+`kbm/llm_profiles.py` carries `tir` and `tools` as independent **capabilities**, because qwen3
 genuinely has both. Which one it actually gets is a **policy**, and it is decided in one
-line in `config.py`:
+line in `kbm/config.py`:
 
 ```python
 TOOLS_ENABLED = _flag("KBM_TOOLS", PROFILE.tools)
@@ -122,7 +122,7 @@ revisited:
 1. **Parallel tool calls.** The current arm executes a pass's calls in order. LangGraph's
    `ToolNode` does this properly, and search + compute in one pass is a real latency win.
 2. **A second tool-using surface.** One loop is fine; two hand-rolled loops that must agree
-   is the thing `retrieval.py` exists to prevent.
+   is the thing `kbm/retrieval.py` exists to prevent.
 3. **Interrupts / human-in-the-loop.** "The model wants to run this — approve?" is
    checkpointing, and hand-rolling checkpointing is a bad trade.
 4. **Branching or multi-agent.** A retrieval critic, a separate solver — anything where the
@@ -145,7 +145,7 @@ is the only test:
 - **`args` arrive complete, as a parsed dict, on one chunk.** Ollama does not stream
   argument fragments, so accumulating `AIMessageChunk`s is unnecessary.
 - **`done_reason` is `"stop"` for a tool call** — the same value as EOS, the same ambiguity
-  `tir.py:40-49` warns about. Detect a call from `.tool_calls`, never from `done_reason`.
+  `kbm/tools/tir.py:40-49` warns about. Detect a call from `.tool_calls`, never from `done_reason`.
 - **Call ids are freshly minted `uuid4()`s** (`langchain_ollama/chat_models.py:218`), not
   the model's. Dedupe on `(name, args)`; an id-keyed dedupe would double-execute if Ollama
   ever repeated a `tool_calls` block.

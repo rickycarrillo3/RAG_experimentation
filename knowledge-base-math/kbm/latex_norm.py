@@ -1,5 +1,5 @@
 """
-latex_norm.py - Turn LaTeX into readable text before embedding.
+kbm/latex_norm.py - Turn LaTeX into readable text before embedding.
 
 A general text embedder's tokenizer has never meaningfully seen LaTeX: `\\theta`,
 `\\mathbb{E}`, `_{t+1}` shred into backslash/brace subword junk, so the equation's

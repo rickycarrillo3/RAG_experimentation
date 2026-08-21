@@ -60,7 +60,7 @@ The failure mode reranking is *supposed* to fix is the topically-right-but-speci
 chunk: retrieving the general section on integration when the student needs the worked example
 matching their actual problem. **The eval must be able to see that distinction, or it's useless.**
 
-All of this lives in one place — `retrieval.py` — imported by `query.py`, `app.py`, and
+All of this lives in one place — `kbm/retrieval.py` — imported by `query.py`, `app.py`, and
 `eval.py`. That is load-bearing: an eval that measures a *reimplementation* of the pipeline
 rather than the pipeline itself will drift from what you ship and quietly start lying.
 
@@ -162,7 +162,7 @@ Soft matching credits the neighbours.
 
 Report both, and read the **gap** between them: a large `recall@5_soft − recall@5` means retrieval
 is finding the right *region* and chunking is splitting the answer badly. That is a **chunking**
-finding (see `chunking.py`'s `eqaware` strategies), not a retrieval one, and no reranker will fix it.
+finding (see `kbm/chunking.py`'s `eqaware` strategies), not a retrieval one, and no reranker will fix it.
 
 **recall@pool is the diagnostic, and it's the one people forget.** The reranker can only reorder
 what BM25 and dense retrieval already found. If the gold chunk isn't in the pool, reranking
@@ -370,7 +370,7 @@ Three findings, two of which **reverse or refine** what v1 (the leaky RL-paper e
 
 3. **A chunking gap is now visible.** hybrid R@5 `0.82` vs R@5 **soft** `0.91` — a 9-point jump
    from counting the adjacent chunk as a hit. That gap is the answer being split across a
-   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (see `chunking.py`),
+   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (see `kbm/chunking.py`),
    surfaced only because the harness now reports soft matching.
 
 **Inconclusive on this corpus:** the `top_k` pool-size win looked huge in v1 but does **not**
@@ -462,9 +462,9 @@ Each of these is a reason the eval is a *floor*, not a verdict on the product.
 
 - **`hybrid+rerank` beats `hybrid` on recall@5 / MRR** → the reranker earns its 2.2GB. Keep it.
 - **No meaningful delta** → drop the reranker. That is a real result, not a failure, and it
-  redirects effort to the likelier win: **math-aware chunking** (`chunking.py`, `eqaware*`).
+  redirects effort to the likelier win: **math-aware chunking** (`kbm/chunking.py`, `eqaware*`).
 - **`recall@pool` is low across the board** → stop tuning retrieval. The ceiling is upstream:
-  extraction (`extract.py`, Marker) and chunking (`chunking.py`).
+  extraction (`extract.py`, Marker) and chunking (`kbm/chunking.py`).
 - **`bm25` ≈ `hybrid`** → suspect the gold set (§3): the questions are probably parroting chunk
   vocabulary. Rewrite them before trusting anything else in the table.
 
@@ -591,7 +591,7 @@ Isolating axis: **fix the context, vary only the model.** Two conditions per que
 **The `oracle − retrieved` gap attributes end-to-end quality loss to retrieval versus
 generation** — nothing currently measures that.
 
-Candidates: `deepseek-math-7b-rl:Q4` (current, set in `retrieval.py:OLLAMA_MODEL`), the
+Candidates: `deepseek-math-7b-rl:Q4` (current, set in `kbm/retrieval.py:OLLAMA_MODEL`), the
 same at Q8, `Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. Q4 quantization costs accuracy on
 exactly the multi-step arithmetic the model exists to do, so quantization is a candidate
 axis in its own right, not a fixed background condition.
@@ -726,7 +726,7 @@ output scale — **re-run the calibration if the reranker changes.**
 
 ### 10.9 Usage telemetry (already shipped)
 
-`telemetry.py` writes one JSONL record per query (hashed user, mode, retrieved chunk ids
+`kbm/telemetry.py` writes one JSONL record per query (hashed user, mode, retrieved chunk ids
 and scores, per-stage timings) plus `feedback` records keyed by `event_id`. It exists now
 because it **cannot be backfilled**. Two payoffs:
 
@@ -827,7 +827,7 @@ this section can speak to:
   simply inapplicable** — you cannot vote on a proof.
 
 Before treating a self-consistency result as a decision about the product, check what
-fraction of real queries is which. `telemetry.py` is already logging real questions; that is
+fraction of real queries is which. `kbm/telemetry.py` is already logging real questions; that is
 the only thing that can answer it (§8, §10.9).
 
 ### 11.2 How k=1 / 5 / 10 are compared fairly
@@ -998,20 +998,20 @@ today. An instruct model would let the prompt do its job.
 
 ### 12.1 What was built
 
-- **`sandbox.py`** — a subprocess with an AST allow-list, rlimits, a scrubbed environment
+- **`kbm/tools/sandbox.py`** — a subprocess with an AST allow-list, rlimits, a scrubbed environment
   and a 400-character output cap. A gate, not a jail; the threat it is sized for is a 7B
   model emitting a runaway loop, not an adversary. Read its docstring before widening
   `ALLOWED_IMPORTS`.
-- **`tir.py`** — the protocol, and only the protocol: stop word `` ```output ``, the
+- **`kbm/tools/tir.py`** — the protocol, and only the protocol: stop word `` ```output ``, the
   ` ```python ` → ` ```output ` splice, `MAX_TOOL_ROUNDS = 3`. Every constant is Qwen's
   own (`QwenLM/Qwen2.5-Math`, `evaluation/math_eval.py`), because the model was fine-tuned
   against that exact shape.
-- **`llm_profiles.py`** — window size, decode budget and TIR capability per model, so
+- **`kbm/llm_profiles.py`** — window size, decode budget and TIR capability per model, so
   naming a generator configures it. `KBM_LLM_MODEL` selects; env vars override.
 - The tool loop in `api/routes.py` is the **continuation loop with a second arm**, not a
-  parallel machine, and `evaluation/self_consistency.py --tir` drives the same `tir.py`
+  parallel machine, and `evaluation/self_consistency.py --tir` drives the same `kbm/tools/tir.py`
   primitives. An eval that reimplemented the protocol would drift from what ships — the
-  argument `retrieval.py` exists for.
+  argument `kbm/retrieval.py` exists for.
 
 ### 12.2 The arms
 
@@ -1021,7 +1021,7 @@ today. An instruct model would let the prompt do its job.
 | B | `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M` | — | model swap alone |
 | C | same as B | `--tir` | the sandbox's contribution (B vs C) |
 | D | `qwen3:8b` | `--tir` | whether a *math-only* model is the right call at all |
-| E | `qwen3:8b` | `--tools` | **the protocol, isolated.** Same model, same sandbox, same budget as D — the only difference is how the model asks for it (`agent.py`'s JSON tool calls vs `tir.py`'s text blocks) |
+| E | `qwen3:8b` | `--tools` | **the protocol, isolated.** Same model, same sandbox, same budget as D — the only difference is how the model asks for it (`kbm/tools/agent.py`'s JSON tool calls vs `kbm/tools/tir.py`'s text blocks) |
 
 Quantization is matched to Q4 across A–C on purpose: Q8 would confound the model swap
 with a quantization change, and §11.6 already flagged Q4 as a suspect in its own right.
@@ -1036,7 +1036,7 @@ GEN_MODEL=qwen3:8b bash evaluation/eval.sh --skip-sweep --self-consistency --tir
 python evaluation/self_consistency.py --model qwen3:8b --tools   # arm E
 ```
 
-**Arm E is why `tir` and `tools` are independent fields in `llm_profiles.py`.** qwen3 has
+**Arm E is why `tir` and `tools` are independent fields in `kbm/llm_profiles.py`.** qwen3 has
 both capabilities; the server picks one (`config.TIR_ENABLED = False if TOOLS_ENABLED …`),
 and `KBM_TOOLS=0` is what keeps D runnable at all. D vs E is the only place the question
 "is the text protocol or the native one better *for the same model*?" can be answered, and

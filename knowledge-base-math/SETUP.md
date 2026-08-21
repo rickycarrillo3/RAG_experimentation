@@ -2,7 +2,7 @@
 
 The app is machine-independent; what changes between your Mac and a rented GPU box is
 **where things are stored**, **where Ollama is**, and **who can connect**. All three are
-environment variables (see `config.py`) — there is no code to edit when you move.
+environment variables (see `kbm/config.py`) — there is no code to edit when you move.
 
 The single rule that governs everything below: **a pod's container filesystem is wiped on
 restart, only `/workspace` survives.** Anything expensive to rebuild (model caches) or
@@ -166,7 +166,7 @@ For hosting shape, cost, idle-stop and the full environment-variable table, see
 
 ## 3. What the environment variables do
 
-All defined in `config.py`; every default reproduces the original local-Mac behaviour, so
+All defined in `kbm/config.py`; every default reproduces the original local-Mac behaviour, so
 nothing changes until you set one.
 
 | Variable | Default | Effect |

@@ -1,7 +1,7 @@
 """
 api/routes.py - HTTP surface.
 
-The retrieval pipeline is *imported* from retrieval.py and never reimplemented here.
+The retrieval pipeline is *imported* from kbm/retrieval.py and never reimplemented here.
 CLAUDE.md is explicit about why: a second copy drifts, and then the CLI, the web UI
 and the eval quietly stop describing the same system.
 """
@@ -21,12 +21,9 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-import agent
-import retrieval
-import sandbox
-import telemetry
-import tir
-from retrieval import OLLAMA_MODEL
+from kbm import retrieval, telemetry
+from kbm.retrieval import OLLAMA_MODEL
+from kbm.tools import agent, sandbox, tir
 
 from . import chat as chatmod
 from .deps import has_index, index_summary, models, normalize_user, require_token
@@ -313,7 +310,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             # ── Native tool arm (agent mode) ──────────────────────────────────
             # The third arm, and the sibling of the TIR arm below rather than a rival to
             # it: both mean "the model asked something of the world and is waiting", and
-            # config.py guarantees only one of the two can ever be live. Ahead of the
+            # kbm/config.py guarantees only one of the two can ever be live. Ahead of the
             # length arm for the same reason TIR is — a pass can end with tool calls AND
             # done_reason == "length", and the tool call is the live request.
             #
@@ -706,9 +703,9 @@ def _mark_crashed(job_id: str, fut: Future) -> None:
 
 def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
     """The same sequence app.py's handle_upload ran, moved off the request thread."""
-    from chunking import split_baseline
     from extract import extract_detailed
     from ingest import build_bm25, build_chroma, load_mmd_files, merge_chunks
+    from kbm.chunking import split_baseline
 
     job = _jobs[job_id]
     job.status = JobStatus.RUNNING

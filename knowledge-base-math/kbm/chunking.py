@@ -1,5 +1,5 @@
 """
-chunking.py - Splitting strategies for .mmd (Markdown+LaTeX) documents.
+kbm/chunking.py - Splitting strategies for .mmd (Markdown+LaTeX) documents.
 
 The baseline `RecursiveCharacterTextSplitter` is equation-blind: it splits on
 `\\n\\n` / `\\n` / ` ` and will happily cut a `$$…$$` block in half, so half an

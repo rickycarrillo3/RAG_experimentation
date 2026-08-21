@@ -1,5 +1,5 @@
 """
-telemetry.py - Append-only usage log.
+kbm/telemetry.py - Append-only usage log.
 
 One JSON object per query. Two payoffs beyond dashboards, both of which need the data
 to already exist by the time you want them:
@@ -23,7 +23,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from api.settings import TELEMETRY_PATH, TELEMETRY_SALT
+from kbm.config import TELEMETRY_PATH, TELEMETRY_SALT
 
 # Writes are appends of a single line under a lock. Concurrency here is a handful of
 # family members, so a lock plus line-buffered appends is sufficient and keeps the log

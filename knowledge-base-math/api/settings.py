@@ -7,11 +7,13 @@ matter of environment variables rather than edited source.
 
 import os
 
-from config import (  # noqa: F401  (re-exported for callers)
+from kbm.config import (  # noqa: F401  (re-exported for callers)
     DATA_DIR,
     KEEP_ALIVE,
     NUM_CTX,
     NUM_PREDICT,
+    TELEMETRY_PATH,
+    TELEMETRY_SALT,
     THINK,
     TIR_ENABLED,
     TOOLS_ENABLED,
@@ -19,7 +21,7 @@ from config import (  # noqa: F401  (re-exported for callers)
 
 # NOTE: deployment knobs shared with the CLI and the Gradio client — DATA_DIR,
 # CHROMA_DIR, BM25_DIR, OLLAMA_BASE_URL, APP_HOST/PORT, APP_AUTH, REQUIRE_GPU — live in
-# config.py, NOT here. This module holds only what is specific to the HTTP service.
+# kbm/config.py, NOT here. This module holds only what is specific to the HTTP service.
 # An earlier version of this file read its own `KBM_DATA_DIR`, which meant setting the
 # documented `DATA_DIR` moved the indexes for ingest and query but not for the API.
 
@@ -84,7 +86,7 @@ ENABLE_DOCS = (
 RELEVANCE_FLOOR = float(os.environ.get("KBM_RELEVANCE_FLOOR", "0.15"))
 
 # ── Generation ────────────────────────────────────────────────────────────────
-# NUM_PREDICT / KEEP_ALIVE are re-exported from config.py, not redeclared here. They
+# NUM_PREDICT / KEEP_ALIVE are re-exported from kbm/config.py, not redeclared here. They
 # used to exist in three places (here, query.py, test_chat.py), so the cap could be
 # raised for the API while the CLI silently kept its own hardcoded 350.
 #
@@ -100,12 +102,12 @@ MAX_CONTINUATIONS = int(os.environ.get("KBM_MAX_CONTINUATIONS", "2"))
 
 # ── Tool-integrated reasoning ─────────────────────────────────────────────────
 # Whether the generator may run Python, and the shape of its window, are properties of
-# the model — they come from llm_profiles via config.py (KBM_LLM_MODEL / KBM_TIR /
+# the model — they come from llm_profiles via kbm/config.py (KBM_LLM_MODEL / KBM_TIR /
 # KBM_NUM_CTX), not from here. What is service policy, and therefore lives here:
 #
 # Wall-clock budget for one sandbox execution. Generous enough for a sympy integral on a
 # cold import (~0.5s measured, but the pod shares CPU with the reranker) and short enough
-# that a runaway loop costs one answer, not the evening. sandbox.py backs it with an
+# that a runaway loop costs one answer, not the evening. kbm/tools/sandbox.py backs it with an
 # RLIMIT_CPU that a signal-ignoring program cannot outlast.
 SANDBOX_TIMEOUT_S = float(os.environ.get("KBM_SANDBOX_TIMEOUT", "10"))
 
@@ -123,13 +125,10 @@ SANDBOX_TIMEOUT_S = float(os.environ.get("KBM_SANDBOX_TIMEOUT", "10"))
 SHOW_TOOL_CODE = os.environ.get("KBM_SHOW_TOOL_CODE", "").strip().lower() in ("1", "true", "yes")
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
-TELEMETRY_PATH = os.environ.get(
-    "KBM_TELEMETRY_PATH", os.path.join(DATA_DIR, "telemetry", "events.jsonl")
-)
-# Salt for hashing usernames before they are written to the event log. Set this on
-# the pod; the default makes hashes non-portable between machines, which is fine —
-# they only ever need to be consistent within one deployment.
-TELEMETRY_SALT = os.environ.get("KBM_TELEMETRY_SALT", "kbm-local-dev-salt")
+# Declared in kbm/config.py, not here, and re-exported at the top of this file:
+# kbm/telemetry.py reads them, and kbm/ must not import from api/. Same rule as
+# DATA_DIR and OLLAMA_BASE_URL — anything needed outside the HTTP service belongs
+# in kbm/config.py. KBM_TELEMETRY_PATH / KBM_TELEMETRY_SALT are unchanged.
 
 # ── Idle stop ─────────────────────────────────────────────────────────────────
 # Minutes without a /chat request before the pod stops itself. This is what keeps

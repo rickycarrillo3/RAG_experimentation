@@ -1,7 +1,7 @@
 """
 query.py - CLI for the math RAG system.
 
-Retrieval lives in retrieval.py (shared with app.py and eval.py); this file is the
+Retrieval lives in kbm/retrieval.py (shared with app.py and eval.py); this file is the
 interactive shell around it plus DeepSeek-Math generation.
 
 Usage:
@@ -16,12 +16,12 @@ import argparse
 import os
 import sys
 
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 
-from config import KEEP_ALIVE, NUM_PREDICT, OLLAMA_BASE_URL
-from retrieval import (
+from kbm.config import KEEP_ALIVE, NUM_PREDICT, OLLAMA_BASE_URL
+from kbm.retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
     RERANK_MODEL,
@@ -48,7 +48,7 @@ HUMAN_PROMPT = """Context:
 
 Question: {input}"""
 
-# NUM_PREDICT / KEEP_ALIVE come from config.py. They used to be redeclared here as
+# NUM_PREDICT / KEEP_ALIVE come from kbm/config.py. They used to be redeclared here as
 # literals, which meant raising the API's cap left this CLI on its own stale 350.
 # test_chat.py imports them from this module, so it follows automatically.
 

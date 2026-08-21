@@ -94,7 +94,7 @@ class PrefillEcho:
     """Reconciles the two ways Ollama can resume a generation, without duplicating text.
 
     To continue a truncated answer — or to hand back a tool result mid-answer, which is
-    the same mechanism (tir.py) — we send the partial text back as a trailing assistant
+    the same mechanism (kbm/tools/tir.py) — we send the partial text back as a trailing assistant
     message. Ollama treats that as a *prefill* and the model writes on from it. What
     Ollama does with the prefill ITSELF turns out to depend on the model's chat template,
     and both behaviours are live in this repo:
@@ -302,7 +302,7 @@ class CodeFenceFilter:
 
     Third in the family, and the same contract as PrefillEcho and QuestionEcho: it
     filters what is SHOWN and never touches `generated`. The transcript the model is
-    handed back has to contain its own code verbatim — that is the TIR protocol (tir.py)
+    handed back has to contain its own code verbatim — that is the TIR protocol (kbm/tools/tir.py)
     and it is also what PrefillEcho matches against on the next round.
 
     Why hide it at all: the reader is a family member asking about a derivative. They
@@ -491,7 +491,7 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
     to change one — which is why SYSTEM_PROMPTS below is derived from this function rather
     than written out beside it.
 
-    `tir` and `tools` are the two tool protocols and are mutually exclusive — config.py
+    `tir` and `tools` are the two tool protocols and are mutually exclusive — kbm/config.py
     enforces that in one line, upstream of every caller, so this function does not
     re-decide it. Both default False, so every existing call returns a byte-identical
     string and the deepseek path is untouched.
@@ -504,13 +504,13 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
     mode-independent block would throw away the grounding instruction in the case that
     matters most. agent.AGENT_RULES carries the override instead, in its last line.
     """
-    from tir import TIR_RULES
+    from kbm.tools.tir import TIR_RULES
 
     head = _TEACHING_STYLE
     if tir:
         head += TIR_RULES
     if tools:
-        from agent import AGENT_RULES
+        from kbm.tools.agent import AGENT_RULES
 
         head += AGENT_RULES
     return head + _MODE_RULES[mode]
@@ -520,7 +520,7 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
 # eval reads when it wants "the prompt the model is given" without a generator in hand.
 # DERIVED, not a second copy: an independent literal here would drift from system_prompt()
 # silently, and the drift would only show up as a quietly different prompt in the eval than
-# in production. Same rule as retrieval.py.
+# in production. Same rule as kbm/retrieval.py.
 SYSTEM_PROMPTS = {mode: system_prompt(mode) for mode in _MODE_RULES}
 
 # `context` carries its own trailing blank line (see build_context) rather than the
@@ -572,7 +572,7 @@ def format_history(history: list[Message]) -> str:
 
 
 def to_sources(results: list[tuple[Document, float]]) -> list[Source]:
-    from retrieval import chunk_id
+    from kbm.retrieval import chunk_id
 
     return [
         Source(
@@ -594,9 +594,9 @@ def merge_sources(existing: list[Source], new: list[Source]) -> list[Source]:
     top-down, and re-ranking a merged list by score would put a late chunk above the
     context the answer actually opened from.
 
-    Lives here rather than in agent.py because this file already owns `Source` and is
-    already pure. agent.py importing api.schemas would invert the dependency that keeps
-    tir.py and retrieval.py importable from the eval harness.
+    Lives here rather than in kbm/tools/agent.py because this file already owns `Source` and is
+    already pure. kbm/tools/agent.py importing api.schemas would invert the dependency that keeps
+    kbm/tools/tir.py and kbm/retrieval.py importable from the eval harness.
     """
     seen = {s.chunk_id for s in existing}
     return existing + [s for s in new if s.chunk_id not in seen]

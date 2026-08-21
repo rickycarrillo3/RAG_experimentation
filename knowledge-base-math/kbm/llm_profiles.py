@@ -1,7 +1,7 @@
 """
-llm_profiles.py - what each generator model needs, in one table.
+kbm/llm_profiles.py - what each generator model needs, in one table.
 
-The generator used to be a single literal in retrieval.py, which was fine while there
+The generator used to be a single literal in kbm/retrieval.py, which was fine while there
 was exactly one and it needed nothing special. Tool-integrated reasoning ends that:
 whether a model can drive the Python sandbox, how big its context window is, and how
 many tokens a full answer needs are all properties OF THE MODEL, and they arrive
@@ -17,7 +17,7 @@ because the same weights ship under several names (`hf.co/bartowski/Qwen2.5-Math
 Instruct-GGUF:Q4_K_M`, `mightykatun/qwen2.5-math:7b`) and pinning a quantization should
 not silently drop a model back to the fallback profile.
 
-This module imports nothing from the rest of the repo, so config.py can import it
+This module imports nothing from the rest of the repo, so kbm/config.py can import it
 without a cycle.
 """
 
@@ -31,13 +31,13 @@ class Profile:
     """Everything the serving code needs to know about a generator."""
 
     name: str
-    tir: bool          # can it drive the sandbox? (see tir.py)
+    tir: bool          # can it drive the sandbox? (see kbm/tools/tir.py)
     num_ctx: int       # the model's real window — NOT Ollama's default
     num_predict: int   # decode cap for one pass
-    # Can it be handed a JSON tool schema? (see agent.py) `tir` and `tools` are both
+    # Can it be handed a JSON tool schema? (see kbm/tools/agent.py) `tir` and `tools` are both
     # CAPABILITIES — two protocols a model may have been trained for, and qwen3 has
     # both. Which one it actually gets is a policy decision, and it is made in exactly
-    # one line in config.py so no combination of environment variables can turn both on
+    # one line in kbm/config.py so no combination of environment variables can turn both on
     # at once. Keeping them independent here is what lets EVALUATION.md §12's arm D
     # (qwen3 + TIR) still be measured against arm E (qwen3 + tools).
     tools: bool = False
@@ -68,9 +68,9 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
         Profile(
             name="qwen2.5-math",
             tir=True,
-            # No tools template: its tool use is tir.py's text protocol, which it was
-            # fine-tuned on, and that is the whole reason tir.py exists as a separate
-            # mechanism rather than being replaced by agent.py.
+            # No tools template: its tool use is kbm/tools/tir.py's text protocol, which it was
+            # fine-tuned on, and that is the whole reason kbm/tools/tir.py exists as a separate
+            # mechanism rather than being replaced by kbm/tools/agent.py.
             tools=False,
             # config.json says max_position_embeddings 4096. Ollama's own default is
             # larger, and setting num_ctx above the model's trained window degrades it
@@ -92,7 +92,7 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
             tir=True,
             # `ollama show qwen3:8b` reports Capabilities: completion, tools. This is the
             # only model here with both, so it is the only one where the exclusivity rule
-            # in config.py has anything to decide — and it resolves to tools.
+            # in kbm/config.py has anything to decide — and it resolves to tools.
             tools=True,
             num_ctx=8192,
             num_predict=1024,
@@ -111,7 +111,7 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
             name="qwen2",
             tir=False,
             # The one row where this field is policy rather than capability: `ollama show
-            # qwen2:7b` DOES report a tools template, and it was the spike model agent.py's
+            # qwen2:7b` DOES report a tools template, and it was the spike model kbm/tools/agent.py's
             # docstring records. But this model is the eval's question-writer and judge, it
             # is not a math model, and it must never quietly become the generator. Force it
             # with KBM_TOOLS=1 when you want it — the capability probe in api/deps.py will
@@ -121,7 +121,7 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
             num_predict=512,
             notes="Eval-only: the instruct question-writer for make_evalset.py and the judge "
                   "for eval.py. Never the generator. Reports the tools capability and was "
-                  "the second model the agent.py protocol was verified on.",
+                  "the second model the kbm/tools/agent.py protocol was verified on.",
         ),
     ),
 ]

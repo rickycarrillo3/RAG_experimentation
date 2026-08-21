@@ -59,9 +59,9 @@ what "the model produced nothing" means, and that meaning changed when a second 
 (structured tool calls) was added beside the text. When you add a new way for a pass to
 carry information, re-read every condition that tests whether a pass carried any.
 
-Two smaller findings from the same spike, both now relied on in `agent.py`:
+Two smaller findings from the same spike, both now relied on in `kbm/tools/agent.py`:
 `done_reason` is `"stop"` for a tool call exactly as it is for EOS (so detect from
-`.tool_calls`, never from `done_reason` — `tir.py:40-49` says the same about stop words),
+`.tool_calls`, never from `done_reason` — `kbm/tools/tir.py:40-49` says the same about stop words),
 and `langchain_ollama` mints a fresh `uuid4()` per parse (`chat_models.py:218`), so a call
 `id` is a runtime artefact and dedupe must key on `(name, args)`.
 
@@ -91,7 +91,7 @@ than it is.
 **Fix.** `reasoning=profile_for(model).think` in `Generator.__init__`, matching `deps.py`.
 The same question afterwards: **9.0 seconds**, one sandbox round, `\boxed{391}`.
 
-**Lesson.** `llm_profiles.py` exists so that naming a model configures it — and that only
+**Lesson.** `kbm/llm_profiles.py` exists so that naming a model configures it — and that only
 holds where every consumer actually reads the profile. The server read `think`; the eval
 read `num_ctx` and `num_predict` from the same object and silently skipped the third field.
 A profile with a consumer that uses *some* of it is worse than no profile, because the
@@ -386,7 +386,7 @@ Kept short — each links to where the reasoning lives.
 | Uploaded PDFs and `.mmd` vanished after ingest | `shutil.rmtree(tmp_dir)` deleted the only copy | fixed by persisting them, then **deliberately reverted** on 2026-08-19 — see the entry above |
 | Every entry point raised `NameError` after a merge | `resolve_device()` called but never imported — a textually clean, semantically broken merge | found by importing, not reading |
 | `startup.sh` could not run at all | `ALLOW_CPU`/`DO_PULL`/`DO_PREFETCH` read but never assigned; fatal under `set -u`. `bash -n` passed | recovered from commit `eb9044c` |
-| Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
+| Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `kbm/retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
 | Abstention was structurally impossible | `KBM_RELEVANCE_FLOOR` documented as a raw logit, default `0.0`; the reranker applies a Sigmoid, so every score passed | `api/settings.py`, `CLAUDE.md` |
 | Continuation emitted nothing on a Qwen generator | `PrefillEcho` assumed every model echoes the assistant prefill; ChatML models do not | entry above, 2026-08-20 |
 | `think=False` never reached Ollama | langchain-ollama calls the field `reasoning`; `ChatOllama` swallows unknown kwargs | entry above, 2026-08-20 |

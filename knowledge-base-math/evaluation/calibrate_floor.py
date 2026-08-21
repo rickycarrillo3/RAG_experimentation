@@ -31,10 +31,10 @@ The floor is a property of the reranker's score distribution over (query, docume
 pairs, so it transfers across corpora far better than a recall number does. The query
 STYLE does not: an MSE post is self-contained prose, where a family member may type
 "how do I do number 7". Treat the output as a calibrated starting point, then confirm
-against real logged questions once telemetry.py has collected them (EVALUATION.md §10.9).
+against real logged questions once kbm/telemetry.py has collected them (EVALUATION.md §10.9).
 
 TRUNCATION: scored at --max-seq-length 512 rather than the model's 8192 default. Our
-deployment chunks are ~400 characters (chunking.py), so the long-context regime never
+deployment chunks are ~400 characters (kbm/chunking.py), so the long-context regime never
 occurs in production and scoring 8k-token forum posts would calibrate a regime we never
 serve. The ARQMath corpus median is 534 characters, so 512 tokens truncates almost nothing.
 
@@ -53,7 +53,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import retrieval  # noqa: E402  - the shipping reranker loader, not a second copy
+from kbm import (
+    retrieval,  # noqa: E402  - the shipping reranker loader, not a second copy
+)
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 DATASET = "hcju/mseqa"

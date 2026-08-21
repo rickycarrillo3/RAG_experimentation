@@ -1,7 +1,7 @@
 """
-sandbox.py - the only place in this repo where model-written code is executed.
+kbm/tools/sandbox.py - the only place in this repo where model-written code is executed.
 
-Tool-integrated reasoning (tir.py) works by letting the generator write a Python
+Tool-integrated reasoning (kbm/tools/tir.py) works by letting the generator write a Python
 program and handing it back the result. That is the whole point — EVALUATION.md §11.6
 traced deepseek's r07 failure to arithmetic *execution*, not missing knowledge: it
 reduced 7^100 mod 13 correctly and then computed 2401 mod 13 as 3 instead of 9. A
@@ -30,7 +30,7 @@ Qwen's own executor (evaluation/python_executor.py in QwenLM/Qwen2.5-Math) does 
 than this: a regex against `input(`, a pebble worker, and a TODO saying real sandboxing
 is unimplemented. The 400-character output cap and the error format below are theirs,
 kept deliberately — the model was trained on feedback shaped that way, and here the cap
-does double duty as the context-budget guard (see tir.py).
+does double duty as the context-budget guard (see kbm/tools/tir.py).
 
 Nothing in here raises. Every failure becomes a string the model can read and react to,
 because "your program had a SyntaxError on line 2" is something a generator can fix on

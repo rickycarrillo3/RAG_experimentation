@@ -114,7 +114,7 @@ that cannot be regenerated. Runs once per document and takes minutes, which is w
 |---|---|---|---|
 | 1 | PDF uploaded | Your Mac | → `POST /upload`, returns a job id |
 | 2 | Marker/Surya read the pages → Markdown+LaTeX | **GPU** | ~0.3–1 s/page on GPU vs. ~minutes/page on Mac CPU |
-| 3 | Split into chunks (equations kept atomic) | CPU | `chunking.py` — cheap and deterministic |
+| 3 | Split into chunks (equations kept atomic) | CPU | `kbm/chunking.py` — cheap and deterministic |
 | 4 | Embed every chunk | **GPU** | same loader as query-time, so both land in one vector space |
 | 5 | Write PDF + `.mmd` + Chroma + BM25 | Disk | under `$DATA_DIR`, namespaced per user |
 
@@ -156,8 +156,8 @@ Numbers from `evaluation/EVALUATION.md §6`.
 | RRF fusion | CPU | arithmetic on ~20 rank positions |
 | FastAPI + SSE framing | CPU | HTTP, auth, streaming |
 | Chunk splitting | CPU | string operations over the `.mmd` |
-| Python sandbox (`sandbox.py`) | CPU, own process | executes model-written code, reached from either tool protocol; a forked interpreter with rlimits and a scrubbed env, never a thread and never the GPU. See `DEPLOYMENT.md §8`. |
-| Tool protocols (`tir.py`, `agent.py`) | CPU, negligible | pure string and schema handling — deciding what the transcript looks like. The work they trigger is the sandbox (CPU) and, for `agent.search_documents`, a full re-entry of the retrieval rows above (CPU + GPU). See `AGENT.md`. |
+| Python sandbox (`kbm/tools/sandbox.py`) | CPU, own process | executes model-written code, reached from either tool protocol; a forked interpreter with rlimits and a scrubbed env, never a thread and never the GPU. See `DEPLOYMENT.md §8`. |
+| Tool protocols (`kbm/tools/tir.py`, `kbm/tools/agent.py`) | CPU, negligible | pure string and schema handling — deciding what the transcript looks like. The work they trigger is the sandbox (CPU) and, for `agent.search_documents`, a full re-entry of the retrieval rows above (CPU + GPU). See `AGENT.md`. |
 | Telemetry writer | CPU | one JSON line appended per answer |
 | Idle-stop watchdog | CPU | a timer — the cheapest thing here, and the entire cost model |
 | Uploaded PDFs | — | **not retained**; held in a temp dir for the length of the ingest |

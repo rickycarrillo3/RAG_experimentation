@@ -81,13 +81,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
-import agent
-import sandbox
-import tir
 from api.chat import PrefillEcho
-from config import OLLAMA_BASE_URL
-from llm_profiles import profile_for
-from retrieval import OLLAMA_MODEL
+from kbm.config import OLLAMA_BASE_URL
+from kbm.llm_profiles import profile_for
+from kbm.retrieval import OLLAMA_MODEL
+from kbm.tools import agent, sandbox, tir
+
 
 def _slug(model: str) -> str:
     """Filename-safe short name for an Ollama tag.
@@ -403,9 +402,9 @@ class Generator:
     interpreter in the middle — so they are one object with one `run()` rather than three
     call sites that the caller has to remember to keep in step. What they must NOT differ
     in is the protocol: the code fences, the stop word, the round cap and the splice come
-    from tir.py, and the tool schemas and budgets from agent.py — the same two modules
+    from kbm/tools/tir.py, and the tool schemas and budgets from kbm/tools/agent.py — the same two modules
     api/routes.py drives. An eval that reimplemented them would drift from what ships,
-    which is the mistake retrieval.py exists to prevent.
+    which is the mistake kbm/retrieval.py exists to prevent.
 
     ⚠️ The tools arm binds run_python ONLY, never search_documents, and that asymmetry
     with the server is deliberate rather than an oversight. This benchmark is closed-book
@@ -716,7 +715,7 @@ def main():
                         "it (Qwen2.5-Math, Qwen3); a CoT-only model ignores the prompt and "
                         "the arm silently measures CoT.")
     p.add_argument("--tools", action="store_true",
-                   help="Native tool calling: bind run_python as a JSON tool (agent.py) "
+                   help="Native tool calling: bind run_python as a JSON tool (kbm/tools/agent.py) "
                         "instead of TIR's text protocol. Needs a model with a tools "
                         "template (qwen3). Mutually exclusive with --tir — this is arm E "
                         "of EVALUATION.md §12, and its whole purpose is to be compared "
@@ -742,7 +741,7 @@ def main():
     tier_label = "custom" if args.questions else args.tier
     if args.tir and args.tools:
         p.error("--tir and --tools are two tool protocols and a model gets one. "
-                "config.py enforces the same exclusivity for the server.")
+                "kbm/config.py enforces the same exclusivity for the server.")
     num_predict = args.num_predict or (
         TIR_NUM_PREDICT if (args.tir or args.tools) else NUM_PREDICT)
     # Per-tier AND per-arm default output. One shared filename would mean an easy run
@@ -789,11 +788,11 @@ def main():
           f"{'  [TIR: python sandbox enabled]' if args.tir else ''}"
           f"{'  [TOOLS: native tool calling, python sandbox]' if args.tools else ''}")
     if args.tir and not profile_for(args.model).tir:
-        print(f"  [warn] {args.model} has no TIR profile (llm_profiles.py). Running the arm "
+        print(f"  [warn] {args.model} has no TIR profile (kbm/llm_profiles.py). Running the arm "
               "anyway, but a model that was not trained on the ```python protocol will "
               "ignore it and this will quietly measure plain CoT.")
     if args.tools and not profile_for(args.model).tools:
-        print(f"  [warn] {args.model} is not marked tools-capable (llm_profiles.py). If "
+        print(f"  [warn] {args.model} is not marked tools-capable (kbm/llm_profiles.py). If "
               "Ollama has no tools template for it every request will fail; if it has one "
               "but the model was not trained to use it, this quietly measures plain CoT. "
               "Check `ollama show` before reading the numbers.")

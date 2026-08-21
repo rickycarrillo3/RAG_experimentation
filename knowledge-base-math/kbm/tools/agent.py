@@ -1,10 +1,10 @@
 """
-agent.py - the native tool-calling protocol, and nothing else.
+kbm/tools/agent.py - the native tool-calling protocol, and nothing else.
 
 This is OpenAI-style function calling over Ollama's own `tools` field: a JSON schema
 goes out with the request, the model answers with a structured `tool_calls` array, and
-each call comes back as a `ToolMessage` in a *new* turn. It is emphatically NOT tir.py's
-text protocol, and the two are mutually exclusive by construction (config.py) — a model
+each call comes back as a `ToolMessage` in a *new* turn. It is emphatically NOT kbm/tools/tir.py's
+text protocol, and the two are mutually exclusive by construction (kbm/config.py) — a model
 handed both a `tools` array and a ```output stop word has two ways to do one thing and
 will interleave them mid-answer, which is unreadable for the student and un-attributable
 for the eval.
@@ -12,7 +12,7 @@ for the eval.
 Which protocol a model gets is a property of the model, not a policy:
 
     deepseek-math-7b-rl   `ollama show` -> Capabilities: completion        -> neither
-    Qwen2.5-Math-7B       fine-tuned on the ```python/```output shape      -> tir.py
+    Qwen2.5-Math-7B       fine-tuned on the ```python/```output shape      -> kbm/tools/tir.py
     qwen3:8b              Capabilities: completion, tools                  -> this file
 
 Measured on qwen2:7b before any of this was written (the ERRORS.md 2026-08-20 lesson —
@@ -24,12 +24,12 @@ when behaviour depends on the model, a second model is the only test):
     uuid4 per parse, so the call `id` is a runtime artefact and NOT a dedupe key.
   - done_reason is "stop" for a tool call, exactly as it is for EOS. A caller must
     decide "was that a tool call?" from `.tool_calls`, never from done_reason — the same
-    warning tir.py:40-49 carries, for the same reason.
+    warning kbm/tools/tir.py:40-49 carries, for the same reason.
   - **A tool call very often arrives with EMPTY content.** Two of three probe questions
     produced zero text alongside the call. Any loop that treats "the model produced no
     text" as a reason to stop will therefore swallow most tool calls and emit nothing.
 
-Pure — no I/O, no model handles, no execution — for the same reason tir.py and
+Pure — no I/O, no model handles, no execution — for the same reason kbm/tools/tir.py and
 api/chat.py are: the pieces that decide what the transcript looks like should be testable
 without a GPU, and the server and evaluation/self_consistency.py must drive one protocol
 rather than two implementations of it.
@@ -59,7 +59,7 @@ TOOL_LIST = "list_documents"
 # Raw OpenAI-shaped dicts, not @tool-decorated callables and not pydantic models.
 #
 # Two reasons, both structural. A dict imports nothing, so this module stays as pure and
-# as cheap to import as tir.py — evaluation/self_consistency.py picks it up without
+# as cheap to import as kbm/tools/tir.py — evaluation/self_consistency.py picks it up without
 # dragging in LangChain's tool machinery. And a schema cannot close over anything, so
 # there is no place for `user` to hide: the absence above is enforced by the shape of the
 # thing rather than remembered by whoever edits it next.
@@ -180,7 +180,7 @@ SEARCH_RESULT_CHARS = 1200
 # transcript has already disproved.
 #
 # NO BRACES. This string goes through ChatPromptTemplate, where { and } are variable
-# syntax and a literal brace raises at format time (tir.py:130 learned this the hard way).
+# syntax and a literal brace raises at format time (kbm/tools/tir.py:130 learned this the hard way).
 AGENT_RULES = """- You have tools. Use them when they help and answer directly when they do not — a conceptual "why" question usually needs an explanation, not a computation.
 - Run Python for arithmetic or algebra you are not certain of by hand. Print what you want to see; a program that prints nothing returns nothing.
 - Search the student's documents when the question is about their own material, or when the context below does not cover it. Search with the terms the textbook would use, not the student's phrasing.

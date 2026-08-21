@@ -1,5 +1,5 @@
 """
-tir.py - the tool-integrated-reasoning protocol, and nothing else.
+kbm/tools/tir.py - the tool-integrated-reasoning protocol, and nothing else.
 
 Qwen2.5-Math's TIR is not OpenAI-style function calling. There is no JSON tool schema,
 no <tool_call> tag and no `bind_tools()` — it is a *text* protocol the model was trained
@@ -15,7 +15,7 @@ on, and the whole of it is this:
     ... reasoning continues, now knowing the answer is 9 ...
 
 So the runtime's job is three things: stop generation when the model opens an `output`
-block, execute the program above it (sandbox.py), and splice the result back into the
+block, execute the program above it (kbm/tools/sandbox.py), and splice the result back into the
 same assistant turn. That is what this module describes. It is pure — no I/O, no model
 handles, no execution — for the same reason api/chat.py is: the pieces that decide what
 the prompt and the transcript look like should be testable without a GPU.
@@ -27,7 +27,7 @@ model was trained against this exact shape and drifts off-distribution if we imp
 
 The two loops that use this (api/routes.py, streaming and async;
 evaluation/self_consistency.py, batch and sync) are necessarily different code. The
-protocol they implement is not, and lives here — same rule retrieval.py exists for.
+protocol they implement is not, and lives here — same rule kbm/retrieval.py exists for.
 """
 
 from __future__ import annotations

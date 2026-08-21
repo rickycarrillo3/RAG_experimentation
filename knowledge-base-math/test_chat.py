@@ -17,9 +17,11 @@ import argparse
 import os
 import sys
 
-from config import OLLAMA_BASE_URL
+from langchain_ollama import ChatOllama
+
 from ingest import ingest
-from retrieval import load_embeddings
+from kbm.config import OLLAMA_BASE_URL
+from kbm.retrieval import load_embeddings
 from query import (
     KEEP_ALIVE,
     NUM_PREDICT,
@@ -29,7 +31,6 @@ from query import (
     print_retrieved,
     retrieve,
 )
-from langchain_ollama import ChatOllama
 
 TEST_USER = "test"
 TEST_DOC = "docs/extracted/test.mmd"
@@ -51,8 +52,8 @@ def selftest() -> int:
     import tempfile
 
     from api.chat import PrefillEcho
-    from chunking import split_baseline
     from ingest import load_mmd_files, merge_chunks
+    from kbm.chunking import split_baseline
 
     failures = []
 

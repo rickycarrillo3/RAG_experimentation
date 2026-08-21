@@ -13,7 +13,7 @@ models throughout.
                     ┌─ RunPod pod (on-demand, stopped when idle) ────────┐
   browser ──HTTPS──▶│  FastAPI (uvicorn)  api/main.py                    │
                     │    /chat  SSE stream   /upload   /jobs   /feedback │
-                    │    ├─ retrieval.py  (BM25 + Chroma + reranker)     │
+                    │    ├─ kbm/retrieval.py  (BM25 + Chroma + reranker)     │
                     │    ├─ extract.py    (Marker, GPU)                  │
                     │    └─ Ollama        (generator)                    │
                     │  idle watchdog ─── no /chat for N min ─▶ stop self │
@@ -69,7 +69,7 @@ Three things are load-bearing:
 
 ## 3. Environment
 
-Deployment knobs shared with the CLI and the Gradio client live in **`config.py`**
+Deployment knobs shared with the CLI and the Gradio client live in **`kbm/config.py`**
 (`DATA_DIR`, `CHROMA_DIR`, `BM25_DIR`, `OLLAMA_BASE_URL`, `APP_HOST`, `APP_PORT`,
 `APP_AUTH`, `REQUIRE_GPU`). `api/settings.py` holds only what is specific to the HTTP
 service. Do not add a second name for the same thing in both — see `SETUP.md §3`.
@@ -83,7 +83,7 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
-| `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `t1c/deepseek-math-7b-rl:Q4`. |
+| `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `kbm/llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `t1c/deepseek-math-7b-rl:Q4`. |
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. `NUM_PREDICT` now defaults per model (350 for deepseek, 1024 for a TIR model, which needs room to reason, write a program, and reason again). |
 | `KBM_NUM_CTX` | Context window sent to Ollama. Defaults to the model's real window. **Do not raise it above what the model was trained for** — Ollama will not refuse, it will degrade. Ollama also shifts an overflowing context from the *left*, which eats the system prompt first and silently. |
 | `KBM_TIR` | `1`/`0` forces tool-integrated reasoning on or off, overriding the model's profile. On, the generator may write Python and have it executed between passes (§8). |
@@ -339,8 +339,8 @@ queue rather than fail; `GET /jobs/{id}` reports each one's position by status.
 ## 8. The Python sandbox — what it is, and what it is not
 
 With `KBM_TIR` **or `KBM_TOOLS`** on, the generator writes Python and the server executes
-it. Two protocols reach the same sandbox — `tir.py`'s text blocks and `agent.py`'s native
-`run_python` tool — and `config.py` guarantees a model gets exactly one of them, never
+it. Two protocols reach the same sandbox — `kbm/tools/tir.py`'s text blocks and `kbm/tools/agent.py`'s native
+`run_python` tool — and `kbm/config.py` guarantees a model gets exactly one of them, never
 both. That is the point — `evaluation/EVALUATION.md §11.6`
 traced the model's errors to arithmetic *execution*, and a model that can call Python does
 not compute `2401 mod 13` as 3. It also means **a language model now decides what code

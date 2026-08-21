@@ -6,10 +6,10 @@
 >
 > **Do not follow its "Decisions" section.** It specifies duplicating the rerank logic
 > across `query.py` and `app.py` to match a then-current convention. That convention is
-> gone: retrieval was consolidated into `retrieval.py` in `31354dd`, and `CLAUDE.md` now
+> gone: retrieval was consolidated into `kbm/retrieval.py` in `31354dd`, and `CLAUDE.md` now
 > states plainly **"do not reintroduce a second copy."** Following this file as written
 > would undo that consolidation and re-create the drift between the CLI, the web UI, and
-> the eval that `retrieval.py` exists to prevent.
+> the eval that `kbm/retrieval.py` exists to prevent.
 >
 > For how retrieval actually works today, read `CLAUDE.md` § Architecture and
 > `knowledge-base-math/retrieval.py`.
@@ -58,7 +58,7 @@ BEFORE:  BM25 top-10 ┐                                   AFTER:  ... ┐
   BAAI family as the bge-small embedder; GPU pod makes its size fine.
 - **Structure:** duplicate the rerank logic in both `query.py` and `app.py`, matching the
   repo's existing RRF duplication convention — **and** add a note to `CLAUDE.md`
-  recommending the duplication be extracted into a shared `retrieval.py` module long-term.
+  recommending the duplication be extracted into a shared `kbm/retrieval.py` module long-term.
 
 ## Changes
 
@@ -104,7 +104,7 @@ Mirror the above, matching app.py's module-level pattern:
 - Extend the existing "retrieval/RRF logic is duplicated between query.py and app.py"
   **Note** to include the reranker in the list of things to keep in sync, **and** add a
   recommendation: this duplication has now grown to three stages (search, RRF, rerank) and
-  should be extracted into a shared `retrieval.py` module imported by both files.
+  should be extracted into a shared `kbm/retrieval.py` module imported by both files.
 - Add `RERANK_MODEL` / `RERANK_TOP_C` to the list of retrieval params to keep in sync.
 
 ### 4. `requirements.txt` — no change

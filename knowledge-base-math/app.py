@@ -22,7 +22,7 @@ import time
 import gradio as gr
 import httpx
 
-from config import APP_HOST, APP_PORT, app_auth
+from kbm.config import APP_HOST, APP_PORT, app_auth
 
 log = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
 
 def send_feedback(event_id: str | None, rating: str) -> str:
     """Thumbs feed the telemetry log, which is where gold set v4 and the embedding
-    fine-tune pairs eventually come from — see telemetry.py."""
+    fine-tune pairs eventually come from — see kbm/telemetry.py."""
     if not event_id:
         return "Ask something first."
     try:

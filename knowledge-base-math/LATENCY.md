@@ -161,7 +161,7 @@ larger. That, plus qwen3's 8192-token window, is why `MAX_SEARCH_ROUNDS` is 2 an
 **Measurement to take on the pod**, once agent mode is used in anger: per-answer
 `generate_ms` vs `search_ms` vs `tool_ms`, split by `done.searches`. The question is whether
 a searching answer costs more than the grounding is worth, and the fields are already
-logged (`telemetry.py`) to answer it without new instrumentation.
+logged (`kbm/telemetry.py`) to answer it without new instrumentation.
 
 ---
 

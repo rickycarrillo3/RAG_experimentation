@@ -15,10 +15,10 @@ import httpx
 from fastapi import Header, HTTPException, status
 from langchain_ollama import ChatOllama
 
-import agent
-import retrieval
-from config import OLLAMA_BASE_URL
-from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
+from kbm import retrieval
+from kbm.config import OLLAMA_BASE_URL
+from kbm.retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
+from kbm.tools import agent
 
 from .settings import (
     API_TOKEN,
@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 def _model_supports_tools(model: str) -> bool | None:
     """Does Ollama report a tools template for this model? None if it could not be asked.
 
-    llm_profiles.py exists because a model's capabilities are facts about the weights,
+    kbm/llm_profiles.py exists because a model's capabilities are facts about the weights,
     and KBM_TOOLS is an environment variable — so the two can disagree, and only one of
     them is ever right. Forced onto a completion-only model, `tools` makes Ollama reject
     every /api/chat with a 400 that surfaces as an SSE error frame on every answer, with
