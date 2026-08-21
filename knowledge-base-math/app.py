@@ -300,10 +300,15 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
                 down_btn = gr.Button("👎", scale=0)
             feedback_status = gr.Markdown("")
 
-    # `api_visibility="private"` on every binding below. Without it Gradio turns each event into a
-    # named, externally callable route and lists it in the schema it serves at
+    # `api_visibility="private"` on every binding below. Without it Gradio turns each event
+    # into a named, externally callable route and lists it in the schema it serves at
     # /gradio_api/info — the whole backend surface, published to anyone who loads the page.
     # It lives inside these dicts so the multi-trigger bindings cannot drift apart.
+    # ⚠️ On Gradio 5 this was `api_name=False`. Gradio 6 narrowed `api_name` to `str | None`
+    # and moved visibility to `api_visibility`, but it does *not* reject the old value — it
+    # accepts `api_name=False` and publishes the handler as a public endpoint literally
+    # named `/False`, i.e. the exact opposite of what the argument used to mean. Silent
+    # inversion, so verify with `Blocks.get_api_info()`, never by reading the argument.
     # This does not empty the page source: `window.gradio_config` still carries the
     # component tree and unnamed dependency indices, because that is how the Gradio client
     # bootstraps itself. What goes away is the documented, callable API.
@@ -354,13 +359,9 @@ if __name__ == "__main__":
         share=False,
         auth=app_auth(),
         theme=gr.themes.Soft(),
-        # NOTE: no show_api= here. Gradio 6 removed the argument from launch()
-        # altogether, and passing it raises TypeError at startup — which is exactly
-        # what it did, so `python app.py` did not run at all. See ERRORS.md.
-        #
-        # Losing the argument costs nothing, because it was never what emptied the
-        # schema. `api_visibility="private"` on every event binding above is: with no named
-        # endpoints there is nothing for /gradio_api/info to describe, and it serves
-        # {"named_endpoints": {}, "unnamed_endpoints": {}} on its own. The route
-        # itself stays either way — Gradio owns it.
+        # Drops the "Use via API" footer link. Gradio 6 replaced launch(show_api=False)
+        # with footer_links, which names the links to keep rather than the one to remove;
+        # passing show_api here is a TypeError. This is cosmetic — what actually empties
+        # /gradio_api/info is api_visibility="private" on the bindings above.
+        footer_links=["gradio", "settings"],
     )
