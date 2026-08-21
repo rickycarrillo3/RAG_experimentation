@@ -25,7 +25,7 @@ import statistics
 import sys
 import time
 
-# This lives in evaluation/; the pipeline modules (retrieval, query, …) are one level up.
+# This lives in evaluation/; the pipeline modules (kbm, query, …) are one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_core.output_parsers import StrOutputParser

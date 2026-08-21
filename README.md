@@ -26,14 +26,22 @@ outgrew being a side project.
 ```
 PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
                                             ↓
-                            hybrid retrieval → RRF → cross-encoder rerank → LLM
+                   api/  ←  hybrid retrieval → RRF → cross-encoder rerank → LLM
+                    ↑                                        ↑
+                 app.py                          (agent mode: the model can
+              (HTTP client)                       search again, and run Python)
 ```
 
 - **Extraction** — Marker (LaTeX-faithful), falling back to pymupdf4llm
 - **Retrieval** — BM25 + `bge-small` dense, fused with Reciprocal Rank Fusion
 - **Reranking** — `bge-reranker-v2-m3` cross-encoder over the top-20 candidates
-- **Generation** — `deepseek-math-7b-rl` via Ollama
-- **Isolation** — per-username indexes (a naming convention, not real auth)
+- **Generation** — `deepseek-math-7b-rl` via Ollama by default; the generator is a
+  deployment knob (`KBM_LLM_MODEL`), and naming a model also configures it
+- **Tools** — on a tool-capable generator the model runs Python in a sandbox and decides
+  when to search the documents again ([`AGENT.md`](knowledge-base-math/AGENT.md))
+- **Serving** — `api/` is the deployable unit; `app.py` is an HTTP client of it
+- **Isolation** — per-username indexes (a naming convention, **not real auth**), which is
+  load-bearing once the model can search: see [`DEPLOYMENT.md §8`](knowledge-base-math/DEPLOYMENT.md)
 
 ## Getting started
 
@@ -41,11 +49,19 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
 cd knowledge-base-math
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt        # pinned; read its header before changing
-ollama pull t1c/deepseek-math-7b-rl:Q4
+ollama pull t1c/deepseek-math-7b-rl:Q4  # the generator
+ollama pull qwen2:7b                    # eval only (gold-set author + judge)
+ollama pull qwen3:8b                    # optional: the tool-capable generator
 
 python prefetch_models.py              # warm the HF cache (~6GB, one time)
-python app.py                          # http://localhost:7860
+
+# app.py is a CLIENT of the API, not a standalone app — start the API first,
+# in its own shell, or the UI comes up and cannot answer anything.
+uvicorn api.main:app --port 8000        # shell 1
+python app.py                           # shell 2 → http://localhost:7860
 ```
+
+Agent mode is one variable: `KBM_LLM_MODEL=qwen3:8b`, on both shells.
 
 Running on a remote GPU box: see **[`knowledge-base-math/SETUP.md`](knowledge-base-math/SETUP.md)**.
 
@@ -53,4 +69,8 @@ Running on a remote GPU box: see **[`knowledge-base-math/SETUP.md`](knowledge-ba
 
 - [`SETUP.md`](knowledge-base-math/SETUP.md) — remote GPU pod setup, env vars, troubleshooting
 - [`LATENCY.md`](knowledge-base-math/LATENCY.md) — where query time actually goes, and the fixes applied
+- [`ARCHITECTURE.md`](knowledge-base-math/ARCHITECTURE.md) — what runs on the GPU, what on the CPU, and the VRAM budget
+- [`AGENT.md`](knowledge-base-math/AGENT.md) — the two tool protocols, why a model gets exactly one, and why the loop is hand-rolled
+- [`DEPLOYMENT.md`](knowledge-base-math/DEPLOYMENT.md) — hosting, cost, env vars, and what the sandbox does and does not protect
+- [`ERRORS.md`](knowledge-base-math/ERRORS.md) — failures actually hit and what really caused them; **check before debugging an environment problem**
 - [`evaluation/EVALUATION.md`](knowledge-base-math/evaluation/EVALUATION.md) — the eval protocol; **read before changing retrieval**

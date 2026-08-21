@@ -23,7 +23,9 @@ Env vars
     KBM_LLM_MODEL     the generator's Ollama tag          (default: deepseek-math)
     KBM_NUM_PREDICT   decode cap, in tokens               (default: per llm_profiles)
     KBM_NUM_CTX       context window, in tokens           (default: per llm_profiles)
-    KBM_TIR           1/0 = force the Python sandbox on/off (default: per llm_profiles)
+    KBM_TIR           1/0 = force the ```python text protocol on/off (default: per llm_profiles)
+    KBM_TOOLS         1/0 = force NATIVE tool calling on/off (default: per llm_profiles).
+                      Wins over KBM_TIR — a model gets one protocol, never both.
     KBM_KEEP_ALIVE    how long Ollama holds the weights   (default: 30m)
 """
 
@@ -48,7 +50,7 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # it needed nothing special. It is here now because it is a deployment knob like every
 # other one in this file, and because swapping generators is a thing we do on purpose
 # (EVALUATION.md §12) rather than a code edit per experiment. kbm/retrieval.py re-exports it,
-# so every existing `from retrieval import OLLAMA_MODEL` keeps working.
+# so every existing `from kbm.retrieval import OLLAMA_MODEL` keeps working.
 #
 # The default stays deepseek-math until the college-tier bake-off says otherwise. A
 # measured swap or none at all.

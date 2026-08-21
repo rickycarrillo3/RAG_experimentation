@@ -41,7 +41,7 @@ RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 # OLLAMA_MODEL is re-exported from kbm/config.py above, not declared here. It used to be a
 # literal on this line, which made "which generator?" a code edit — and put it in the one
 # module that has nothing to do with generation. It is a deployment knob (KBM_LLM_MODEL)
-# now; the import stays so the eight callers that do `from retrieval import OLLAMA_MODEL`
+# now; the re-export stays because callers import it from here rather than from config
 # are unaffected.
 
 TOP_K = 10         # candidates from each retriever

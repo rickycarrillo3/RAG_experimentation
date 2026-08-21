@@ -24,7 +24,7 @@ hf_transfer
 pylatexenc
 # Listed explicitly although torch already pulls it in transitively. Two things import it
 # directly now — evaluation/verify_reasoning_set.py, and (inside the subprocess)
-# sandbox.py's allow-list, which is the library Qwen's TIR traces reach for first. A
+# kbm/tools/sandbox.py's allow-list, which is the library Qwen's TIR traces reach for first. A
 # dependency you rely on by name belongs in the file that names dependencies.
 sympy
 # 6.17.3, NOT 6.18.0. This is a three-way pin, not a preference:

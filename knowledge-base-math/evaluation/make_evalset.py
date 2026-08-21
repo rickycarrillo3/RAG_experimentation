@@ -35,7 +35,7 @@ import random
 import re
 import sys
 
-# This lives in evaluation/; the pipeline modules (retrieval, …) are one level up.
+# This lives in evaluation/; the pipeline modules (kbm, …) are one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain_ollama import ChatOllama

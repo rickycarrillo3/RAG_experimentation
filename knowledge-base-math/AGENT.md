@@ -44,7 +44,16 @@ which protocol produced an answer. Keeping the capabilities independent is also 
 
 An environment variable can ask for a protocol the weights do not have, so `api/deps.py`
 asks Ollama at startup (`/api/show` → `capabilities`) and **downgrades loudly** rather than
-letting every answer fail with a 400. `/healthz` reports the effective arm as `protocol`.
+letting every answer fail with a 400. `/healthz` reports the effective arm as `protocol`,
+and `startup.sh` prints it at stage 5.
+
+⚠️ **The downgrade lands on `none`, not on TIR.** By the time the probe runs, the exclusivity
+line has already set `TIR_ENABLED = False` because `KBM_TOOLS` was on — so forcing
+`KBM_TOOLS=1` onto a TIR-capable model whose probe fails loses *both* protocols. That is
+the right default (silence beats a protocol nobody asked for), but it is a footgun when
+switching between bake-off arms D and E: use `KBM_TOOLS=0` to fall back to TIR, not an
+unset variable. A 404 from `/api/show` — the model is not pulled — is treated as a hard
+refusal rather than "cannot tell", because it is the most actionable signal on a fresh pod.
 
 ## 2. The three tools
 
@@ -53,6 +62,11 @@ letting every answer fail with a 400. `/healthz` reports the effective arm as `p
 | `search_documents(query)` | `retrieval.retrieve_detailed` | `MAX_SEARCH_ROUNDS = 2` |
 | `run_python(code)` | `sandbox.run_python` | `MAX_PYTHON_ROUNDS = 3` |
 | `list_documents()` | `deps.index_summary` | pass ceiling only |
+
+Two more bounds sit on top: **`MAX_CALLS_PER_PASS = 4`** — a model that asks for eight
+things in one message gets the first four executed and a budget notice for the rest, which
+is user-visible and easy to miss — and **`MAX_PASSES`**, which feeds the loop's overall
+pass ceiling in `api/routes.py`.
 
 Budgeted apart for the reason `api/routes.py` already gives for keeping tool rounds and
 continuations apart: they mean different things, and one shared number lets whichever the

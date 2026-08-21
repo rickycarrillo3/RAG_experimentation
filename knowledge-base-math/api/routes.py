@@ -627,6 +627,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             tool_errors=tool_errors,
             searches=search_rounds,
             late_sources=late_source_count,
+            protocol=models.protocol,
         ))
         # Telemetry logs every RETRIEVED chunk, not just the ones that cleared the floor.
         # The floor can be re-applied offline, but a chunk that was dropped and never

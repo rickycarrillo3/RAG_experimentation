@@ -1189,10 +1189,15 @@ today. An instruct model would let the prompt do its job.
   ` ```python ` → ` ```output ` splice, `MAX_TOOL_ROUNDS = 3`. Every constant is Qwen's
   own (`QwenLM/Qwen2.5-Math`, `evaluation/math_eval.py`), because the model was fine-tuned
   against that exact shape.
-- **`kbm/llm_profiles.py`** — window size, decode budget and TIR capability per model, so
-  naming a generator configures it. `KBM_LLM_MODEL` selects; env vars override.
-- The tool loop in `api/routes.py` is the **continuation loop with a second arm**, not a
-  parallel machine, and `evaluation/self_consistency.py --tir` drives the same `kbm/tools/tir.py`
+- **`kbm/tools/agent.py`** — the *other* tool protocol: native tool calling, where a JSON
+  schema goes out and a structured `tool_calls` array comes back. Reaches the sandbox and,
+  in the server, retrieval as well. A model gets this or TIR, never both — `kbm/config.py`
+  decides in one line. See `AGENT.md`.
+- **`kbm/llm_profiles.py`** — window size, decode budget, TIR capability **and native-tools
+  capability** per model, so naming a generator configures it. `KBM_LLM_MODEL` selects; env
+  vars override.
+- The tool loop in `api/routes.py` is the **continuation loop with two more arms** (TIR and
+  native tools, only one of them ever live), not a parallel machine, and `evaluation/self_consistency.py --tir` drives the same `kbm/tools/tir.py`
   primitives. An eval that reimplemented the protocol would drift from what ships — the
   argument `kbm/retrieval.py` exists for.
 
@@ -1231,8 +1236,8 @@ is closed-book by construction (§11.1b), and routing a question through retriev
 a wrong answer un-attributable — the model's error and the retriever's become one number.
 Retrieval-path behaviour is §13.3's job, not this one's.
 
-Each writes `results/self_consistency_baseline_<model>[_tir].json`, so the four coexist
-and `--report-only` re-scores any of them for free.
+Each writes `results/self_consistency_<tier>_<model>[_tir][_tools].json`, so all five
+coexist and `--report-only` re-scores any of them for free.
 
 **Run the college tier.** §11.1 is explicit about why, and §11.5 ends by saying the
 easy-tier verdict is unsettled until it is done: deepseek scores 0.85 on `--easy`, where

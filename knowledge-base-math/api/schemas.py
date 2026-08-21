@@ -137,6 +137,14 @@ class DoneEvent(BaseModel):
                     "anything. Non-zero means part of this answer was calculated rather "
                     "than recalled. Searches are counted separately, in `searches`.",
     )
+    protocol: Literal["tools", "tir", "none"] = Field(
+        "none",
+        description="Which tool arm produced this answer. On /healthz this is a property of "
+                    "the deployment; here it is a property of the ANSWER, which is what the "
+                    "bake-off needs — 'which arm was this?' is the first question asked of "
+                    "any single result, and inferring it from the model tag stops working "
+                    "the moment one model can run either protocol (qwen3 can).",
+    )
     searches: int = Field(
         0,
         description="Searches the model itself asked for while answering (agent mode). "
