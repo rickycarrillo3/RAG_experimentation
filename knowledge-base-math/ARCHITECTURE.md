@@ -125,21 +125,39 @@ is serialised to one worker (§4).
 
 ## 4. VRAM budget on a 24 GB card
 
+**The generator is not fixed** (`KBM_LLM_MODEL`), so its row is split into weights and KV
+cache — one opaque total cannot be re-derived for another model, and this table used to
+carry deepseek's number as though the generator were a constant.
+
 | Model | Role | When | VRAM |
 |---|---|---|---|
-| `deepseek-math-7b-rl:Q4` | generation | query | ~5.5 GB incl. KV cache |
+| generator weights — `deepseek-math-7b-rl:Q4` | generation | query | ~4.2 GB |
+| generator KV cache @ `num_ctx=4096` | generation | query | ~1.3 GB |
 | `bge-reranker-v2-m3` | cross-encoder | query | ~2.2 GB fp32 |
 | `bge-small-en-v1.5` | dense embed | query + ingest | ~0.5 GB |
-| | | **steady state** | **~8.2 GB** |
+| | | **steady state (default)** | **~8.2 GB** |
 | Marker / Surya | PDF → LaTeX | ingest only | ~3–5 GB peak |
-| | | **upload peak** | **~12.7 GB** |
+| | | **upload peak (default)** | **~12.7 GB** |
 
-The gap between those two rows is why 24 GB was the right buy rather than 12 GB. It is
-also why **ingest is serialised** (`_ingest_pool`, one worker): two extractions at once
-would each want ~4.5 GB on top of the 8.2 GB the query models never give back. One
-worker turns a possible OOM into a queue.
+**Agent mode costs about 2.5 GB more.** `qwen3:8b` is **5.2 GB** of weights against
+deepseek's 4.2, and `kbm/llm_profiles.py` runs it at `num_ctx=8192` rather than 4096, which
+roughly doubles the KV cache. Steady state becomes **~10.7 GB** and the upload peak
+**~15.2 GB** — still comfortably inside 24 GB, but no longer inside 12.
 
-Numbers from `evaluation/EVALUATION.md §6`.
+Two notes on that context number. It is **our** choice, not the model's: `ollama show
+qwen3:8b` reports a real context length of **40960**, and 8192 is a deliberate cap. Raising
+it costs KV cache linearly, and it is most tempting in `grounded` mode, where retrieved
+chunks compete with a growing tool transcript for the same window. And a tool round does
+not add a new model to the card — the sandbox is a separate CPU process, and
+`search_documents` re-enters the embedder and reranker that are already resident. What
+grows is the transcript, i.e. the KV cache, which is why the split above matters.
+
+The gap between steady state and upload peak is why 24 GB was the right buy rather than
+12 GB. It is also why **ingest is serialised** (`_ingest_pool`, one worker): two extractions
+at once would each want ~4.5 GB on top of the steady state the query models never give
+back. One worker turns a possible OOM into a queue.
+
+Numbers from `evaluation/EVALUATION.md §6`; the qwen3 weight figure is `ollama list`.
 
 ---
 

@@ -14,7 +14,14 @@
 #     bash evaluation/eval.sh --skip-sweep --self-consistency           # college tier (the deciding one)
 #     bash evaluation/eval.sh --skip-sweep --self-consistency --sc-easy  # grade-school regression tier
 #     GEN_MODEL=hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M \
-#       bash evaluation/eval.sh --skip-sweep --self-consistency --tir   # a bake-off arm (EVALUATION.md §12)
+#       bash evaluation/eval.sh --skip-sweep --self-consistency --tir   # a bake-off arm (EVALUATION.md §13)
+#     GEN_MODEL=qwen3:8b \
+#       bash evaluation/eval.sh --skip-sweep --self-consistency --tools  # arm E, native tool calling
+#
+#   --tir and --tools are the two tool protocols and are mutually exclusive, exactly as
+#   kbm/config.py enforces for the server. Both run through this script so that every arm
+#   gets the same CUDA check, data check, prefetch, ollama pull and answer-key
+#   verification -- an arm that skips them is not comparable with one that does not.
 #     bash evaluation/eval.sh --allow-cpu     # run even if CUDA is absent (for a local dry-run)
 #
 # Overridable via env:
@@ -33,7 +40,11 @@ RUN_SWEEP=1
 RUN_ANSWERS=0
 RUN_SC=0
 SC_TIER="--baseline"
-SC_TIR=""
+# Which tool protocol the self-consistency arm runs under: "", --tir or --tools.
+# One variable, because a model gets one protocol — see kbm/config.py.
+SC_ARM=""
+WANT_TIR=0
+WANT_TOOLS=0
 ALLOW_CPU=0
 for arg in "$@"; do
   case "$arg" in
@@ -41,12 +52,22 @@ for arg in "$@"; do
     --skip-sweep) RUN_SWEEP=0 ;;
     --self-consistency) RUN_SC=1 ;;
     --sc-easy)    SC_TIER="--easy" ;;
-    --tir)        SC_TIR="--tir" ;;
+    --tir)        SC_ARM="--tir"; WANT_TIR=1 ;;
+    --tools)      SC_ARM="--tools"; WANT_TOOLS=1 ;;
     --allow-cpu)  ALLOW_CPU=1 ;;
-    -h|--help)    sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)"; exit 2 ;;
   esac
 done
+
+# Both protocols at once is the one combination that cannot mean anything: the model would
+# be handed a tools array and a ```output stop word together. kbm/config.py resolves the
+# same clash for the server; here it is a usage error, because a benchmark that silently
+# picked one would label the results with the other.
+if [ "$WANT_TIR" = "1" ] && [ "$WANT_TOOLS" = "1" ]; then
+  echo "--tir and --tools are two tool protocols and a model gets one." >&2
+  exit 2
+fi
 
 EMBED_MODEL="${EMBED_MODEL:-BAAI/bge-m3}"
 EVAL_USER="${EVAL_USER:-calctest}"
@@ -180,7 +201,12 @@ fi
 
 # ── 6. Self-consistency: does majority voting beat greedy? (generator only) ─────
 if [ "$RUN_SC" -eq 1 ]; then
-  hr; echo "6. Self-consistency ($GEN_MODEL, $SC_TIER, $SC_SAMPLES samples/question,${SC_TIR:+ TIR,} closed-book — no retrieval)"
+  case "$SC_ARM" in
+    --tir)   ARM_LABEL="TIR," ;;
+    --tools) ARM_LABEL="native tools," ;;
+    *)       ARM_LABEL="" ;;
+  esac
+  hr; echo "6. Self-consistency ($GEN_MODEL, $SC_TIER, $SC_SAMPLES samples/question,${ARM_LABEL:+ $ARM_LABEL} closed-book — no retrieval)"
 
   # A wrong answer key marks a right model wrong. Verify before spending GPU hours on it.
   $PY evaluation/verify_reasoning_set.py
@@ -191,7 +217,7 @@ if [ "$RUN_SC" -eq 1 ]; then
   fi
 
   $PY evaluation/self_consistency.py $SC_TIER --samples "$SC_SAMPLES" \
-      --model "$GEN_MODEL" $SC_TIR
+      --model "$GEN_MODEL" $SC_ARM
   echo "   → evaluation/results/self_consistency_*.json  (read the VERDICT block, not just the table)"
 fi
 

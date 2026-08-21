@@ -56,10 +56,11 @@ Three things are load-bearing:
   is what keeps this honest; without it there is no budget, only an intention.
 - **Card choice.** RTX 4090 community is $0.34/hr → $35.70/mo on compute alone, over
   budget before storage. The A5000's 24GB covers the ~8GB steady-state query footprint
-  (`evaluation/EVALUATION.md §6`) with room for a Q8 generator, so the cheap card is
+  on the default generator, or ~10.7GB in agent mode on `qwen3:8b`
+  (`ARCHITECTURE.md §4`), with room for a Q8 generator either way — so the cheap card is
   also the sufficient one. **If the generator benchmark picks a model needing >24GB,
   this table has to be redone** — treat that as an exit criterion of the benchmark, not
-  a detail.
+  a detail. Agent mode does not trip it, but it was checked rather than assumed.
 - **Network volume, not container disk.** RunPod bills container/volume disk at
   **$0.20/GB/mo while the pod is stopped**, versus $0.07/GB/mo for a network volume.
   50GB of model weights on container disk would cost more sitting idle than the GPU
@@ -212,7 +213,7 @@ check worth paying for.
 | Pod start (container created, volume mounted) | ~30 s |
 | `startup.sh`: torch import + CUDA check, Ollama start | ~10–20 s |
 | API startup: embedder + 2.2 GB reranker loaded | ~30 s |
-| First query: Ollama loads the generator from the volume | ~10–20 s |
+| First query: Ollama loads the generator from the volume | ~10–20 s (4.2 GB; longer on a bigger generator) |
 | **Click → first token** | **~1–2 min** |
 
 ⚠️ **This is an estimate assembled from component measurements, not an end-to-end
@@ -224,6 +225,12 @@ above 2 minutes, that is a finding, not a detail.
 `GET /healthz` reports `model_loaded`, which is the flag a client should poll — after a
 cold start the API answers HTTP 200 well before the model is resident, so a client that
 only checks for 200 fires its first question into a model load and looks broken.
+
+It also reports **`protocol`** (`tools` / `tir` / `none`) — the arm that is actually live,
+after the startup capability probe. Worth reading once per deploy rather than per query:
+`KBM_TOOLS` can ask for a protocol the model has no template for, and the server downgrades
+and carries on rather than failing every answer. `startup.sh` prints it at stage 5 for the
+same reason.
 
 `/healthz` sits **behind `KBM_API_TOKEN`** like every other endpoint: every caller today
 (`startup.sh`, the Gradio client, you over SSH) already holds the token, and port 8000 is
@@ -251,6 +258,17 @@ Worth building when "text me and I'll turn it on" gets annoying — not before.
 
 ## 6. Known gaps
 
+- **Nothing verifies the generator before the pod says it is ready.** `startup.sh` pulls
+  `KBM_LLM_MODEL` and `api/deps.py` asks Ollama whether it has a tools template, but
+  `prefetch_models.py` is HuggingFace-only by design, and a pod whose Ollama is slow to
+  answer falls back to trusting the profile. The failure that remains is a model that is
+  present but wrong for the job — nothing checks that the thing serving the family is the
+  thing the operator intended beyond the tag matching.
+- **The cost model is wall-clock and does not price tool rounds.** §2 assumes 3.5 hr/day.
+  A tool-using answer is still one `/chat`, so the idle-stop trigger is unchanged, but each
+  answer holds the pod awake longer — a search re-enters retrieval and re-prefills a
+  transcript that grew by a retrieved chunk. `LATENCY.md` names the measurement to take;
+  until it is taken, agent mode's effect on the bill is unquantified.
 - **Documents still land wherever `DATA_DIR` points.** On the pod that's the network
   volume, which solves the "not on my laptop" problem. It does **not** solve durability:
   a deleted volume is a deleted corpus, and RunPod may terminate a volume whose storage

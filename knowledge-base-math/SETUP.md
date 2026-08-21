@@ -79,8 +79,12 @@ ollama --version
 # ── Models ────────────────────────────────────────────────────────────────────
 ollama serve &
 sleep 3
-ollama pull t1c/deepseek-math-7b-rl:Q4   # generator (~4.5GB)
+ollama pull t1c/deepseek-math-7b-rl:Q4   # generator, the default (~4.2GB)
 ollama pull qwen2:7b                     # eval only: gold-set author + answer judge
+# Optional, and the only way to run AGENT MODE — the arm where the model searches the
+# family's documents and runs Python itself. deepseek-math cannot: `ollama show` reports
+# it as completion-only, with no tools template. See AGENT.md.
+ollama pull qwen3:8b                     # tool-capable generator (~5.2GB)
 
 # ── HuggingFace models (~6GB cold) ────────────────────────────────────────────
 # Worth doing explicitly here rather than letting it happen mid-use. The embedder
@@ -126,6 +130,8 @@ So every future session inherits them without re-exporting:
 | `DATA_DIR` | `/workspace/kb-data` | **else every uploaded document is lost on restart** |
 | `APP_AUTH` | `alice:somepassword,bob:another` | else the pod URL is open to anyone who has it |
 | `REQUIRE_GPU` | `1` | turns a silent CPU fallback into a startup error |
+| `KBM_LLM_MODEL` | *(optional)* `qwen3:8b` | the generator to pull **and** serve; leave unset for deepseek-math. This is the only channel `startup.sh` has for model selection |
+| `KBM_TOOLS` | *(optional)* `1` / `0` | force native tool calling on or off, overriding the model's profile. Takes precedence over `KBM_TIR` |
 
 ---
 
@@ -177,6 +183,22 @@ nothing changes until you set one.
 | `APP_HOST` / `APP_PORT` | `0.0.0.0` / `7860` | bind address and port |
 | `APP_AUTH` | unset (no login) | `user:pass` pairs, comma-separated |
 | `REQUIRE_GPU` | unset | `1` = refuse to start without CUDA |
+| `KBM_LLM_MODEL` | `t1c/deepseek-math-7b-rl:Q4` | which generator to pull and serve. Naming a model also configures it — window, decode budget and tool capability come from `kbm/llm_profiles.py` |
+| `KBM_TOOLS` | from the model's profile | `1`/`0` forces native tool calling (`search_documents`, `run_python`, `list_documents`). Wins over `KBM_TIR` |
+| `KBM_TIR` | from the model's profile | `1`/`0` forces the ` ```python ` text protocol. Forced off whenever tools are on |
+| `KBM_NUM_CTX` / `KBM_NUM_PREDICT` | from the model's profile | window and decode cap; override only to test |
+| `KBM_API_TOKEN` | unset (**API is open**) | bearer token for `api/`. Different lock from `APP_AUTH` — see `DEPLOYMENT.md §4` |
+
+**Agent mode in one line.** The default generator has no tools template, so:
+
+```bash
+KBM_LLM_MODEL=qwen3:8b bash startup.sh
+```
+
+Stage 5 prints which protocol actually came up (`native tool calling`, `tool-integrated
+reasoning`, or `no tool protocol`) — if you asked for one and see "no tool protocol", the
+model was not pulled or has no tools template, and the log above says which.
+`DEPLOYMENT.md §3` is the full variable list.
 
 **On `APP_AUTH`:** it is a front door lock, not real authentication. It controls *access to
 the app*. Behind it, users are still just lowercased strings typed into a textbox — anyone
@@ -229,6 +251,25 @@ cd /workspace/RAG_experimentation/knowledge-base-math
 bash evaluation/eval.sh              # GPU check → data check → prefetch → 9-combo sweep
 bash evaluation/eval.sh --answers    # also ingest + eval.py --all --answers (Ollama-judged)
 ```
+
+**Generator work** — which model, and whether a tool protocol earns its keep. Every arm
+goes through the same script on purpose: it is what supplies the CUDA check, the data
+check, the prefetch, `ollama pull`, and the sympy verification of the answer key. An arm
+run as a bare `python` skips all of that and is not comparable with one that does not.
+
+```bash
+# Which model? Paired McNemar over the same 30 questions (EVALUATION.md §12).
+python evaluation/model_bakeoff.py --check     # what is pulled, and the published numbers
+python evaluation/model_bakeoff.py             # ~15 min on a pod
+
+# Which tool protocol? Same model, one variable (EVALUATION.md §13).
+GEN_MODEL=qwen3:8b bash evaluation/eval.sh --skip-sweep --self-consistency          # CoT
+GEN_MODEL=qwen3:8b bash evaluation/eval.sh --skip-sweep --self-consistency --tir    # arm D
+GEN_MODEL=qwen3:8b bash evaluation/eval.sh --skip-sweep --self-consistency --tools  # arm E
+```
+
+Read the **TOOL USE** block before the accuracy table: `greedy answers that ran a program:
+0/30` means the arm measured plain chain-of-thought whatever the accuracy column says.
 
 Results land in `evaluation/results/`. Compare recall@1/@5/@pool, MRR, nDCG against the §7
 Mac table — they should match within noise; a real divergence points at an env or
