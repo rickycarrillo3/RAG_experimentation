@@ -6,18 +6,78 @@ across requests, exactly as app.py did at module scope. Loading the 2.2GB rerank
 per request would dominate every other cost in the system.
 """
 
+import logging
 import os
 import pickle
 import threading
 
+import httpx
 from fastapi import Header, HTTPException, status
 from langchain_ollama import ChatOllama
 
-import retrieval
-from config import OLLAMA_BASE_URL
-from retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
+from kbm import retrieval
+from kbm.config import OLLAMA_BASE_URL
+from kbm.retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
+from kbm.tools import agent
 
-from .settings import API_TOKEN, KEEP_ALIVE, NUM_PREDICT
+from .settings import (
+    API_TOKEN,
+    KEEP_ALIVE,
+    NUM_CTX,
+    NUM_PREDICT,
+    THINK,
+    TIR_ENABLED,
+    TOOLS_ENABLED,
+)
+
+log = logging.getLogger(__name__)
+
+
+def _model_supports_tools(model: str) -> bool | None:
+    """Does Ollama report a tools template for this model? None if it could not be asked.
+
+    kbm/llm_profiles.py exists because a model's capabilities are facts about the weights,
+    and KBM_TOOLS is an environment variable — so the two can disagree, and only one of
+    them is ever right. Forced onto a completion-only model, `tools` makes Ollama reject
+    every /api/chat with a 400 that surfaces as an SSE error frame on every answer, with
+    the real cause named only inside an exception string.
+
+    So ask the runtime rather than trusting the table, which is the same lesson
+    ERRORS.md 2026-08-20 records for `think=`: assert on what actually goes out, not on
+    what the config says. Verified locally —
+
+        t1c/deepseek-math-7b-rl:Q4  ->  ['completion']
+        qwen2:7b                    ->  ['completion', 'tools']
+
+    httpx rather than the `ollama` package because httpx is a named dependency and
+    `ollama` only arrives transitively via langchain-ollama.
+    """
+    try:
+        r = httpx.post(f"{OLLAMA_BASE_URL}/api/show", json={"model": model}, timeout=10.0)
+    except Exception as e:
+        # Ollama is not answering yet. Deliberately not fatal: startup.sh already waits on
+        # Ollama, and turning this probe into a second liveness gate would make a slow
+        # Ollama start look like a broken model load. Trust the profile.
+        log.warning("could not reach Ollama to ask whether %s supports tools (%s) — "
+                    "trusting the profile", model, e)
+        return None
+
+    # A 404 is NOT the same as "could not ask", and conflating them was a real bug: both
+    # returned None, None is not False, so the caller's `else` branch bound tools against a
+    # model that is not on this box at all. The pod then reported itself ready and failed on
+    # the family's first question. A 404 here means Ollama is up and has never heard of this
+    # model — the most actionable signal in the whole startup path, so say so and refuse.
+    if r.status_code == 404:
+        log.error("Ollama has no model named %s — it is not pulled on this machine. "
+                  "Run `ollama pull %s`.", model, model)
+        return False
+    try:
+        r.raise_for_status()
+        return "tools" in (r.json().get("capabilities") or [])
+    except Exception as e:
+        log.warning("Ollama gave an unexpected answer for %s (%s) — trusting the profile",
+                    model, e)
+        return None
 
 
 class Models:
@@ -28,6 +88,14 @@ class Models:
         self.embeddings = None
         self.reranker = None
         self.llm = None
+        # The same client with agent.TOOL_SCHEMAS bound, or None when this model does not
+        # get the native protocol. Two handles rather than one because binding is not
+        # free of consequence: a `tools` array sent to a completion-only model is a 400
+        # from Ollama on every single request.
+        self.llm_tools = None
+        # The EFFECTIVE answer, after the probe below — which is not the same thing as
+        # settings.TOOLS_ENABLED. routes.py must read this one.
+        self.tools_enabled = False
 
     def load(self) -> None:
         with self._lock:
@@ -43,6 +111,14 @@ class Models:
                     base_url=OLLAMA_BASE_URL,
                     temperature=0,
                     num_predict=NUM_PREDICT,
+                    # Ollama does not take the window from the model file — it applies
+                    # its own default, and shifts the context from the LEFT when a prompt
+                    # overflows. The left end is the system prompt, so an over-long turn
+                    # (a TIR trace especially, since every round re-sends the whole
+                    # transcript) does not error: the tutor persona and the grounding
+                    # rules just quietly stop being in the prompt. Stating the model's
+                    # real window is what makes that bounded. See config.NUM_CTX.
+                    num_ctx=NUM_CTX,
                     # How long Ollama keeps the weights in VRAM after the last request.
                     # Without it, Ollama unloads after 5 min and the second question of
                     # an evening pays a ~10-20s reload.
@@ -59,11 +135,54 @@ class Models:
                     # generator resident (EVALUATION.md §6), so drop this toward 0 during
                     # ingest if it ever OOMs.
                     keep_alive=KEEP_ALIVE,
+                    # Qwen3-style thinking mode. None for every model that has none, and
+                    # passing None leaves the request unchanged; False turns it off for
+                    # models that default it on, whose <think> block would otherwise be
+                    # streamed into the student's answer bubble.
+                    #
+                    # The kwarg is `reasoning`, NOT `think`. langchain-ollama renames it on
+                    # the way to Ollama's `think` field (chat_models._chat_params), and
+                    # ChatOllama accepts unknown kwargs without complaining — so `think=`
+                    # here constructs cleanly, is never sent, and leaves thinking mode on.
+                    reasoning=THINK,
                 )
+            if TOOLS_ENABLED and self.llm_tools is None:
+                supported = _model_supports_tools(OLLAMA_MODEL)
+                if supported is False:
+                    # Loud, and then carry on serving. An unusable /chat is a worse
+                    # outcome than a downgraded one, and the operator who set KBM_TOOLS
+                    # needs to be told which of the two facts won.
+                    log.error(
+                        "KBM_TOOLS is on but Ollama reports no tools template for %s — "
+                        "serving with tool calling DISABLED. Pick a model that supports "
+                        "tools (qwen3:8b) or unset KBM_TOOLS.", OLLAMA_MODEL,
+                    )
+                else:
+                    self.tools_enabled = True
+                    # Bound once, at load, for the same reason the client itself is:
+                    # bind_tools() is a pure Runnable wrapper, but building it per
+                    # request would re-run schema conversion on every answer.
+                    self.llm_tools = self.llm.bind_tools(agent.TOOL_SCHEMAS)
+                    log.info("native tool calling enabled for %s (%s)", OLLAMA_MODEL,
+                             ", ".join(sorted(agent.TOOL_NAMES)))
 
     @property
     def ready(self) -> bool:
+        # llm_tools is deliberately NOT in here: it is derived, and a model that simply
+        # does not support tools would otherwise look like a failed load.
         return all(x is not None for x in (self.embeddings, self.reranker, self.llm))
+
+    @property
+    def protocol(self) -> str:
+        """Which tool arm is actually live — for /healthz, and for telemetry.
+
+        Reported rather than inferred because it is the product of a profile, two
+        environment variables and a runtime probe, and 'which arm ran?' is the first
+        question to ask of any answer during the bake-off.
+        """
+        if self.tools_enabled:
+            return "tools"
+        return "tir" if TIR_ENABLED else "none"
 
 
 models = Models()

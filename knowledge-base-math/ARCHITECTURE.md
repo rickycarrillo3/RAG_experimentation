@@ -62,6 +62,9 @@ Percentages are each stage's share of wall-clock time, measured on the Mac
 | 5 | Cross-encoder rerank → top 5 | **GPU** | ~850 ms · 4% |
 | 6 | Prompt prefill (1.9k–3.4k tokens) | **GPU** | ~7 s · 30% |
 | 7 | Decode (≤350 tokens) | **GPU** | 12–20 s · 60% |
+| 7a | *(tools only)* Run the model's Python | CPU, **separate process** | ~0.05–0.5 s per program |
+| 7b | *(agent only)* Search again — **re-enters rows 3a–5** | CPU + **GPU** | ~0.9–3 s per search |
+| 7c | *(tools only)* Re-prefill the grown transcript and decode on | **GPU** | ×1–3 of rows 6–7 |
 | 8 | SSE frames out + one telemetry line | CPU | — |
 | 9 | LaTeX renders in the tab | Your Mac | — |
 
@@ -76,6 +79,29 @@ pipeline, exactly one touches the GPU.
 not because it is slow, but because it decides *what the model is allowed to know*.
 Optimising it for speed is optimising the wrong 4%.
 
+**Tool use (rows 7a–7c) is the only thing that loops.** Every other row runs once. With a
+tool protocol on, the model can stop mid-answer, hand work to the CPU, and continue from
+the result. The tools themselves are cheap and live off the GPU; what costs is that each
+round re-enters rows 6–7 with a longer transcript.
+
+**Row 7b is new, and it is the structural change.** Until agent mode, retrieval ran exactly
+once per request, before generation — rows 3a–5 were strictly upstream of row 6. With
+`KBM_TOOLS` on, `search_documents` puts them *inside* the generation loop: the model can
+decide the retrieval the server already did was not the one the question needed, rewrite the
+query, and send the embedder and the cross-encoder round again mid-answer. That is why
+`_add_retrieval_timings` accumulates rather than assigns — `bm25_ms`/`dense_ms`/`rerank_ms`
+are now per-request totals across every search, not the cost of one.
+
+It also means the **rerank is the expensive part of a re-search**: ~850 ms of the ~0.9–3 s
+in row 7b is the cross-encoder, on the GPU, competing with nothing else because decode is
+paused. `agent.MAX_SEARCH_ROUNDS = 2` is that budget as much as it is a context budget.
+
+Three timing fields keep these apart, and they must stay apart: `tool_ms` is sandbox only,
+`search_ms` is model-initiated retrieval, `generate_ms` is everything. Folding retrieval
+into `tool_ms` would make every previously logged `tool_ms` incomparable. Both tools run in
+a thread (`anyio.to_thread`), like the upfront retrieval — a `subprocess.communicate` or a
+cross-encoder forward pass on the event loop would stall every other client's token stream.
+
 ---
 
 ## 3. The upload path
@@ -88,7 +114,7 @@ that cannot be regenerated. Runs once per document and takes minutes, which is w
 |---|---|---|---|
 | 1 | PDF uploaded | Your Mac | → `POST /upload`, returns a job id |
 | 2 | Marker/Surya read the pages → Markdown+LaTeX | **GPU** | ~0.3–1 s/page on GPU vs. ~minutes/page on Mac CPU |
-| 3 | Split into chunks (equations kept atomic) | CPU | `chunking.py` — cheap and deterministic |
+| 3 | Split into chunks (equations kept atomic) | CPU | `kbm/chunking.py` — cheap and deterministic |
 | 4 | Embed every chunk | **GPU** | same loader as query-time, so both land in one vector space |
 | 5 | Write PDF + `.mmd` + Chroma + BM25 | Disk | under `$DATA_DIR`, namespaced per user |
 
@@ -99,21 +125,39 @@ is serialised to one worker (§4).
 
 ## 4. VRAM budget on a 24 GB card
 
+**The generator is not fixed** (`KBM_LLM_MODEL`), so its row is split into weights and KV
+cache — one opaque total cannot be re-derived for another model, and this table used to
+carry deepseek's number as though the generator were a constant.
+
 | Model | Role | When | VRAM |
 |---|---|---|---|
-| `deepseek-math-7b-rl:Q4` | generation | query | ~5.5 GB incl. KV cache |
+| generator weights — `deepseek-math-7b-rl:Q4` | generation | query | ~4.2 GB |
+| generator KV cache @ `num_ctx=4096` | generation | query | ~1.3 GB |
 | `bge-reranker-v2-m3` | cross-encoder | query | ~2.2 GB fp32 |
 | `bge-small-en-v1.5` | dense embed | query + ingest | ~0.5 GB |
-| | | **steady state** | **~8.2 GB** |
+| | | **steady state (default)** | **~8.2 GB** |
 | Marker / Surya | PDF → LaTeX | ingest only | ~3–5 GB peak |
-| | | **upload peak** | **~12.7 GB** |
+| | | **upload peak (default)** | **~12.7 GB** |
 
-The gap between those two rows is why 24 GB was the right buy rather than 12 GB. It is
-also why **ingest is serialised** (`_ingest_pool`, one worker): two extractions at once
-would each want ~4.5 GB on top of the 8.2 GB the query models never give back. One
-worker turns a possible OOM into a queue.
+**Agent mode costs about 2.5 GB more.** `qwen3:8b` is **5.2 GB** of weights against
+deepseek's 4.2, and `kbm/llm_profiles.py` runs it at `num_ctx=8192` rather than 4096, which
+roughly doubles the KV cache. Steady state becomes **~10.7 GB** and the upload peak
+**~15.2 GB** — still comfortably inside 24 GB, but no longer inside 12.
 
-Numbers from `evaluation/EVALUATION.md §6`.
+Two notes on that context number. It is **our** choice, not the model's: `ollama show
+qwen3:8b` reports a real context length of **40960**, and 8192 is a deliberate cap. Raising
+it costs KV cache linearly, and it is most tempting in `grounded` mode, where retrieved
+chunks compete with a growing tool transcript for the same window. And a tool round does
+not add a new model to the card — the sandbox is a separate CPU process, and
+`search_documents` re-enters the embedder and reranker that are already resident. What
+grows is the transcript, i.e. the KV cache, which is why the split above matters.
+
+The gap between steady state and upload peak is why 24 GB was the right buy rather than
+12 GB. It is also why **ingest is serialised** (`_ingest_pool`, one worker): two extractions
+at once would each want ~4.5 GB on top of the steady state the query models never give
+back. One worker turns a possible OOM into a queue.
+
+Numbers from `evaluation/EVALUATION.md §6`; the qwen3 weight figure is `ollama list`.
 
 ---
 
@@ -121,7 +165,7 @@ Numbers from `evaluation/EVALUATION.md §6`.
 
 | Component | Tier | Why there |
 |---|---|---|
-| `deepseek-math-7b-rl:Q4` | GPU | 7B params of matrix multiply per token |
+| The generator (`KBM_LLM_MODEL`) | GPU | 7–8B params of matrix multiply per token |
 | `bge-reranker-v2-m3` | GPU | 568M-param transformer, 20 pairs per query |
 | `bge-small-en-v1.5` | GPU | 33M-param encoder, query + ingest |
 | Marker / Surya | GPU | vision models over page images; ingest only |
@@ -130,6 +174,8 @@ Numbers from `evaluation/EVALUATION.md §6`.
 | RRF fusion | CPU | arithmetic on ~20 rank positions |
 | FastAPI + SSE framing | CPU | HTTP, auth, streaming |
 | Chunk splitting | CPU | string operations over the `.mmd` |
+| Python sandbox (`kbm/tools/sandbox.py`) | CPU, own process | executes model-written code, reached from either tool protocol; a forked interpreter with rlimits and a scrubbed env, never a thread and never the GPU. See `DEPLOYMENT.md §8`. |
+| Tool protocols (`kbm/tools/tir.py`, `kbm/tools/agent.py`) | CPU, negligible | pure string and schema handling — deciding what the transcript looks like. The work they trigger is the sandbox (CPU) and, for `agent.search_documents`, a full re-entry of the retrieval rows above (CPU + GPU). See `AGENT.md`. |
 | Telemetry writer | CPU | one JSON line appended per answer |
 | Idle-stop watchdog | CPU | a timer — the cheapest thing here, and the entire cost model |
 | Uploaded PDFs | — | **not retained**; held in a temp dir for the length of the ingest |

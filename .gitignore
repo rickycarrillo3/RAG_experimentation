@@ -25,6 +25,11 @@ secrets.json
 
 # ── Python ─────────────────────────────────────────────────────────────────────
 __pycache__/
+# Ruff writes a .gitignore inside its own cache, so git never saw this one anyway.
+# Listed explicitly because relying on a tool to ignore itself is a dependency on
+# that tool's behaviour, and a stale cache here is not harmless: it silently turned
+# a `ruff check --fix` run into a no-op that reported "All checks passed".
+.ruff_cache/
 *.py[cod]
 *.pyo
 *.pyd

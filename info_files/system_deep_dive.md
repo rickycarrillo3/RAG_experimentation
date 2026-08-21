@@ -96,7 +96,7 @@ pass, so it can judge specific relevance rather than topical similarity. It is t
 to run over the whole corpus, which is why it only ever rescores the shortlist RRF produced.
 RRF still does the "cast a wide net" job; it just no longer decides the final order.
 
-See `../knowledge-base-math/retrieval.py` for the implementation and
+See `../knowledge-base-math/kbm/retrieval.py` for the implementation and
 `../knowledge-base-math/evaluation/EVALUATION.md` for whether it measurably earns its 2.2GB.
 
 ---

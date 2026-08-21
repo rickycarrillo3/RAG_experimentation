@@ -64,11 +64,35 @@ class Timings(BaseModel):
     rerank_ms: float | None = None
     ttft_ms: float | None = Field(None, description="Time to first generated token")
     generate_ms: float | None = None
+    tool_ms: float | None = Field(
+        None,
+        description="Total wall-clock spent in the Python sandbox across all tool rounds. "
+                    "The sandbox runs between generation passes, so this is a slice OF "
+                    "generate_ms rather than a sibling of it — broken out so a slow answer "
+                    "can be attributed to decoding rather than to computing. Sandbox only, "
+                    "both tool protocols; mid-answer retrieval is search_ms.",
+    )
+    search_ms: float | None = Field(
+        None,
+        description="Wall-clock spent on searches the MODEL asked for mid-answer (agent "
+                    "mode). A sibling of tool_ms rather than part of it: folding retrieval "
+                    "into a field documented as sandbox time would make every previously "
+                    "logged tool_ms incomparable. The upfront retrieval is still reported "
+                    "as bm25_ms/dense_ms/rrf_ms/rerank_ms, which now accumulate across "
+                    "every search in the request rather than describing a single one.",
+    )
 
 
 # ── SSE event payloads ────────────────────────────────────────────────────────
 # Emitted in order: `sources` once, `token` many, `done` once. `error` may replace
 # any of them. Each is sent as an SSE frame with a matching `event:` name.
+#
+# `sources` stays exactly-once even in agent mode, where the model can retrieve again
+# part-way through the answer. The frame's job is to fill the dead time BEFORE the first
+# token, and by the time a mid-answer search runs that job is done; a second frame would
+# double-render in any client written to this contract. The complete list — upfront plus
+# anything found later — is on `done`, and `done.late_sources` says how much of it
+# arrived after generation started.
 
 class SourcesEvent(BaseModel):
     type: Literal["sources"] = "sources"
@@ -104,6 +128,44 @@ class DoneEvent(BaseModel):
     )
     continuations: int = Field(
         0, description="Continuation passes used to finish the answer (0 = finished first try)"
+    )
+    tool_calls: int = Field(
+        0,
+        description="Python programs the model ran while answering, under either tool "
+                    "protocol (TIR's text blocks or agent mode's native calls). 0 for a "
+                    "model with neither, and 0 for a model that did not need to compute "
+                    "anything. Non-zero means part of this answer was calculated rather "
+                    "than recalled. Searches are counted separately, in `searches`.",
+    )
+    protocol: Literal["tools", "tir", "none"] = Field(
+        "none",
+        description="Which tool arm produced this answer. On /healthz this is a property of "
+                    "the deployment; here it is a property of the ANSWER, which is what the "
+                    "bake-off needs — 'which arm was this?' is the first question asked of "
+                    "any single result, and inferring it from the model tag stops working "
+                    "the moment one model can run either protocol (qwen3 can).",
+    )
+    searches: int = Field(
+        0,
+        description="Searches the model itself asked for while answering (agent mode). "
+                    "The unconditional retrieval every request begins with is NOT counted "
+                    "here — this is only the model deciding it needed to look again.",
+    )
+    late_sources: int = Field(
+        0,
+        description="How many entries of `sources` were found by a mid-answer search "
+                    "rather than by the upfront retrieval. `mode` is deliberately not "
+                    "revised when this is non-zero: it records the provenance decision "
+                    "the calibrated relevance floor made up front, on the question as "
+                    "asked. This field is how a client sees that the answer became better "
+                    "grounded than that decision, without the label quietly changing "
+                    "meaning between one answer and the next.",
+    )
+    tool_errors: int = Field(
+        0,
+        description="Of those programs, how many failed — refused by the sandbox policy, "
+                    "raised, or timed out. The model sees the error text and usually "
+                    "recovers, so this is a quality signal rather than a request failure.",
     )
 
 
@@ -171,5 +233,13 @@ class Feedback(BaseModel):
 class Health(BaseModel):
     status: Literal["ok"] = "ok"
     model: str
+    protocol: Literal["tools", "tir", "none"] = Field(
+        "none",
+        description="Which tool arm is actually live: native tool calling, TIR's text "
+                    "protocol, or neither. The EFFECTIVE value, after the startup probe — "
+                    "KBM_TOOLS can ask for a protocol the model has no template for, and "
+                    "the server downgrades rather than failing every answer, so this is "
+                    "the only place that fact is visible.",
+    )
     model_loaded: bool = Field(..., description="Whether Ollama currently holds the generator resident")
     retrieval_ready: bool

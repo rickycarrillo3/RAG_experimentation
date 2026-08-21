@@ -19,16 +19,20 @@ import random
 import sys
 import time
 
+from langchain_chroma import Chroma
 from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
-from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 
-from chunking import CHUNKERS, assign_chunk_ids  # assign_chunk_ids re-exported for callers
-# Index locations come from retrieval.py, not a local copy: if ingest wrote to one
+from kbm.chunking import (  # assign_chunk_ids re-exported for callers
+    CHUNKERS,
+    assign_chunk_ids,
+)
+
+# Index locations come from kbm/retrieval.py, not a local copy: if ingest wrote to one
 # directory while retrieval read from another, every query would return nothing and
 # the indexes would look empty rather than misplaced.
-from retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, chunk_id, load_embeddings
+from kbm.retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, chunk_id, load_embeddings
 
 
 def load_mmd_files(paths: list[str]) -> list[Document]:

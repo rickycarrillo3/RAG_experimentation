@@ -76,15 +76,24 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-# This lives in evaluation/; the pipeline modules (retrieval, config, …) are one level up.
+# This lives in evaluation/; the library package (kbm) is one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
-from config import OLLAMA_BASE_URL
-from retrieval import OLLAMA_MODEL
+from api.chat import PrefillEcho
+from kbm.config import OLLAMA_BASE_URL
+from kbm.llm_profiles import profile_for
+from kbm.retrieval import OLLAMA_MODEL
+from kbm.tools import agent, sandbox, tir
 
 EVAL_DIR = "evaluation"
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")
@@ -122,6 +131,40 @@ DEFAULT_TEMPERATURE = 0.8   # SC needs diversity; at temperature 0 every sample 
 DEFAULT_TOP_P = 0.95
 NUM_PREDICT = 512           # room to reason, but these are short problems
 KEEP_ALIVE = "30m"          # keep the model resident across ~200 generations
+
+# ── Tool arms ─────────────────────────────────────────────────────────────────
+# Both extra arms are closed-book like the CoT one. They bind run_python ONLY — never
+# search_documents — and Generator's docstring says why.
+TIR_SYSTEM = (
+    "Please integrate natural language reasoning with programs to solve the problem "
+    "above, and put your final answer within \\boxed{}."
+)
+TIR_USER = (
+    "{question}\n\n"
+    "Give the final answer on its own last line as: Final answer: \\boxed{{<answer>}} — "
+    "a single number or expression inside the box, no units and no words."
+)
+
+# A tool trace spends its budget three times over: reason, write a program, then reason
+# about the result. 512 is the CoT arm's number and would truncate most traces before the
+# answer — which would look like a model that cannot do the problem.
+TOOL_NUM_PREDICT = 1024
+
+# The tools arm's system prompt. Deliberately NOT api/chat.py's AGENT_RULES: that block is
+# written for a tutor answering a student out of retrieved documents, and this benchmark is
+# closed-book and scored by parsing \boxed{}. Same relationship TIR_SYSTEM has to
+# chat.py's TIR_RULES, and for the same reason — the protocol is shared, the framing is not.
+TOOLS_SYSTEM = (
+    "Please reason step by step. You can call run_python to compute anything you are not "
+    "certain of by hand; print what you want to see. Put your final answer within "
+    "\\boxed{}."
+)
+
+# run_python's schema, taken from agent.TOOL_SCHEMAS rather than written out again, so the
+# description the model is tuned against here is the one that ships.
+_PY_TOOL_SCHEMA = next(
+    t for t in agent.TOOL_SCHEMAS if t["function"]["name"] == agent.TOOL_PYTHON
+)
 RESAMPLE_TRIALS = 400       # bootstrap draws per (question, k)
 
 # The answer must be machine-extractable or nothing downstream is measurable. deepseek-math
@@ -356,36 +399,152 @@ def vote_accuracy_at_k(answers: list[str | None], gold: set[str], k: int,
 
 # ── Generation ─────────────────────────────────────────────────────────────────
 
+class Generator:
+    """One decoding configuration, in the CoT, the TIR or the native-tools arm.
+
+    The arms differ in more than a prompt — two of them are multi-pass loops with a Python
+    interpreter in the middle — so they are one object with one `run()` rather than three
+    call sites the caller has to remember to keep in step. What they must NOT differ in is
+    the protocol: the code fences, the stop word, the round cap and the splice come from
+    kbm/tools/tir.py, and the tool schemas and budgets from kbm/tools/agent.py — the same
+    two modules api/routes.py drives. An eval that reimplemented them would drift from what
+    ships, which is the mistake kbm/retrieval.py exists to prevent.
+
+    ⚠️ The tool arms bind run_python ONLY, never search_documents, and that asymmetry with
+    the server is deliberate rather than an oversight. This benchmark is closed-book by
+    construction (§11, §11.1b): it measures the generator's reasoning stability, and routing
+    a question through retrieval would make a wrong answer un-attributable — the model's
+    error and the retriever's become the same number. So the server binds three tools and
+    this binds one, and the reason is written here so the difference is never mistaken for
+    drift.
+    """
+
+    def __init__(self, model: str, temperature: float, top_p: float,
+                 seed: int | None = None, use_tir: bool = False, use_tools: bool = False,
+                 num_predict: int | None = None):
+        self.model = model
+        self.use_tir = use_tir
+        self.use_tools = use_tools
+        self.llm = ChatOllama(
+            model=model,
+            base_url=OLLAMA_BASE_URL,
+            temperature=temperature,
+            top_p=top_p,
+            num_predict=num_predict or NUM_PREDICT,
+            # The model's real window, not Ollama's default — an overflow is answered by
+            # shifting from the LEFT, which eats the system prompt first.
+            num_ctx=profile_for(model).num_ctx,
+            # Thinking mode, from the same profile the server reads (api/deps.py passes it
+            # too). Omitting it was a real bug and a silent one: qwen3 defaults thinking ON,
+            # the <think> block does not land in `.text` at all (it goes to
+            # additional_kwargs["reasoning_content"]), and it eats the entire num_predict
+            # budget — so every answer came back with no \boxed{} and scored unparseable,
+            # which reads exactly like a model that cannot do the questions. The kwarg is
+            # `reasoning`, NOT `think` — see ERRORS.md.
+            reasoning=profile_for(model).think,
+            keep_alive=KEEP_ALIVE,
+            **({"seed": seed} if seed is not None else {}),
+        )
+        self.chain = ChatPromptTemplate.from_template(SC_PROMPT) | self.llm | StrOutputParser()
+        self.llm_tools = self.llm.bind_tools([_PY_TOOL_SCHEMA]) if use_tools else None
+
+    def run(self, question: str) -> tuple[str, int, int]:
+        """(full text, tool rounds used, tool failures). Never raises."""
+        if self.use_tools:
+            return self._run_tools(question)
+        if not self.use_tir:
+            return self.chain.invoke({"question": question}), 0, 0
+
+        messages = [
+            SystemMessage(content=TIR_SYSTEM),
+            HumanMessage(content=TIR_USER.format(question=question)),
+        ]
+        generated, rounds, errors = "", 0, 0
+
+        # +1: the final pass that writes the answer after the last computation.
+        for _ in range(tir.MAX_TOOL_ROUNDS + 1):
+            msgs = messages + ([AIMessage(content=generated)] if generated else [])
+            echo = PrefillEcho(generated)
+            produced = echo.feed(str(self.llm.invoke(msgs, stop=tir.STOP_WORDS).text))
+            if echo.mismatch or not produced:
+                break
+            generated += produced
+
+            program = tir.pending_program(generated)
+            if program is None:
+                break
+            rounds += 1
+            result = sandbox.run_python(program)
+            errors += not result.ok
+            generated += tir.format_result(result.output)
+
+        return generated, rounds, errors
+
+    def _run_tools(self, question: str) -> tuple[str, int, int]:
+        """The native tool-calling arm. Same budget as TIR, so C and E are comparable.
+
+        No PrefillEcho anywhere: a tool call closes the assistant turn, so each pass opens a
+        fresh one and there is no prefill to reconcile. Same property api/routes.py relies
+        on — see its `turns` comment.
+        """
+        messages = [
+            SystemMessage(content=TOOLS_SYSTEM),
+            HumanMessage(content=TIR_USER.format(question=question)),
+        ]
+        text, rounds, errors = "", 0, 0
+
+        for _ in range(agent.MAX_PYTHON_ROUNDS + 1):
+            reply = self.llm_tools.invoke(messages)
+            if reply.text:
+                text += ("\n" if text else "") + str(reply.text)
+            calls = reply.tool_calls or []
+            if not calls:
+                break
+            messages.append(reply)
+            for tc in calls[: agent.MAX_CALLS_PER_PASS]:
+                # Every call gets exactly one ToolMessage, including rejects — a dangling
+                # call breaks the chat template's rendering. Same invariant as the server.
+                args, err = agent.coerce_args(tc["name"], tc.get("args"))
+                if err:
+                    messages.append(ToolMessage(content=err, tool_call_id=tc["id"]))
+                    continue
+                rounds += 1
+                result = sandbox.run_python(args["code"])
+                errors += not result.ok
+                messages.append(ToolMessage(content=result.output, tool_call_id=tc["id"]))
+        return text, rounds, errors
+
+
 def build_chain(temperature: float, top_p: float, seed: int | None = None,
-                model: str = OLLAMA_MODEL):
-    llm = ChatOllama(
-        model=model,
-        base_url=OLLAMA_BASE_URL,
-        temperature=temperature,
-        top_p=top_p,
-        num_predict=NUM_PREDICT,
-        keep_alive=KEEP_ALIVE,
-        **({"seed": seed} if seed is not None else {}),
-    )
-    return ChatPromptTemplate.from_template(SC_PROMPT) | llm | StrOutputParser()
+                model: str = OLLAMA_MODEL, *, use_tir: bool = False,
+                use_tools: bool = False, num_predict: int | None = None) -> Generator:
+    """Kept as the constructor name the rest of the file uses. Returns a Generator now,
+    because two of the three arms are loops rather than a single chain invocation."""
+    return Generator(model, temperature, top_p, seed=seed, use_tir=use_tir,
+                     use_tools=use_tools, num_predict=num_predict)
 
 
-def generate(chain, question: str) -> tuple[str, float]:
-    """One generation, returning (text, seconds). A failed call is an empty sample, not a crash."""
+def generate(gen: "Generator", question: str) -> tuple[str, float, int, int]:
+    """One generation: (text, seconds, tool rounds, tool failures).
+
+    A failed call is an empty sample, not a crash — one dropped Ollama call must not lose
+    a two-hour run.
+    """
     t0 = time.perf_counter()
     try:
-        text = chain.invoke({"question": question})
-    except Exception as e:                       # a dropped Ollama call must not lose the run
-        text = ""
+        text, rounds, errors = gen.run(question)
+    except Exception as e:
+        text, rounds, errors = "", 0, 0
         print(f"    [warn] generation failed: {e}")
-    return text, time.perf_counter() - t0
+    return text, time.perf_counter() - t0, rounds, errors
 
 
 def run_question(item: dict, greedy_chain, sample_chain, n_samples: int,
                  concurrency: int) -> dict:
     gold = gold_forms(item)
 
-    greedy_text, greedy_s = generate(greedy_chain, item["question"])
+    greedy_text, greedy_s, greedy_rounds, greedy_tool_errors = generate(
+        greedy_chain, item["question"])
     greedy_ans = extract_answer(greedy_text)
 
     def one(_):
@@ -397,8 +556,10 @@ def run_question(item: dict, greedy_chain, sample_chain, n_samples: int,
     else:
         outputs = [one(i) for i in range(n_samples)]
 
-    texts = [t for t, _ in outputs]
-    times = [s for _, s in outputs]
+    texts = [t for t, _, _, _ in outputs]
+    times = [s for _, s, _, _ in outputs]
+    rounds = [r for _, _, r, _ in outputs]
+    tool_errs = [e for _, _, _, e in outputs]
     answers = [extract_answer(t) for t in texts]
 
     counts = Counter(a for a in answers if a is not None)
@@ -421,6 +582,13 @@ def run_question(item: dict, greedy_chain, sample_chain, n_samples: int,
         "modal_correct": is_correct(top_answer, gold),
         "distinct_answers": len(counts),
         "mean_sample_s": round(statistics.mean(times), 2) if times else 0.0,
+        # Tool bookkeeping. Zero throughout in the CoT arm, and zero in a tool arm for a
+        # model that never reaches for the tool — which is the first thing to check in the
+        # report, because a tool the model ignores buys nothing however good the sandbox is.
+        "greedy_tool_rounds": greedy_rounds,
+        "greedy_tool_errors": greedy_tool_errors,
+        "mean_tool_rounds": round(statistics.mean(rounds), 2) if rounds else 0.0,
+        "tool_errors": sum(tool_errs),
     }
 
 
@@ -428,15 +596,20 @@ def run_question(item: dict, greedy_chain, sample_chain, n_samples: int,
 
 def run_tier(items: list[dict], model: str, samples: int, ks: list[int],
              temperature: float, top_p: float, concurrency: int, seed: int,
-             tier_label: str, questions_path: str, out_path: str) -> dict:
+             tier_label: str, questions_path: str, out_path: str, *,
+             use_tir: bool = False, use_tools: bool = False,
+             num_predict: int | None = None) -> dict:
     """Generate and score one (model, tier) run, write its JSON, and return the record.
 
     Both the single-model CLI and evaluation/model_bakeoff.py call this. A bake-off that
     reimplemented the loop would drift from the thing it claims to be comparing — the same
     trap CLAUDE.md records for retrieval and the index paths.
     """
-    greedy_chain = build_chain(0.0, 1.0, model=model)
-    sample_chain = build_chain(temperature, top_p, model=model)
+    # Keyword-only arm flags with defaults, so evaluation/model_bakeoff.py's positional
+    # call keeps working unchanged and gets the CoT arm it has always measured.
+    arm = {"use_tir": use_tir, "use_tools": use_tools, "num_predict": num_predict}
+    greedy_chain = build_chain(0.0, 1.0, model=model, **arm)
+    sample_chain = build_chain(temperature, top_p, model=model, **arm)
 
     t0 = time.perf_counter()
     per_q = []
@@ -466,7 +639,9 @@ def run_tier(items: list[dict], model: str, samples: int, ks: list[int],
         "temperature": temperature,
         "top_p": top_p,
         "trials": RESAMPLE_TRIALS,
-        "num_predict": NUM_PREDICT,
+        "num_predict": num_predict or NUM_PREDICT,
+        "tir": use_tir,
+        "tools": use_tools,
         "questions": questions_path,
         "tier": tier_label,
         "n_questions": len(items),
@@ -512,8 +687,10 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
     greedy_acc = sum(q["greedy_correct"] for q in per_q) / n
     mean_sample_s = statistics.mean(q["mean_sample_s"] for q in per_q)
 
+    arm = ("native tools (python sandbox)" if cfg.get("tools")
+           else "TIR (python sandbox)" if cfg.get("tir") else "CoT")
     print("\n" + "=" * 74)
-    print(f"SELF-CONSISTENCY — {cfg['model']}, closed-book, {n} questions")
+    print(f"SELF-CONSISTENCY — {cfg['model']}, {arm}, closed-book, {n} questions")
     print(f"  {cfg['samples']} samples/question at temperature={cfg['temperature']}, "
           f"top_p={cfg['top_p']}; k estimated by {cfg['trials']} resamples")
     print("=" * 74)
@@ -532,7 +709,31 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
     print("\nk=1 is a SAMPLED single answer, not greedy — it is the honest control for the")
     print("  voting itself (same temperature, no vote). Greedy is what the system does now.")
     print("est. s/query assumes samples run serially, which is the pod default; with")
-    print(f"  OLLAMA_NUM_PARALLEL>1 the wall clock falls but the GPU cost does not.")
+    print("  OLLAMA_NUM_PARALLEL>1 the wall clock falls but the GPU cost does not.")
+
+    # TOOL USE — read this BEFORE the accuracy table in a tool arm. EVALUATION.md §12.4
+    # item 1: "greedy answers that ran a program: 0/30" means the arm measured plain CoT
+    # whatever the accuracy column says, so the report says so rather than letting the
+    # number be read as a verdict on the tool.
+    if cfg.get("tir") or cfg.get("tools"):
+        used = [q for q in per_q if q["greedy_tool_rounds"] > 0]
+        mean_rounds = statistics.mean(q["mean_tool_rounds"] for q in per_q)
+        tool_errors = sum(q["tool_errors"] + q["greedy_tool_errors"] for q in per_q)
+        total_progs = sum(q["greedy_tool_rounds"] for q in per_q) + sum(
+            q["mean_tool_rounds"] * cfg["samples"] for q in per_q)
+        print("\nTOOL USE")
+        print(f"  greedy answers that ran a program: {len(used)}/{n}")
+        print(f"  mean programs per sampled answer:  {mean_rounds:.2f}")
+        print(f"  sandbox failures (refused/raised/timed out): {tool_errors} "
+              f"of ~{total_progs:.0f} programs")
+        if not used:
+            print("  The model never reached for the tool. Whatever the accuracy column says,")
+            print("  it is not measuring this arm — check the prompt reached the model, and")
+            print("  that the protocol fired, before reading anything else here.")
+        elif tool_errors > total_progs * 0.25:
+            print("  More than a quarter of programs failed. Read the sandbox log lines: an")
+            print("  import the allow-list refuses is a bug in kbm/tools/sandbox.py's")
+            print("  ALLOWED_IMPORTS, not a fact about the model.")
 
     # Where the errors live. This is the part that decides the answer, not the table.
     unanimous_wrong = [q for q in per_q if not q["modal_correct"] and q["modal_share"] >= 0.8]
@@ -606,6 +807,20 @@ def main():
                    help=f"Ollama tag of the generator under test (default: {OLLAMA_MODEL}). "
                         "Everything else — prompt, questions, extraction, scoring — is held "
                         "identical, so the only difference between two runs is the model.")
+    p.add_argument("--tir", action="store_true",
+                   help="Tool-integrated reasoning: the model writes Python in a ```python "
+                        "block and the sandbox runs it between passes. Only meaningful for a "
+                        "model trained for it (Qwen2.5-Math, Qwen3); a CoT-only model ignores "
+                        "the prompt and the arm silently measures CoT.")
+    p.add_argument("--tools", action="store_true",
+                   help="Native tool calling: bind run_python as a JSON tool (kbm/tools/"
+                        "agent.py) instead of TIR's text protocol. Needs a model with a tools "
+                        "template (qwen3). Mutually exclusive with --tir — this is arm E of "
+                        "EVALUATION.md §12, and its whole purpose is to be compared against "
+                        "arm C/D on the same model.")
+    p.add_argument("--num-predict", type=int,
+                   help=f"Decode cap per pass (default: {NUM_PREDICT} for CoT, "
+                        f"{TOOL_NUM_PREDICT} for --tir/--tools)")
     p.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     p.add_argument("--top-p", type=float, default=DEFAULT_TOP_P)
     # A positive int, so that `--limit 0` is a loud error rather than silently falling
@@ -633,8 +848,15 @@ def main():
     # Per-tier AND per-model default output: one shared filename would mean an easy run
     # silently destroying the baseline run it is supposed to be compared against — and,
     # once models are swappable, a challenger destroying the incumbent it is measured against.
+    if args.tir and args.tools:
+        p.error("--tir and --tools are two tool protocols and a model gets one. "
+                "kbm/config.py enforces the same exclusivity for the server.")
+    num_predict = args.num_predict or (
+        TOOL_NUM_PREDICT if (args.tir or args.tools) else NUM_PREDICT)
     out_path = args.out or os.path.join(
-        RESULTS_DIR, f"self_consistency_{tier_label}_{model_slug(args.model)}.json")
+        RESULTS_DIR,
+        f"self_consistency_{tier_label}_{model_slug(args.model)}"
+        f"{'_tir' if args.tir else ''}{'_tools' if args.tools else ''}.json")
 
     if args.report_only:
         with open(args.report_only, encoding="utf-8") as f:
@@ -666,7 +888,19 @@ def main():
         p.error(f"No questions in {questions_path}")
 
     print(f"Loaded {len(items)} questions from {questions_path}  [tier: {tier_label}]")
-    print(f"Generator: {args.model} @ {OLLAMA_BASE_URL}")
+    print(f"Generator: {args.model} @ {OLLAMA_BASE_URL}"
+          f"{'  [TIR: python sandbox]' if args.tir else ''}"
+          f"{'  [TOOLS: native tool calling, python sandbox]' if args.tools else ''}")
+    prof = profile_for(args.model)
+    if args.tir and not prof.tir:
+        print(f"  [warn] {args.model} has no TIR profile (kbm/llm_profiles.py). Running the "
+              "arm anyway, but a model not trained on the ```python protocol will ignore it "
+              "and this quietly measures plain CoT.")
+    if args.tools and not prof.tools:
+        print(f"  [warn] {args.model} is not marked tools-capable (kbm/llm_profiles.py). If "
+              "Ollama has no tools template every request fails; if it has one but the model "
+              "was not trained to use it, this quietly measures plain CoT. Check "
+              "`ollama show` before reading the numbers.")
     print(f"Plan: {len(items)} × (1 greedy + {args.samples} sampled) = "
           f"{len(items) * (args.samples + 1)} generations. This takes a while.")
     if args.dry_run:
@@ -677,7 +911,8 @@ def main():
         return
 
     record = run_tier(items, args.model, args.samples, ks, args.temperature, args.top_p,
-                      args.concurrency, args.seed, tier_label, questions_path, out_path)
+                      args.concurrency, args.seed, tier_label, questions_path, out_path,
+                      use_tir=args.tir, use_tools=args.tools, num_predict=num_predict)
     acc_at_k = {int(k): v for k, v in record["accuracy_at_k"].items()}
     print_report(record["per_question"], acc_at_k, ks, record["config"])
     print(f"\nWrote {out_path}  (wall clock {record['config']['wall_clock_s'] / 60:.1f} min)")

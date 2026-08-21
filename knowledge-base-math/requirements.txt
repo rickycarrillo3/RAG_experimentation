@@ -22,6 +22,11 @@ sentence-transformers
 # then reports the reranker as a missing config.json. See ERRORS.md 2026-08-19.
 hf_transfer
 pylatexenc
+# Listed explicitly although torch already pulls it in transitively. Two things import it
+# directly now — evaluation/verify_reasoning_set.py, and (inside the subprocess)
+# kbm/tools/sandbox.py's allow-list, which is the library Qwen's TIR traces reach for first. A
+# dependency you rely on by name belongs in the file that names dependencies.
+sympy
 # 6.17.3, NOT 6.18.0. This is a three-way pin, not a preference:
 #   marker-pdf<2.0 (above) -> transformers<5.0.0 -> huggingface-hub<1.0
 #   gradio 6.18.0          -> huggingface-hub>=1.2.0

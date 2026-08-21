@@ -20,15 +20,15 @@ import os
 import sys
 import time
 
-# This lives in evaluation/; the pipeline modules (chunking, ingest, retrieval) are one level up.
+# This lives in evaluation/; the library package (kbm) and the ingest entry point are one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from eval import load_goldset, run_config
 from langchain_chroma import Chroma
 
-from chunking import CHUNKERS
-from eval import load_goldset, run_config
 from ingest import BM25_DIR, CHROMA_DIR, ingest
-from retrieval import load_bm25, load_chroma, load_embeddings, load_reranker
+from kbm.chunking import CHUNKERS
+from kbm.retrieval import load_bm25, load_chroma, load_embeddings, load_reranker
 
 # (key, model, normalize_latex) — key names the index/collection.
 EMBED_CONFIGS = [

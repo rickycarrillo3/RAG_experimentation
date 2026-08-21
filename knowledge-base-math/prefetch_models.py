@@ -37,7 +37,7 @@ def _hr() -> None:
 
 def prefetch_embedders(models: list[str]) -> list[str]:
     """Load each embedder once so its files land in the HF cache. Returns failures."""
-    import retrieval
+    from kbm import retrieval
 
     failures = []
     for name in dict.fromkeys(models):  # dedupe, preserve order
@@ -53,7 +53,7 @@ def prefetch_embedders(models: list[str]) -> list[str]:
 
 
 def prefetch_reranker() -> list[str]:
-    import retrieval
+    from kbm import retrieval
 
     print(f"  ↓ reranker {retrieval.RERANK_MODEL}")
     t0 = time.perf_counter()
@@ -99,8 +99,8 @@ def main() -> int:
     args = parser.parse_args()
 
     # Imported after arg parsing so --help stays instant.
-    import retrieval
-    from config import resolve_device
+    from kbm import retrieval
+    from kbm.config import resolve_device
 
     embed_models = args.embed_models or [retrieval.EMBED_MODEL]
 

@@ -60,7 +60,7 @@ The failure mode reranking is *supposed* to fix is the topically-right-but-speci
 chunk: retrieving the general section on integration when the student needs the worked example
 matching their actual problem. **The eval must be able to see that distinction, or it's useless.**
 
-All of this lives in one place — `retrieval.py` — imported by `query.py`, `app.py`, and
+All of this lives in one place — `kbm/retrieval.py` — imported by `query.py`, `app.py`, and
 `eval.py`. That is load-bearing: an eval that measures a *reimplementation* of the pipeline
 rather than the pipeline itself will drift from what you ship and quietly start lying.
 
@@ -162,7 +162,7 @@ Soft matching credits the neighbours.
 
 Report both, and read the **gap** between them: a large `recall@5_soft − recall@5` means retrieval
 is finding the right *region* and chunking is splitting the answer badly. That is a **chunking**
-finding (see `chunking.py`'s `eqaware` strategies), not a retrieval one, and no reranker will fix it.
+finding (see `kbm/chunking.py`'s `eqaware` strategies), not a retrieval one, and no reranker will fix it.
 
 **recall@pool is the diagnostic, and it's the one people forget.** The reranker can only reorder
 what BM25 and dense retrieval already found. If the gold chunk isn't in the pool, reranking
@@ -370,7 +370,7 @@ Three findings, two of which **reverse or refine** what v1 (the leaky RL-paper e
 
 3. **A chunking gap is now visible.** hybrid R@5 `0.82` vs R@5 **soft** `0.91` — a 9-point jump
    from counting the adjacent chunk as a hit. That gap is the answer being split across a
-   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (see `chunking.py`),
+   400-char/80-overlap boundary, not a retrieval miss. This is a *chunking* finding (see `kbm/chunking.py`),
    surfaced only because the harness now reports soft matching.
 
 **Inconclusive on this corpus:** the `top_k` pool-size win looked huge in v1 but does **not**
@@ -462,9 +462,9 @@ Each of these is a reason the eval is a *floor*, not a verdict on the product.
 
 - **`hybrid+rerank` beats `hybrid` on recall@5 / MRR** → the reranker earns its 2.2GB. Keep it.
 - **No meaningful delta** → drop the reranker. That is a real result, not a failure, and it
-  redirects effort to the likelier win: **math-aware chunking** (`chunking.py`, `eqaware*`).
+  redirects effort to the likelier win: **math-aware chunking** (`kbm/chunking.py`, `eqaware*`).
 - **`recall@pool` is low across the board** → stop tuning retrieval. The ceiling is upstream:
-  extraction (`extract.py`, Marker) and chunking (`chunking.py`).
+  extraction (`extract.py`, Marker) and chunking (`kbm/chunking.py`).
 - **`bm25` ≈ `hybrid`** → suspect the gold set (§3): the questions are probably parroting chunk
   vocabulary. Rewrite them before trusting anything else in the table.
 
@@ -591,7 +591,7 @@ Isolating axis: **fix the context, vary only the model.** Two conditions per que
 **The `oracle − retrieved` gap attributes end-to-end quality loss to retrieval versus
 generation** — nothing currently measures that.
 
-Candidates: `deepseek-math-7b-rl:Q4` (current, set in `retrieval.py:OLLAMA_MODEL`), the
+Candidates: `deepseek-math-7b-rl:Q4` (current, set in `kbm/retrieval.py:OLLAMA_MODEL`), the
 same at Q8, `Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. Q4 quantization costs accuracy on
 exactly the multi-step arithmetic the model exists to do, so quantization is a candidate
 axis in its own right, not a fixed background condition.
@@ -679,25 +679,54 @@ correctness, the judge is needed only for faithfulness and relevance.
 
 `api/` now labels every answer `grounded` or `general` (`api/chat.py:decide_mode`), and
 **the server writes the provenance itself** rather than asking the model to — one
-`Sources:` line appended to every answer, naming the documents in `grounded` mode and
-reading `Sources: general knowledge` in `general` mode. Measured: instructed to state its
-provenance, `deepseek-math-7b-rl` ignored the instruction and answered directly — it is a
-solver, not an instruction-follower, exactly as §3 says.
+`Sources:` line appended to a `grounded` answer, naming the documents it retrieved.
+Measured: instructed to state its provenance, `deepseek-math-7b-rl` ignored the
+instruction and answered directly — it is a solver, not an instruction-follower, exactly
+as §3 says.
+
+A `general` answer carries no footer: the line names documents, and there are none to
+name. That is a rendering choice only — the label itself is unchanged and still on the
+`sources` and `done` SSE frames, which is where the eval reads it.
 
 This is what makes faithfulness measurable at all. Without a trustworthy label, an answer
 grounded in documents and one confabulated from parametric memory are indistinguishable,
 and any faithfulness number is computed over a mixture of the two.
 
-**`KBM_RELEVANCE_FLOOR` is uncalibrated.** It is on a **sigmoid (0–1) scale**, not raw
-logits — `sentence_transformers.CrossEncoder` applies the model's activation and
-`bge-reranker-v2-m3` carries a Sigmoid. Observed: unrelated text ~1e-5–1.5e-3, weakly
-on-topic ~0.19, correct chunk ~0.94. Default is 0.01, a guess from a handful of pairs.
-**Sweep it against the `no_answer` slice and set it from data** before quoting any
-abstention number.
+**`KBM_RELEVANCE_FLOOR` is calibrated — 0.15**, by `evaluation/calibrate_floor.py`.
+It is on a **sigmoid (0–1) scale**, not raw logits (`sentence_transformers.CrossEncoder`
+applies the model's activation and `bge-reranker-v2-m3` carries a Sigmoid).
+
+The calibration did not wait for the `no_answer` slice, because an external benchmark
+turned out to be the better instrument for this particular threshold and the slice still
+does not exist. Two datasets, bounding the answer from opposite sides:
+
+- **Our corpus, real pipeline** (19 on-topic gold-set questions, 18 written to be absent
+  from the ingested chapter): off-topic max **0.0395**, on-topic min **0.5965**. An empty
+  gap of more than an order of magnitude; 0.15 is its geometric midpoint. The old 0.01
+  sat *below* the off-topic max and abstained on only 67% of them.
+- **ARQMath-1** (`hcju/mseqa`, 34,813 human-graded pairs): pairwise AUC **0.60**, and the
+  median human-judged-*irrelevant* pair scores **0.63**.
+
+Those two look contradictory and are not. ARQMath's negatives are pooled hard negatives —
+documents about the right topic that fail to answer the question — so it measures a
+fine-grained judgement, and the AUC says bge-reranker-v2-m3 is close to useless at it.
+Our floor only needs the coarse one (is this chunk about what was asked), where the same
+model separates cleanly. **The floor protects against the wrong book, not the wrong
+paragraph of the right book.** Do not quote an abstention number for the latter.
+
+Still to do: re-calibrate from logged family questions (§10.9); 19 questions from one
+chapter is a bracket, not a distribution. The number is also a property of the reranker's
+output scale — **re-run the calibration if the reranker changes.**
+
+> ⚠️ The same ARQMath run is evidence on a second question. MIRB (arXiv:2505.15585)
+> reports that reranking with bge-reranker-v2-m3 *degrades* nDCG@10 across their math
+> tasks, and an AUC of 0.60 on fine-grained relevance is consistent with that. Our
+> pipeline puts that model last **and** uses its score as the abstention gate. §10.4's
+> `eval_rerankers.py` is now the highest-value item in this document.
 
 ### 10.9 Usage telemetry (already shipped)
 
-`telemetry.py` writes one JSONL record per query (hashed user, mode, retrieved chunk ids
+`kbm/telemetry.py` writes one JSONL record per query (hashed user, mode, retrieved chunk ids
 and scores, per-stage timings) plus `feedback` records keyed by `event_id`. It exists now
 because it **cannot be backfilled**. Two payoffs:
 
@@ -798,7 +827,7 @@ this section can speak to:
   simply inapplicable** — you cannot vote on a proof.
 
 Before treating a self-consistency result as a decision about the product, check what
-fraction of real queries is which. `telemetry.py` is already logging real questions; that is
+fraction of real queries is which. `kbm/telemetry.py` is already logging real questions; that is
 the only thing that can answer it (§8, §10.9).
 
 ### 11.2 How k=1 / 5 / 10 are compared fairly
@@ -952,6 +981,7 @@ Two things this section does *not* measure, and both matter before shipping:
    cannot stream — the answer does not exist until every sample is complete — so adopting it
    changes the UX from "tokens appear immediately" to "nothing for k× the latency, then an
    answer." That is a product decision, not just a cost one.
+
 
 ---
 
@@ -1118,3 +1148,195 @@ between runs (`keep_alive=0`) so three 7B models do not sit in VRAM at once.
 later without paying for the first three again. Results are per (tier, model) —
 `self_consistency_<tier>_<model>.json` — so no arm can overwrite the arm it is measured
 against.
+
+---
+
+## 13 vs 12 — two different questions
+
+§12 asks **which model**, and its instrument is a paired test over the same 30 questions.
+§13 asks **whether a tool helps, and through which protocol**, holding the model fixed.
+They share `evaluation/self_consistency.py` for generation and scoring; §12 adds
+`model_bakeoff.py` for the ranking statistics, and §13 adds the `--tir` / `--tools` arms.
+
+Read §12's **§12.4 (parse rate)** before reading any accuracy number in §13 too — the
+confound is the same, and a tool arm is if anything more exposed to it, because a model
+mid-tool-call has more ways to end a turn without a `\boxed{}`.
+
+
+---
+
+## 13. Tool protocols: is the Python sandbox worth it, and via which protocol?
+
+§11.6 diagnosed deepseek's failures as **execution, not knowledge** — r07 reduced
+`7^100 mod 13` correctly and then computed `2401 mod 13` as 3 instead of 9 — and named
+the matching lever: *"let the model emit Python for the arithmetic step and execute it."*
+§10.4 already listed the candidate generators. This section is that experiment.
+
+The independent reason to run it is instruction-following, and it is not a preference.
+Three separate places in this repo record the same finding — `ERRORS.md` (the model
+ignores "say this isn't from your documents", so the server writes the `Sources:` line
+itself), §5 (it writes poor gold-set questions, so `qwen2:7b` writes them), §10.8 (same
+again for provenance tags). `api/chat.py:SYSTEM_PROMPTS` is therefore mostly decorative
+today. An instruct model would let the prompt do its job.
+
+### 13.1 What was built
+
+- **`kbm/tools/sandbox.py`** — a subprocess with an AST allow-list, rlimits, a scrubbed environment
+  and a 400-character output cap. A gate, not a jail; the threat it is sized for is a 7B
+  model emitting a runaway loop, not an adversary. Read its docstring before widening
+  `ALLOWED_IMPORTS`.
+- **`kbm/tools/tir.py`** — the protocol, and only the protocol: stop word `` ```output ``, the
+  ` ```python ` → ` ```output ` splice, `MAX_TOOL_ROUNDS = 3`. Every constant is Qwen's
+  own (`QwenLM/Qwen2.5-Math`, `evaluation/math_eval.py`), because the model was fine-tuned
+  against that exact shape.
+- **`kbm/tools/agent.py`** — the *other* tool protocol: native tool calling, where a JSON
+  schema goes out and a structured `tool_calls` array comes back. Reaches the sandbox and,
+  in the server, retrieval as well. A model gets this or TIR, never both — `kbm/config.py`
+  decides in one line. See `AGENT.md`.
+- **`kbm/llm_profiles.py`** — window size, decode budget, TIR capability **and native-tools
+  capability** per model, so naming a generator configures it. `KBM_LLM_MODEL` selects; env
+  vars override.
+- The tool loop in `api/routes.py` is the **continuation loop with two more arms** (TIR and
+  native tools, only one of them ever live), not a parallel machine, and `evaluation/self_consistency.py --tir` drives the same `kbm/tools/tir.py`
+  primitives. An eval that reimplemented the protocol would drift from what ships — the
+  argument `kbm/retrieval.py` exists for.
+
+### 13.2 The arms
+
+| arm | `GEN_MODEL` | flag | what it isolates |
+|---|---|---|---|
+| A | `t1c/deepseek-math-7b-rl:Q4` | — | the incumbent, unchanged |
+| B | `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M` | — | model swap alone |
+| C | same as B | `--tir` | the sandbox's contribution (B vs C) |
+| D | `qwen3:8b` | `--tir` | whether a *math-only* model is the right call at all |
+| E | `qwen3:8b` | `--tools` | **the protocol, isolated.** Same model, same sandbox, same budget as D — the only difference is how the model asks for it (`kbm/tools/agent.py`'s JSON tool calls vs `kbm/tools/tir.py`'s text blocks) |
+
+Quantization is matched to Q4 across A–C on purpose: Q8 would confound the model swap
+with a quantization change, and §11.6 already flagged Q4 as a suspect in its own right.
+
+```bash
+GEN_MODEL=t1c/deepseek-math-7b-rl:Q4 bash evaluation/eval.sh --skip-sweep --self-consistency
+GEN_MODEL=hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M \
+  bash evaluation/eval.sh --skip-sweep --self-consistency
+GEN_MODEL=hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M \
+  bash evaluation/eval.sh --skip-sweep --self-consistency --tir
+GEN_MODEL=qwen3:8b bash evaluation/eval.sh --skip-sweep --self-consistency --tir
+python evaluation/self_consistency.py --model qwen3:8b --tools   # arm E
+```
+
+**Arm E is why `tir` and `tools` are independent fields in `kbm/llm_profiles.py`.** qwen3 has
+both capabilities; the server picks one (`config.TIR_ENABLED = False if TOOLS_ENABLED …`),
+and `KBM_TOOLS=0` is what keeps D runnable at all. D vs E is the only place the question
+"is the text protocol or the native one better *for the same model*?" can be answered, and
+it is worth answering before agent mode is made anyone's default.
+
+⚠️ **Arm E binds `run_python` only, never `search_documents`** — unlike the server, which
+binds all three. That is deliberate and is stated in `Generator`'s docstring: this benchmark
+is closed-book by construction (§11.1b), and routing a question through retrieval would make
+a wrong answer un-attributable — the model's error and the retriever's become one number.
+Retrieval-path behaviour is §13.3's job, not this one's.
+
+Each writes `results/self_consistency_<tier>_<model>[_tir][_tools].json`, so all five
+coexist and `--report-only` re-scores any of them for free.
+
+**Run the college tier.** §11.1 is explicit about why, and §11.5 ends by saying the
+easy-tier verdict is unsettled until it is done: deepseek scores 0.85 on `--easy`, where
+four candidate models would land inside the noise of each other. The easy tier is the
+regression tripwire — run it too, but never rank on it.
+
+### 13.3 What the closed-book run cannot tell you
+
+Self-consistency is **closed-book by construction** (§11), so it measures the generator
+and says nothing about the thing that motivated half of this work. Instruction-following
+in the RAG path needs its own run, per arm:
+
+```bash
+KBM_LLM_MODEL=<arm> python evaluation/eval.py --user <u> --all --answers --judge-model <non-qwen>
+```
+
+⚠️ The default judge is `qwen2:7b` (`eval.py:JUDGE_MODEL`). Judging three Qwen arms with a
+Qwen judge is a same-family self-preference risk — not self-grading, but not clean either.
+Use `--judge-model` with a non-Qwen instruct model for the bake-off, or report both and say
+which is which.
+
+And three behaviours that no aggregate score will surface, each a probe worth running by
+hand and recording here:
+
+0. **Does it search when it should, and stop when it should not?** Agent mode only, and it
+   has no closed-book proxy. Three questions, three expected decisions: something the corpus
+   demonstrably covers *and* the upfront retrieval already found (expect **no** search — the
+   context is there); something in the corpus the upfront query misses because the student's
+   wording differs from the book's (expect a search, with a **rewritten** query); pure
+   arithmetic (expect `run_python`, or a correct answer without it). `done.searches`,
+   `done.late_sources` and telemetry's `search_queries` make all three readable. The
+   measured failure mode is over-eager calling — asked "why is the derivative of a constant
+   zero?", `qwen2:7b` reached for `run_python` and wrote code that printed nothing.
+1. **Does it write its own source list?** deepseek does not, which is why
+   `chat.sources_footer` exists. A model that complies with the "do not cite" instruction
+   is a win — but a model that cites *anyway* now produces **two** footers, one of them
+   invented. Ask a grounded question and count the `Sources:` lines.
+2. **Does it say when the context does not cover the question?** Ask something the corpus
+   demonstrably lacks, in `grounded` mode. Silence here is the failure `RELEVANCE_FLOOR`
+   only partly catches.
+3. **Does it stop?** `LATENCY.md` measures deepseek filling any budget it is given (534
+   tokens for a one-line conceptual question). An instruct model that stops when it is
+   done is worth real latency, and shows up as `truncated=false` at a *lower*
+   `KBM_NUM_PREDICT`.
+
+### 13.4 What would make this a swap
+
+Read in this order, and stop at the first one that fails:
+
+1. **Tool use actually happened.** The `TOOL USE` block in the report. `greedy answers
+   that ran a program: 0/30` means the arm measured plain CoT whatever the accuracy column
+   says — the report says so itself rather than letting the number be read.
+2. **College-tier accuracy**, A vs C. §11.4's thresholds apply: under 5 points is noise on
+   30 questions.
+3. **`BEYOND VOTING'S REACH` fell.** This is the diagnostic §11.6 cared about. The tool is
+   supposed to convert *execution* failures into correct answers; if the count of
+   stably-wrong questions does not move, the sandbox is not touching the failure mode it
+   was built for, and the accuracy delta came from somewhere else.
+4. **The easy tier did not regress.** Its whole job.
+5. **The `--answers` run and the three probes above.** A generator that wins the closed-book
+   set and stops grounding its answers is not an improvement to this product.
+
+### 13.5 Cost and constraints known before the run
+
+- **Qwen2.5-Math is a 4096-token model** (`max_position_embeddings`, config.json). Same as
+  deepseek, but a TIR trace re-sends the whole transcript every round, and Ollama answers
+  an overflow by shifting the window from the **left** — dropping the system prompt first,
+  silently. `MAX_TOOL_ROUNDS=3` and `sandbox.MAX_OUTPUT_CHARS=400` are that budget, and
+  `config.NUM_CTX` is what makes it explicit. Arm D exists partly because Qwen3 is not
+  capped this way, which matters most in `grounded` mode where retrieved context is
+  competing with the trace.
+- **Latency.** `LATENCY.md`: generation is ~95% of query time. TIR multiplies generation
+  passes by up to 4 and adds prefill for a growing transcript. A TIR answer will be several
+  times slower than a CoT one — `DoneEvent.timings.tool_ms` separates sandbox time from
+  decode time so the two are not confused. Measure before flipping the default, and
+  consider gating TIR on question shape rather than every turn.
+- **Contamination.** §10.5's warning stands and applies to Qwen too: these models publish
+  MATH/GSM8K numbers. The college tier is hand-written and sympy-verified
+  (`verify_reasoning_set.py`), which is exactly why it is the tier that decides.
+
+### 13.6 Results
+
+Not yet run. Record each arm's table, its `TOOL USE` block, and its
+`BEYOND VOTING'S REACH` count here, then state the decision and the date — the same shape
+as §11.5. **The default in `config.OLLAMA_MODEL` stays deepseek-math until this section
+has numbers in it.**
+
+⚠️ **Read this before running arm D or E.** The harness did not pass `reasoning=` to
+`ChatOllama` until 2026-08-20, so qwen3 ran with **thinking mode on** — its default. The
+`<think>` block never appears in `.text` (langchain-ollama routes it to
+`additional_kwargs["reasoning_content"]`), and it consumes the entire `num_predict` budget,
+so the answer is never reached and every sample scores *unparseable*. On a 3-question smoke
+that was the difference between accuracy **0.50 with 50% unparseable** and **1.00 with 0%**,
+and between 7 minutes and 9 seconds for one question. Any arm-D or arm-E number produced by
+an older checkout is measuring thinking-mode overflow, not the model. Fixed in
+`Generator.__init__` (`reasoning=profile_for(model).think`); see `ERRORS.md` 2026-08-20.
+
+**Harness status.** Arm E (`--tools`) is implemented and verified end to end on a 3-question
+smoke of the college tier: `greedy answers that ran a program: 3/3`, 3/3 correct, 0 sandbox
+failures. That is a wiring check and **not a result** — three questions is not an exam, and
+the arm is only worth reading against arm C and arm D on the full 30.
+||||||| 1783c86

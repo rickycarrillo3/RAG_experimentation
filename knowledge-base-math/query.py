@@ -1,7 +1,7 @@
 """
 query.py - CLI for the math RAG system.
 
-Retrieval lives in retrieval.py (shared with app.py and eval.py); this file is the
+Retrieval lives in kbm/retrieval.py (shared with app.py and eval.py); this file is the
 interactive shell around it plus DeepSeek-Math generation.
 
 Usage:
@@ -16,12 +16,12 @@ import argparse
 import os
 import sys
 
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 
-from config import KEEP_ALIVE, NUM_PREDICT, OLLAMA_BASE_URL
-from retrieval import (
+from kbm.config import KEEP_ALIVE, NUM_CTX, NUM_PREDICT, OLLAMA_BASE_URL, THINK
+from kbm.retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
     RERANK_MODEL,
@@ -49,7 +49,7 @@ HUMAN_PROMPT = """Context:
 
 Question: {input}"""
 
-# NUM_PREDICT / KEEP_ALIVE come from config.py. They used to be redeclared here as
+# NUM_PREDICT / KEEP_ALIVE come from kbm/config.py. They used to be redeclared here as
 # literals, which meant raising the API's cap left this CLI on its own stale 350.
 # test_chat.py imports them from this module, so it follows automatically.
 
@@ -104,6 +104,15 @@ def main():
             base_url=OLLAMA_BASE_URL,
             temperature=0,
             num_predict=NUM_PREDICT,
+            # Both of these were missing, and both fail silently on a model that is not
+            # deepseek. Without num_ctx, Ollama applies its own default window and answers
+            # an overflow by shifting from the LEFT — dropping the system prompt first, so
+            # the CLI stops being a tutor with nothing in the output to say so; that is the
+            # exact failure kbm/config.NUM_CTX exists to make impossible. Without
+            # reasoning, qwen3 defaults thinking ON and spends the decode budget inside a
+            # <think> block. The API (api/deps.py) has always passed both.
+            num_ctx=NUM_CTX,
+            reasoning=THINK,
             keep_alive=KEEP_ALIVE,
         )
         answer_chain = build_answer_chain(llm)

@@ -17,6 +17,150 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-20 · A tool call with no text would have been thrown away
+
+**Symptom.** None, on any shipped model — found by the spike run *before* the native
+tool-calling loop was written, in the same way and for the same reason as the PrefillEcho
+entry below.
+
+The assumption under test was "a model that calls a tool still says something first".
+Measured on `qwen2:7b`, against three probe questions:
+
+```
+"What is 7**100 mod 13?"                          -> 0 content chars + run_python call
+"What does my textbook say about the chain rule?" -> 0 content chars + search_documents call
+"Why is the derivative of a constant zero?"       -> 913 content chars + a call
+```
+
+**What it actually is.** `api/routes.py` ended each pass with
+
+```python
+if echo.mismatch or not produced:
+    truncated = done_reason == "length"
+    break
+```
+
+`not produced` is there so a model that immediately emits EOS-at-length cannot spin to the
+pass ceiling emitting nothing — correct, and load-bearing, for both existing arms. But a
+native tool call arrives in `AIMessageChunk.tool_calls`, not in the text, so for two of the
+three questions above `produced` is `""` and the loop breaks **before the tool arm is
+reached**. The call is discarded, nothing is executed, and `shown` is empty — so the server
+emits `chat.NO_ANSWER_TEXT` and the student is told the model returned nothing.
+
+It would have looked like the model failing to answer, on some questions and not others,
+with nothing in the log. The tool arm would have appeared to work whenever the model
+happened to narrate first.
+
+**Fix.** `if echo.mismatch or (not produced and not calls)`. A no-op on every model without
+native tools, since `calls` is then always empty.
+
+**Lesson.** The same one as the entry below, one level up: a stop condition is a claim about
+what "the model produced nothing" means, and that meaning changed when a second channel
+(structured tool calls) was added beside the text. When you add a new way for a pass to
+carry information, re-read every condition that tests whether a pass carried any.
+
+Two smaller findings from the same spike, both now relied on in `kbm/tools/agent.py`:
+`done_reason` is `"stop"` for a tool call exactly as it is for EOS (so detect from
+`.tool_calls`, never from `done_reason` — `kbm/tools/tir.py:40-49` says the same about stop words),
+and `langchain_ollama` mints a fresh `uuid4()` per parse (`chat_models.py:218`), so a call
+`id` is a runtime artefact and dedupe must key on `(name, args)`.
+
+---
+
+## 2026-08-20 · Every qwen3 answer in the eval scored "unparseable"
+
+**Symptom.** `evaluation/self_consistency.py --model qwen3:8b --tools` returned
+`greedy_pred=None` for every question and `unparseable samples: 50%`, while the TOOL USE
+block showed the sandbox *had* run. A single question took **over 7 minutes** and still
+produced no `\boxed{}`. It reads exactly like a model that cannot do the questions.
+
+**What it actually is.** `Generator.__init__` built its `ChatOllama` without `reasoning=`.
+`api/deps.py` passes `reasoning=THINK`; the eval never did, so qwen3 ran with **thinking
+mode on** — its default. Two things follow, and neither is visible in the output:
+
+1. The `<think>` block does not appear in `.text` at all. `langchain-ollama` puts it in
+   `additional_kwargs["reasoning_content"]`, so grepping the answer for `<think>` finds
+   nothing and the leak looks like it is not happening.
+2. It consumes the entire `num_predict` budget. The answer is never reached, so there is no
+   `\boxed{}` to parse — and the scorer's only vocabulary for that is "unparseable".
+
+The same omission applies to the `--tir` arm, i.e. to **arm D of the §12 bake-off**, which
+had not been run yet. Had it been run first, qwen3 would have been recorded as far worse
+than it is.
+
+**Fix.** `reasoning=profile_for(model).think` in `Generator.__init__`, matching `deps.py`.
+The same question afterwards: **9.0 seconds**, one sandbox round, `\boxed{391}`.
+
+**Lesson.** `kbm/llm_profiles.py` exists so that naming a model configures it — and that only
+holds where every consumer actually reads the profile. The server read `think`; the eval
+read `num_ctx` and `num_predict` from the same object and silently skipped the third field.
+A profile with a consumer that uses *some* of it is worse than no profile, because the
+divergence is invisible: both call sites look like they are configured from one table.
+When adding a field to `Profile`, grep for every `profile_for(` and check what each one
+ignores.
+
+---
+
+## 2026-08-20 · Continuation silently produces nothing on a Qwen model
+
+**Symptom.** None, on the shipped model — which is why this is written up before it ever
+reached anyone. Found by a spike run *before* implementing tool-integrated reasoning, on
+the assumption that "Ollama echoes the assistant prefill" was a property of Ollama.
+
+It is a property of the **chat template**, and the two models in this repo disagree:
+
+```
+prefill sent:  'The first three prime numbers are 2, 3'
+
+deepseek-math-7b-rl  -> 'The first three prime numbers are 2, 3 and 5 .'   (echoes, then continues)
+qwen2:7b  (ChatML)   -> ', and 5, followed by 7 and 11.'                    (continues, no echo)
+```
+
+**What it actually is.** `chat.PrefillEcho` was written against the first behaviour and
+treated the second as a fault: anything that was not a byte-identical echo set `mismatch`,
+and `mismatch` makes `feed()` return `""` for the rest of the pass. On a Qwen generator
+every continuation pass would therefore emit **nothing at all** — `produced` comes back
+empty, `routes` breaks out of the loop, and the answer just stops at `KBM_NUM_PREDICT`
+with no error anywhere. The same code path carries every TIR tool round, so the sandbox
+would have appeared to do nothing either.
+
+The reason the old code was wrong rather than merely conservative: a model that *restates*
+the answer instead of continuing produces text that IS a prefix of the prefill, so it
+matches for a long way before diverging. Divergence at character 0 is therefore positive
+evidence that no echo was attempted — the opposite of the reading it was given.
+
+**Fix.** `PrefillEcho` now distinguishes three cases instead of two: full echo (strip it),
+diverges within `ECHO_PROBE_CHARS` (there was no echo — emit everything), diverges deep in
+(unexpected — abandon, as before). Verified on both models: deepseek resumes seamlessly,
+qwen2 produces a single coherent answer across 3 passes with no duplication.
+
+**Lesson.** "Verified on ollama with deepseek-math" was written in that docstring as an
+observation rather than a guarantee, and it was right to be. When behaviour depends on the
+model, a second model is the only test — and swapping generators is exactly what
+`KBM_LLM_MODEL` now makes easy, so this class of bug gets cheaper to find and likelier to
+appear.
+
+---
+
+## 2026-08-20 · `think=` on ChatOllama is accepted and never sent
+
+**Symptom.** None visible. `ChatOllama(model=..., think=False)` constructs without error
+and reads back as if unset — `models.llm.think` raises `AttributeError`.
+
+**What it actually is.** In `langchain-ollama` 1.1.0 the field is **`reasoning`**, which
+`_chat_params` maps to Ollama's wire field `think`. `ChatOllama` accepts unknown kwargs
+without complaint, so `think=` lands in pydantic extras, is never serialised, and Qwen3
+keeps emitting `<think>` blocks into the answer.
+
+**Fix.** `api/deps.py` passes `reasoning=THINK`. Confirmed by inspecting the assembled
+request rather than the object: `llm._chat_params([...])["think"]`.
+
+**Lesson.** A constructor that tolerates unknown keyword arguments turns every typo into a
+silent default. When a kwarg controls something you cannot see in the output, assert on
+the request that goes out, not on the client object.
+
+---
+
 ## 2026-08-19 · The answer came back as the student's own question — not reproduced
 
 **Symptom.** Reported from the running app, with no documents ingested yet: the tutor's
@@ -267,6 +411,15 @@ check the other: the one that still *accepts* the old value is more dangerous th
 that raises. Related: the 2026-08-18 gradio-6 entry above — same version boundary, and
 this file's own summary line for it says `theme=` moved the other way.
 
+**A second lesson, from re-finding this independently on a branch that predated the fix.**
+The first two readings of `/gradio_api/info` taken during that re-discovery were served by
+a **stale `app.py` process** that had held port 7860 for over an hour, while the freshly
+launched one had already died with `OSError: Cannot find empty port`. Both readings looked
+like evidence about the code under test and were about something else entirely; the
+conclusion happened to survive, which is worse, not better. When a server is launched to
+test a change, confirm the process answering is the one under test — read the launch log,
+or bind a port nothing else could be holding.
+
 ---
 
 ## Earlier · fixed, documented elsewhere
@@ -280,8 +433,10 @@ Kept short — each links to where the reasoning lives.
 | Uploaded PDFs and `.mmd` vanished after ingest | `shutil.rmtree(tmp_dir)` deleted the only copy | fixed by persisting them, then **deliberately reverted** on 2026-08-19 — see the entry above |
 | Every entry point raised `NameError` after a merge | `resolve_device()` called but never imported — a textually clean, semantically broken merge | found by importing, not reading |
 | `startup.sh` could not run at all | `ALLOW_CPU`/`DO_PULL`/`DO_PREFETCH` read but never assigned; fatal under `set -u`. `bash -n` passed | recovered from commit `eb9044c` |
-| Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
+| Indexes written where retrieval never read | `CHROMA_DIR`/`BM25_DIR` declared in both `kbm/retrieval.py` and `ingest.py` | `CLAUDE.md` — define a path once, import it |
 | Abstention was structurally impossible | `KBM_RELEVANCE_FLOOR` documented as a raw logit, default `0.0`; the reranker applies a Sigmoid, so every score passed | `api/settings.py`, `CLAUDE.md` |
+| Continuation emitted nothing on a Qwen generator | `PrefillEcho` assumed every model echoes the assistant prefill; ChatML models do not | entry above, 2026-08-20 |
+| `think=False` never reached Ollama | langchain-ollama calls the field `reasoning`; `ChatOllama` swallows unknown kwargs | entry above, 2026-08-20 |
 | Answers claimed document grounding they didn't have | deepseek-math ignores the "say this isn't from your documents" instruction — it is a solver, not an instruction-follower | server appends the `Sources:` line itself; `api/chat.py:sources_footer` |
 | Gradio UI crashed on startup | `theme=` passed to `launch()` instead of `Blocks()` on gradio 6.18 | `app.py` |
 | Prompt re-prefilled on every turn (~6 s/turn by turn 5) | sliding history window shifted the *start* of the prompt, which a KV prefix cache cannot survive | `LATENCY.md` |

@@ -97,7 +97,7 @@ def extract_detailed(
 ) -> ExtractResult:
     """Extract, reporting which extractor won. See `extract()` for the plain-path form.
 
-    Mirrors the retrieve()/retrieve_detailed() split in retrieval.py: the simple entry
+    Mirrors the retrieve()/retrieve_detailed() split in kbm/retrieval.py: the simple entry
     point stays simple, and the caller that needs to act on the details asks for them.
     """
     if not os.path.exists(pdf_path):

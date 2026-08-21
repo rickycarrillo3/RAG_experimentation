@@ -64,7 +64,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import OLLAMA_BASE_URL
+from kbm.config import OLLAMA_BASE_URL
 from self_consistency import (
     DEFAULT_KS,
     DEFAULT_SAMPLES,
@@ -79,7 +79,7 @@ from self_consistency import (
     run_tier,
     unload,
 )
-from retrieval import OLLAMA_MODEL
+from kbm.retrieval import OLLAMA_MODEL
 
 # ── The arms ───────────────────────────────────────────────────────────────────
 # Three questions, one per challenger:
@@ -339,6 +339,17 @@ def main():
     p.add_argument("--questions", help="Explicit question file, overriding the tier flags.")
     p.add_argument("--models", nargs="+", default=DEFAULT_MODELS,
                    help="Ollama tags to compare. The incumbent must be one of them.")
+    p.add_argument("--tir", action="store_true",
+                   help="Run every model in this bake-off with tool-integrated reasoning "
+                        "(the ```python text protocol). The protocol is held CONSTANT across "
+                        "arms on purpose — this script's whole claim is a paired comparison, "
+                        "and varying model and protocol together would confound them.")
+    p.add_argument("--tools", action="store_true",
+                   help="Run every model with native tool calling instead (kbm/tools/"
+                        "agent.py). Mutually exclusive with --tir. To compare the two "
+                        "protocols on ONE model — EVALUATION.md §12's arm D vs arm E — run "
+                        "self_consistency.py twice and compare, rather than putting two "
+                        "protocols in one bake-off.")
     p.add_argument("--incumbent", default=OLLAMA_MODEL,
                    help="The arm every challenger is paired against.")
     p.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
@@ -362,6 +373,10 @@ def main():
                    help="Also print self_consistency.py's full single-model report for each arm.")
     args = p.parse_args()
 
+    if args.tir and args.tools:
+        p.error("--tir and --tools are two tool protocols and a model gets one. "
+                "kbm/config.py enforces the same exclusivity for the server.")
+
     ks = sorted(set(args.ks))
     if max(ks) > args.samples:
         p.error(f"--ks max ({max(ks)}) exceeds --samples ({args.samples}).")
@@ -375,7 +390,9 @@ def main():
 
     def out_for(model: str) -> str:
         return os.path.join(RESULTS_DIR,
-                            f"self_consistency_{tier_label}_{model_slug(model)}.json")
+                            f"self_consistency_{tier_label}_{model_slug(model)}"
+                            f"{'_tir' if args.tir else ''}"
+                            f"{'_tools' if args.tools else ''}.json")
 
     if args.check:
         print_reference_table(args.models)
@@ -430,7 +447,8 @@ def main():
             continue
         print(f"\n[{i}/{len(args.models)}] {model} — {gens} generations")
         runs[model] = run_tier(items, model, args.samples, ks, args.temperature, args.top_p,
-                               args.concurrency, args.seed, tier_label, questions_path, path)
+                               args.concurrency, args.seed, tier_label, questions_path, path,
+                               use_tir=args.tir, use_tools=args.tools)
         print(f"  wrote {path} ({runs[model]['config']['wall_clock_s'] / 60:.1f} min)")
         unload(model)
 

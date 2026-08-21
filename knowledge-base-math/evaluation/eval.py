@@ -25,16 +25,16 @@ import statistics
 import sys
 import time
 
-# This lives in evaluation/; the pipeline modules (retrieval, query, …) are one level up.
+# This lives in evaluation/; the pipeline modules (kbm, query, …) are one level up.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 
-from config import OLLAMA_BASE_URL
-from query import SYSTEM_PROMPT
-from retrieval import (
+from kbm.config import OLLAMA_BASE_URL
+from kbm.llm_profiles import profile_for
+from kbm.retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
     RERANK_TOP_C,
@@ -47,6 +47,7 @@ from retrieval import (
     load_reranker,
     retrieve_detailed,
 )
+from query import SYSTEM_PROMPT
 
 EVAL_DIR = "evaluation"                             # gold set + review live here
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")     # machine-specific run outputs
@@ -419,7 +420,18 @@ def main():
             ("system", SYSTEM_PROMPT),
             ("human", "{input}"),
         ]) | ChatOllama(
-            model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=1024
+            model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=1024,
+            # Retrieved context + question + a 1024-token answer is a real squeeze inside
+            # a 4096-token model, and Ollama answers an overflow by dropping tokens off the
+            # LEFT — the system prompt — instead of erroring. Stating the model's own
+            # window makes a too-long prompt visible rather than silently ungrounded.
+            num_ctx=profile_for(OLLAMA_MODEL).num_ctx,
+            # Thinking mode, from the same profile api/deps.py and self_consistency.py
+            # read. Without it a qwen3 arm spends its whole decode budget inside a <think>
+            # block that never reaches `.text`, and the judge scores an empty answer as a
+            # wrong one — the model looks incapable rather than misconfigured. The kwarg is
+            # `reasoning`, NOT `think`. See ERRORS.md.
+            reasoning=profile_for(OLLAMA_MODEL).think,
         ) | StrOutputParser()
         judge = ChatPromptTemplate.from_template(JUDGE_PROMPT) | ChatOllama(
             model=args.judge_model, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=5
