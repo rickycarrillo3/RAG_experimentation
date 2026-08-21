@@ -54,14 +54,29 @@ def _model_supports_tools(model: str) -> bool | None:
     """
     try:
         r = httpx.post(f"{OLLAMA_BASE_URL}/api/show", json={"model": model}, timeout=10.0)
+    except Exception as e:
+        # Ollama is not answering yet. Deliberately not fatal: startup.sh already waits on
+        # Ollama, and turning this probe into a second liveness gate would make a slow
+        # Ollama start look like a broken model load. Trust the profile.
+        log.warning("could not reach Ollama to ask whether %s supports tools (%s) — "
+                    "trusting the profile", model, e)
+        return None
+
+    # A 404 is NOT the same as "could not ask", and conflating them was a real bug: both
+    # returned None, None is not False, so the caller's `else` branch bound tools against a
+    # model that is not on this box at all. The pod then reported itself ready and failed on
+    # the family's first question. A 404 here means Ollama is up and has never heard of this
+    # model — the most actionable signal in the whole startup path, so say so and refuse.
+    if r.status_code == 404:
+        log.error("Ollama has no model named %s — it is not pulled on this machine. "
+                  "Run `ollama pull %s`.", model, model)
+        return False
+    try:
         r.raise_for_status()
         return "tools" in (r.json().get("capabilities") or [])
     except Exception as e:
-        # Deliberately not fatal. startup.sh already waits on Ollama, and turning this
-        # probe into a second liveness gate would mean a slow Ollama start looks like a
-        # broken model load.
-        log.warning("could not ask Ollama whether %s supports tools (%s) — "
-                    "trusting the profile", model, e)
+        log.warning("Ollama gave an unexpected answer for %s (%s) — trusting the profile",
+                    model, e)
         return None
 
 

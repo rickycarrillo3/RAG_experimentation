@@ -215,6 +215,11 @@ async def _chat_stream(user: str, req: ChatRequest):
         late_results: list = []
         late_source_count = 0
         notice_sent: set[str] = set()
+        # Set when a tool is asked for AGAIN after its budget notice already went out.
+        # It cannot be a `break`: we are inside the per-call loop, and every call still
+        # owes exactly one ToolMessage or the chat template breaks. So the loop finishes
+        # answering, and the arm honours this immediately afterwards.
+        stop_after_tools = False
         # Loaded on the first mid-answer search and reused by the second, so a re-search
         # does not re-open the BM25 pickle and the Chroma collection each time.
         bm25_index = None
@@ -348,6 +353,7 @@ async def _chat_stream(user: str, req: ChatRequest):
                                         "user=%s — ending the answer here", name, cap, user)
                             tool_msgs.append(ToolMessage(content=agent.budget_notice(name),
                                                          tool_call_id=call_id))
+                            stop_after_tools = True
                             continue
                         notice_sent.add(name)
                         log.warning("%s round cap (%d) reached for user=%s", name, cap, user)
@@ -395,13 +401,17 @@ async def _chat_stream(user: str, req: ChatRequest):
                             yield _sse("token", TokenEvent(text=marker, server_marker=True))
 
                     elif name == agent.TOOL_SEARCH:
-                        search_rounds += 1
                         query = args["query"]
-                        search_queries.append(query)
                         if not user_has_index:
+                            # Answered before the budget is charged. There is nothing to
+                            # search, so this call did no work — charging for it would let
+                            # a student with no documents exhaust MAX_SEARCH_ROUNDS on two
+                            # no-ops and then be told it was out of searches.
                             tool_msgs.append(ToolMessage(content=agent.format_documents([], 0),
                                                          tool_call_id=call_id))
                             continue
+                        search_rounds += 1
+                        search_queries.append(query)
                         t_search = time.perf_counter()
                         if bm25_index is None:
                             bm25_index = await anyio.to_thread.run_sync(
@@ -471,6 +481,13 @@ async def _chat_stream(user: str, req: ChatRequest):
                 turns.extend(tool_msgs)
                 generated = ""
                 truncated = False
+                if stop_after_tools:
+                    # The notice has now gone out twice for some tool. Telling a model a
+                    # third time is a loop with no exit — the TIR arm breaks here for the
+                    # same reason. The `continue` above only advanced the per-call loop, so
+                    # without this the arm re-entered generation and the pass ceiling was
+                    # the only thing stopping it, while the log claimed the answer ended.
+                    break
                 continue
 
             # ── Tool arm ──────────────────────────────────────────────────────

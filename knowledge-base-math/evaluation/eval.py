@@ -426,6 +426,12 @@ def main():
             # LEFT — the system prompt — instead of erroring. Stating the model's own
             # window makes a too-long prompt visible rather than silently ungrounded.
             num_ctx=profile_for(OLLAMA_MODEL).num_ctx,
+            # Thinking mode, from the same profile api/deps.py and self_consistency.py
+            # read. Without it a qwen3 arm spends its whole decode budget inside a <think>
+            # block that never reaches `.text`, and the judge scores an empty answer as a
+            # wrong one — the model looks incapable rather than misconfigured. The kwarg is
+            # `reasoning`, NOT `think`. See ERRORS.md.
+            reasoning=profile_for(OLLAMA_MODEL).think,
         ) | StrOutputParser()
         judge = ChatPromptTemplate.from_template(JUDGE_PROMPT) | ChatOllama(
             model=args.judge_model, base_url=OLLAMA_BASE_URL, temperature=0, num_predict=5

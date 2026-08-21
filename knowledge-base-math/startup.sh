@@ -15,6 +15,18 @@
 #     DATA_DIR        where chroma_db/ + bm25_indexes/ live (default: $WORKSPACE/kb-data)
 #     APP_AUTH        "user:pass" login pairs, comma-separated
 #     APP_PORT        port to serve on                (default: 7860)
+#     KBM_LLM_MODEL   generator to pull AND serve     (default: t1c/deepseek-math-7b-rl:Q4)
+#     KBM_TOOLS       1/0 force native tool calling on/off, overriding the model profile
+#     KBM_TIR         1/0 force the ```python text protocol; KBM_TOOLS wins over it
+#     KBM_API_TOKEN   bearer token for the API (leave unset and the API is OPEN)
+#
+# Agent mode (the model searches your documents and runs Python itself) needs a generator
+# with a tools template. The default deepseek-math has none — it is a completion-only
+# model — so agent mode is one variable away rather than on:
+#
+#     KBM_LLM_MODEL=qwen3:8b bash startup.sh
+#
+# Stage 5 prints which tool protocol actually came up. See AGENT.md.
 #
 set -euo pipefail
 
@@ -56,6 +68,22 @@ export APP_PORT="${APP_PORT:-7860}"
 export API_PORT="${API_PORT:-8000}"
 # app.py talks to the API over loopback; only APP_PORT needs exposing publicly.
 export KBM_API_URL="${KBM_API_URL:-http://127.0.0.1:$API_PORT}"
+
+# ── Generator selection ────────────────────────────────────────────────────────
+# One name for "which model", used for BOTH the pull below and the server, because they
+# used to be two: the pull was a literal and the server read KBM_LLM_MODEL, so selecting a
+# generator pulled deepseek and then served something that was never fetched. The pod
+# reported itself ready and failed on the family's first question.
+# evaluation/eval.sh:57-60 carries the same fix and the same comment.
+export KBM_LLM_MODEL="${KBM_LLM_MODEL:-${GEN_MODEL:-t1c/deepseek-math-7b-rl:Q4}}"
+GEN_MODEL="$KBM_LLM_MODEL"
+# Exported so uvicorn and app.py inherit them. Unset by default: which tool protocol a
+# model gets is decided by its profile (kbm/llm_profiles.py), and these only override it.
+# See AGENT.md and DEPLOYMENT.md §3.
+[ -n "${KBM_TOOLS:-}" ] && export KBM_TOOLS
+[ -n "${KBM_TIR:-}" ] && export KBM_TIR
+[ -n "${KBM_NUM_CTX:-}" ] && export KBM_NUM_CTX
+[ -n "${KBM_NUM_PREDICT:-}" ] && export KBM_NUM_PREDICT
 
 # Unbuffered, or Python block-buffers stdout the moment this script's output is
 # redirected to a log file — which is exactly how it runs as a background service.
@@ -141,11 +169,12 @@ fi
 # Pull on a cold volume rather than on the family's first question — a missing model
 # otherwise surfaces as a ~5GB stall inside the first chat request.
 if [ "$DO_PULL" -eq 1 ]; then
-  GEN_MODEL="t1c/deepseek-math-7b-rl:Q4"
-  if ollama list 2>/dev/null | grep -q "${GEN_MODEL%%:*}"; then
+  # Match the FULL tag. `${GEN_MODEL%%:*}` matched only the name, so an already-pulled
+  # qwen3:4b satisfied a request for qwen3:8b and the wrong model served the family.
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$GEN_MODEL"; then
     echo "   ✓ $GEN_MODEL present."
   else
-    echo "   Pulling $GEN_MODEL (~4.5GB, one time on a fresh volume)..."
+    echo "   Pulling $GEN_MODEL (4-6GB, one time on a fresh volume)..."
     ollama pull "$GEN_MODEL"
   fi
 fi
@@ -190,6 +219,10 @@ trap 'kill "$API_PID" 2>/dev/null || true' EXIT
 echo "   Loading embedder + 2.2GB reranker..."
 
 # /healthz is behind the bearer token like every other endpoint, so the probe sends it.
+# Expanded below as ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"}, not "${AUTH_HEADER[@]}":
+# macOS ships bash 3.2, which treats an EMPTY array expansion as an unbound variable under
+# `set -u` and aborts the script. The pod's bash 5 does not, so `startup.sh --allow-cpu`
+# was broken only on the machine the docs recommend it for.
 AUTH_HEADER=()
 if [ -n "$KBM_API_TOKEN" ]; then
   AUTH_HEADER=(-H "Authorization: Bearer $KBM_API_TOKEN")
@@ -201,7 +234,7 @@ fi
 # token right?" into two different messages, which is the whole reason the check exists.
 while :; do
     CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-                "${AUTH_HEADER[@]}" "http://localhost:$API_PORT/healthz" || echo 000)
+                ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" || echo 000)
     case "$CODE" in
       200) break ;;
       401) echo "   ✗ API is up but rejected the token." >&2
@@ -215,7 +248,23 @@ while :; do
     kill -0 "$API_PID" 2>/dev/null || { echo "   ✗ API failed to start (see above)." >&2; exit 1; }
     sleep 2
 done
-echo "   ✓ Ready."
+# Which tool arm actually came up. /healthz reports the EFFECTIVE protocol, after the
+# capability probe in api/deps.py — which downgrades to "none" if KBM_TOOLS was asked for
+# on a model with no tools template, or if the model is not pulled. Printing only
+# "✓ Ready." hid that: the operator who selected agent mode had no way to see they did not
+# get it short of reading the uvicorn log.
+PROTOCOL=$(curl -s --max-time 5 ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" \
+           | sed -n 's/.*"protocol":"\([a-z]*\)".*/\1/p')
+case "${PROTOCOL:-unknown}" in
+  tools) echo "   ✓ Ready — $GEN_MODEL, native tool calling (search + sandbox)." ;;
+  tir)   echo "   ✓ Ready — $GEN_MODEL, tool-integrated reasoning (sandbox)." ;;
+  none)  echo "   ✓ Ready — $GEN_MODEL, no tool protocol."
+         if [ -n "${KBM_TOOLS:-}" ] || [ -n "${KBM_TIR:-}" ]; then
+           echo "     ⚠ You asked for a tool protocol and did not get one — see the log" >&2
+           echo "       above for why (usually: this model has no tools template)." >&2
+         fi ;;
+  *)     echo "   ✓ Ready — $GEN_MODEL." ;;
+esac
 
 # ── 6. UI ──────────────────────────────────────────────────────────────────────
 hr; echo "6. Web UI (:$APP_PORT)"
