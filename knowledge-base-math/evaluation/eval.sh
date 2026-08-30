@@ -31,7 +31,7 @@
 #     NORMALIZE=1   LaTeX-normalize embeddings in the --answers run (matches ingest+query)
 #     SC_SAMPLES    samples per question for --self-consistency   (default: 10)
 #     GEN_MODEL     generator to pull and benchmark          (default: $KBM_LLM_MODEL,
-#                   else deepseek-math — the app's own default)
+#                   else kbm/config.py's OLLAMA_MODEL — the app's own default)
 #
 set -euo pipefail
 
@@ -78,7 +78,10 @@ SC_SAMPLES="${SC_SAMPLES:-10}"
 # The generator was a literal in the pull below, which meant a bake-off pulled deepseek
 # and then benchmarked whatever KBM_LLM_MODEL actually pointed at — a run that looks
 # clean and measures the wrong model. One name, used for both.
-GEN_MODEL="${GEN_MODEL:-${KBM_LLM_MODEL:-t1c/deepseek-math-7b-rl:Q4}}"
+# The default is not a literal either: it comes from kbm/config.py, below the cd + venv,
+# so this script benchmarks the model that actually ships rather than a stale copy of the
+# tag. (startup.sh:~115 does the same, for the same reason.)
+GEN_MODEL="${GEN_MODEL:-${KBM_LLM_MODEL:-}}"
 
 # ── Model caches on the persistent volume (survive pod restarts) ────────────────
 export OLLAMA_MODELS="${OLLAMA_MODELS:-/workspace/ollama-models}"
@@ -94,6 +97,15 @@ if [ -f venv/bin/activate ]; then
   source venv/bin/activate
 fi
 PY="${PYTHON:-python}"
+
+# Now that imports resolve, fill in the generator default from the one place it lives.
+if [ -z "$GEN_MODEL" ]; then
+  GEN_MODEL=$($PY -c 'from kbm.config import OLLAMA_MODEL; print(OLLAMA_MODEL)') || {
+    echo "✗ Could not read the default generator from kbm/config.py." >&2
+    echo "  Set GEN_MODEL (or KBM_LLM_MODEL) explicitly." >&2
+    exit 1
+  }
+fi
 
 hr() { printf '─%.0s' $(seq 1 72); echo; }
 

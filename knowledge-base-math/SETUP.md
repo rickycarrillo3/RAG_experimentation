@@ -86,12 +86,12 @@ grep -q '/ollama/bin' ~/.bashrc || echo "export PATH=$WORKSPACE/ollama/bin:\$PAT
 # you are already watching, rather than inside someone's first question.
 ollama serve &
 sleep 3
-ollama pull t1c/deepseek-math-7b-rl:Q4   # generator, the default (~4.2GB)
+ollama pull qwen3:8b                     # generator, the default (~5.2GB)
 ollama pull qwen2:7b                     # eval only: gold-set author + answer judge
-# Optional, and the only way to run AGENT MODE — the arm where the model searches the
-# family's documents and runs Python itself. deepseek-math cannot: `ollama show` reports
-# it as completion-only, with no tools template. See AGENT.md.
-ollama pull qwen3:8b                     # tool-capable generator (~5.2GB)
+# Optional: the previous default. It is the only arm with NO tool protocol — `ollama show`
+# reports it as completion-only, with no tools template — so it is what you pull to compare
+# the family's answers against a generator that cannot search or compute. See AGENT.md.
+ollama pull t1c/deepseek-math-7b-rl:Q4   # previous default (~4.2GB)
 
 # ── HuggingFace models (~6GB cold) ────────────────────────────────────────────
 # Worth doing explicitly here rather than letting it happen mid-use. The embedder
@@ -137,7 +137,7 @@ So every future session inherits them without re-exporting:
 | `DATA_DIR` | `/workspace/kb-data` | **else every uploaded document is lost on restart** |
 | `APP_AUTH` | `alice:somepassword,bob:another` | else the pod URL is open to anyone who has it |
 | `REQUIRE_GPU` | `1` | turns a silent CPU fallback into a startup error |
-| `KBM_LLM_MODEL` | *(optional)* `qwen3:8b` | the generator to pull **and** serve; leave unset for deepseek-math. This is the only channel `startup.sh` has for model selection |
+| `KBM_LLM_MODEL` | *(optional)* `t1c/deepseek-math-7b-rl:Q4` | the generator to pull **and** serve; leave unset for the repo default, `qwen3:8b`. Set it only to run a different arm. This is the only channel `startup.sh` has for model selection |
 | `KBM_TOOLS` | *(optional)* `1` / `0` | force native tool calling on or off, overriding the model's profile. Takes precedence over `KBM_TIR` |
 
 ---
@@ -146,8 +146,8 @@ So every future session inherits them without re-exporting:
 
 ```bash
 cd /workspace/RAG_experimentation/knowledge-base-math
-bash startup.sh                             # default generator (deepseek-math)
-KBM_LLM_MODEL=qwen3:8b bash startup.sh      # agent mode: tools + document search
+bash startup.sh                             # default generator (qwen3:8b, agent mode on)
+KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh   # the previous default, no tools
 ```
 
 You do **not** need to `ollama pull` first — stage 3 pulls whatever `KBM_LLM_MODEL` names.
@@ -195,16 +195,18 @@ nothing changes until you set one.
 | `APP_HOST` / `APP_PORT` | `0.0.0.0` / `7860` | bind address and port |
 | `APP_AUTH` | unset (no login) | `user:pass` pairs, comma-separated |
 | `REQUIRE_GPU` | unset | `1` = refuse to start without CUDA |
-| `KBM_LLM_MODEL` | `t1c/deepseek-math-7b-rl:Q4` | which generator to pull and serve. Naming a model also configures it — window, decode budget and tool capability come from `kbm/llm_profiles.py` |
+| `KBM_LLM_MODEL` | `qwen3:8b` (from `kbm/config.py`) | which generator to pull and serve. Naming a model also configures it — window, decode budget and tool capability come from `kbm/llm_profiles.py`. `startup.sh` reads the default out of `config.py` rather than repeating the tag, so the pod cannot serve a model the repo no longer defaults to |
 | `KBM_TOOLS` | from the model's profile | `1`/`0` forces native tool calling (`search_documents`, `run_python`, `list_documents`). Wins over `KBM_TIR` |
 | `KBM_TIR` | from the model's profile | `1`/`0` forces the ` ```python ` text protocol. Forced off whenever tools are on |
 | `KBM_NUM_CTX` / `KBM_NUM_PREDICT` | from the model's profile | window and decode cap; override only to test |
 | `KBM_API_TOKEN` | unset (**API is open**) | bearer token for `api/`. Different lock from `APP_AUTH` — see `DEPLOYMENT.md §4` |
 
-**Agent mode in one line.** The default generator has no tools template, so:
+**Agent mode is the default.** The default generator has a tools template, so `bash
+startup.sh` already gives you the arm where the model searches the documents and runs
+Python. To get back to a generator with no tool protocol:
 
 ```bash
-KBM_LLM_MODEL=qwen3:8b bash startup.sh
+KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh
 ```
 
 Stage 5 prints which protocol actually came up (`native tool calling`, `tool-integrated
