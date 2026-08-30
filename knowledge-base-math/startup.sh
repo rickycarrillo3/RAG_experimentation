@@ -15,16 +15,16 @@
 #     DATA_DIR        where chroma_db/ + bm25_indexes/ live (default: $WORKSPACE/kb-data)
 #     APP_AUTH        "user:pass" login pairs, comma-separated
 #     APP_PORT        port to serve on                (default: 7860)
-#     KBM_LLM_MODEL   generator to pull AND serve     (default: t1c/deepseek-math-7b-rl:Q4)
+#     KBM_LLM_MODEL   generator to pull AND serve     (default: kbm/config.py's OLLAMA_MODEL)
 #     KBM_TOOLS       1/0 force native tool calling on/off, overriding the model profile
 #     KBM_TIR         1/0 force the ```python text protocol; KBM_TOOLS wins over it
 #     KBM_API_TOKEN   bearer token for the API (leave unset and the API is OPEN)
 #
 # Agent mode (the model searches your documents and runs Python itself) needs a generator
-# with a tools template. The default deepseek-math has none — it is a completion-only
-# model — so agent mode is one variable away rather than on:
+# with a tools template, and the default qwen3:8b has one — so agent mode is now ON by
+# default rather than one variable away. The previous default is one variable back:
 #
-#     KBM_LLM_MODEL=qwen3:8b bash startup.sh
+#     KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh   # no tool protocol
 #
 # Stage 5 prints which tool protocol actually came up. See AGENT.md.
 #
@@ -69,14 +69,8 @@ export API_PORT="${API_PORT:-8000}"
 # app.py talks to the API over loopback; only APP_PORT needs exposing publicly.
 export KBM_API_URL="${KBM_API_URL:-http://127.0.0.1:$API_PORT}"
 
-# ── Generator selection ────────────────────────────────────────────────────────
-# One name for "which model", used for BOTH the pull below and the server, because they
-# used to be two: the pull was a literal and the server read KBM_LLM_MODEL, so selecting a
-# generator pulled deepseek and then served something that was never fetched. The pod
-# reported itself ready and failed on the family's first question.
-# evaluation/eval.sh:57-60 carries the same fix and the same comment.
-export KBM_LLM_MODEL="${KBM_LLM_MODEL:-${GEN_MODEL:-t1c/deepseek-math-7b-rl:Q4}}"
-GEN_MODEL="$KBM_LLM_MODEL"
+# ── Tool-protocol overrides ────────────────────────────────────────────────────
+# (Which generator, further down: it asks kbm/config.py, so it waits for the venv.)
 # Exported so uvicorn and app.py inherit them. Unset by default: which tool protocol a
 # model gets is decided by its profile (kbm/llm_profiles.py), and these only override it.
 # See AGENT.md and DEPLOYMENT.md §3.
@@ -117,6 +111,33 @@ if [ -f venv/bin/activate ]; then
   source venv/bin/activate
 fi
 PY="${PYTHON:-python}"
+
+# ── Generator selection ────────────────────────────────────────────────────────
+# One name for "which model", used for BOTH the pull below and the server, because they
+# used to be two: the pull was a literal and the server read KBM_LLM_MODEL, so selecting a
+# generator pulled deepseek and then served something that was never fetched. The pod
+# reported itself ready and failed on the family's first question.
+# evaluation/eval.sh:57-60 carries the same fix and the same comment.
+#
+# The DEFAULT is not spelled here either, for the second half of that reason: a literal in
+# this file is a COPY of kbm/config.py's OLLAMA_MODEL, and the day the two disagree the pod
+# pulls and serves whatever the shell said while the repo says something else — silently,
+# because both halves of this script still agree with each other. So ask config.py, the one
+# place the default lives. It imports only stdlib and kbm/llm_profiles.py, so this cannot
+# fail for want of a dependency; if it fails at all, nothing below would have started
+# either, so stop and say so rather than guessing a tag.
+if [ -z "${KBM_LLM_MODEL:-}" ] && [ -n "${GEN_MODEL:-}" ]; then
+  KBM_LLM_MODEL="$GEN_MODEL"          # eval.sh's spelling of the same knob, kept working
+fi
+if [ -z "${KBM_LLM_MODEL:-}" ]; then
+  KBM_LLM_MODEL=$($PY -c 'from kbm.config import OLLAMA_MODEL; print(OLLAMA_MODEL)') || {
+    echo "✗ Could not read the default generator from kbm/config.py." >&2
+    echo "  Run this from knowledge-base-math/, or set KBM_LLM_MODEL explicitly." >&2
+    exit 1
+  }
+fi
+export KBM_LLM_MODEL
+GEN_MODEL="$KBM_LLM_MODEL"
 
 hr() { printf '─%.0s' $(seq 1 72); echo; }
 

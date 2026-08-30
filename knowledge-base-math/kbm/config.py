@@ -52,9 +52,23 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # (EVALUATION.md §12) rather than a code edit per experiment. kbm/retrieval.py re-exports it,
 # so every existing `from kbm.retrieval import OLLAMA_MODEL` keeps working.
 #
-# The default stays deepseek-math until the college-tier bake-off says otherwise. A
-# measured swap or none at all.
-OLLAMA_MODEL = os.environ.get("KBM_LLM_MODEL", "t1c/deepseek-math-7b-rl:Q4").strip()
+# The default is qwen3:8b as of 2026-08-30, chosen rather than measured: EVALUATION.md
+# §13.6 still has no numbers in it, and this swap was made ahead of that gate on purpose.
+# Say so plainly here, because the reason to prefer it is a CAPABILITY and not a score —
+# qwen3 is the only pulled model with a tools template, so it is the only default under
+# which the generator can run Python and search the family's documents mid-answer. On
+# deepseek that machinery is unreachable (`ollama show` -> Capabilities: completion).
+#
+# Naming it therefore changes the serving protocol, not just the weights: kbm/llm_profiles.py
+# gives qwen3 tools=True, so config.TOOLS_ENABLED below resolves to native tool calling
+# and TIR is forced off. Window and decode cap move with it (8192/1024, from 4096/350).
+#
+# deepseek-math is set aside, not deleted — it keeps its profile row, its published
+# numbers in the bake-off table, and one env var brings it back:
+#     KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4
+# It stays the honest comparison for §13.6, which is still the thing that would turn this
+# default from a choice into a result.
+OLLAMA_MODEL = os.environ.get("KBM_LLM_MODEL", "qwen3:8b").strip()
 
 # Everything else about the model — window size, decode budget, whether it can drive the
 # Python sandbox — comes from its profile, so naming a model configures it. Env vars

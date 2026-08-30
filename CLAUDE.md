@@ -82,13 +82,16 @@ python app.py
 
 Requires [Ollama](https://ollama.com) running locally with the model pulled:
 ```bash
-ollama pull t1c/deepseek-math-7b-rl:Q4
+ollama pull qwen3:8b
 ```
 
 The generator is selected by **`KBM_LLM_MODEL`** (default: the tag above) and is no longer
-a literal in the source. Naming a model also configures it — `kbm/llm_profiles.py` supplies its
-context window, decode budget and whether it may use the Python sandbox:
+a literal in the source — `kbm/config.py`'s `OLLAMA_MODEL` is the single place that default
+lives, and `startup.sh`/`evaluation/eval.sh` read it from there rather than repeating it.
+Naming a model also configures it — `kbm/llm_profiles.py` supplies its context window,
+decode budget and whether it may use the Python sandbox:
 ```bash
+KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 uvicorn api.main:app --port 8000    # the old default
 KBM_LLM_MODEL=hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M uvicorn api.main:app --port 8000
 ```
 
@@ -97,9 +100,12 @@ it can run Python *and* decide to search the family's documents again mid-answer
 by the profile, overridable with `KBM_TOOLS`, and mutually exclusive with `KBM_TIR`.
 `GET /healthz` reports the effective arm as `protocol` (`tools` / `tir` / `none`).
 
+Since qwen3:8b became the default this is the **out-of-the-box** arm, not an opt-in one:
+
 ```bash
-KBM_LLM_MODEL=qwen3:8b uvicorn api.main:app --port 8000   # protocol: tools
-KBM_TOOLS=0 KBM_LLM_MODEL=qwen3:8b uvicorn api.main:app   # protocol: tir  (bake-off arm D)
+uvicorn api.main:app --port 8000                          # protocol: tools  (the default now)
+KBM_TOOLS=0 uvicorn api.main:app --port 8000              # protocol: tir   (bake-off arm D)
+KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 uvicorn api.main:app   # protocol: none
 ```
 
 Forced onto a model with no tools template, the server logs an error and **downgrades**
@@ -173,11 +179,12 @@ The same trap caught the index paths: `CHROMA_DIR`/`BM25_DIR` were declared in *
 
 ## Model & infra
 
-- LLM: `t1c/deepseek-math-7b-rl:Q4` served via Ollama — the **default**, not a constant. Selected by `KBM_LLM_MODEL`; candidates and the protocol for choosing between them are `EVALUATION.md §12`. The default stays deepseek until that section has numbers in it.
+- LLM: **`qwen3:8b`** served via Ollama — the **default** since 2026-08-30, not a constant. Selected by `KBM_LLM_MODEL`; candidates and the protocol for choosing between them are `EVALUATION.md §12`. ⚠️ This default was **chosen, not measured** — `EVALUATION.md §13.6` still has no numbers in it, and the swap was made ahead of that gate deliberately. The reason is a *capability*, not a score: qwen3 is the only pulled model with a `tools` template, so it is the only default under which the generator can run Python and re-search the family's documents mid-answer. Treat §13.6 as still owed, not as satisfied.
+- Previous default: `t1c/deepseek-math-7b-rl:Q4` — set aside, not removed. It keeps its `llm_profiles.py` row and its bake-off arm, and `KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4` brings it back in one variable. It is still the comparison §13.6 has to make.
 - Embeddings: `BAAI/bge-small-en-v1.5` (HuggingFace, normalized).
 - Reranker: `BAAI/bge-reranker-v2-m3` cross-encoder via `sentence_transformers.CrossEncoder` (~2.2GB, downloads to the HF cache on first use — keep the HF cache on `/workspace` on the pod so it survives restarts).
 - Generator bake-off candidates (`EVALUATION.md §12`, all Q4_K_M to match the incumbent's Q4): `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M` (no official Ollama library entry — Ollama pulls the GGUF from HF), `qwen2.5:7b-instruct-q4_K_M`, and `qwen2-math:7b-instruct-q4_K_M` as a library-hosted fallback. Published GSM8K/MATH numbers for all of them are tabulated in `EVALUATION.md §12.2` from one harness (arXiv:2409.12122 Table 3) — **reference for choosing what to test, never evidence for what ships**: wrong distribution, public test sets, unquantized. Note the context windows differ 32×: deepseek-math and Qwen2.5-Math are 4,096, Qwen2.5-Instruct is 131,072, and the serving path spends that budget on retrieved chunks + history.
-- Tool-capable generator: **`qwen3:8b`** — the only pulled model with a `tools` template, and therefore the only way to run agent mode. Not the default (`EVALUATION.md §13.6` is the gate). `ollama pull qwen3:8b`, then `KBM_LLM_MODEL=qwen3:8b`.
+- Tool-capable generator: **`qwen3:8b`** — the only pulled model with a `tools` template, and therefore the only way to run agent mode. It is now the default, so **agent mode is on out of the box** and `GET /healthz` reports `protocol: tools` unless something overrides it. `ollama pull qwen3:8b` is no longer optional.
 - Eval-only model: `qwen2:7b` (Ollama) — used by `make_evalset.py` as the *instruct* question-writer and by `eval.py` as the LLM-as-judge. Deliberately **not** deepseek-math (a solver, not a writer; and a model must not grade its own output). Only needed when running the eval harness, not the serving pipeline — `ollama pull qwen2:7b`. ⚠️ It is also the model the agent protocol was first verified on, and it *does* report a `tools` template — its profile sets `tools=False` as policy, not capability, so it cannot quietly become the generator. And when judging Qwen arms in the bake-off, pass `--judge-model` with something non-Qwen: a Qwen judge on Qwen arms is a same-family self-preference risk (`EVALUATION.md §13.3`).
 - Designed to run on a RunPod GPU pod; everything must survive on `/workspace` (persistent volume) between pod restarts — `OLLAMA_MODELS`, `HF_HOME`, and **`DATA_DIR`**. The first two cost a ~10GB re-download if missed; `DATA_DIR` is the one that loses the family's uploaded documents outright, because the container filesystem is wiped on restart and the indexes default to the current directory.
 

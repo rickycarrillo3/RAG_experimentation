@@ -591,7 +591,7 @@ Isolating axis: **fix the context, vary only the model.** Two conditions per que
 **The `oracle − retrieved` gap attributes end-to-end quality loss to retrieval versus
 generation** — nothing currently measures that.
 
-Candidates: `deepseek-math-7b-rl:Q4` (current, set in `kbm/retrieval.py:OLLAMA_MODEL`), the
+Candidates: `qwen3:8b` (current, `kbm/config.py:OLLAMA_MODEL`), `deepseek-math-7b-rl:Q4`, the
 same at Q8, `Qwen2.5-Math-7B-Instruct`, `Qwen3-8B`. Q4 quantization costs accuracy on
 exactly the multi-step arithmetic the model exists to do, so quantization is a candidate
 axis in its own right, not a fixed background condition.
@@ -1006,9 +1006,19 @@ python evaluation/model_bakeoff.py --easy         # regression tripwire, AFTER a
 All Q4_K_M, because the incumbent is a Q4 GGUF and comparing it against an fp16 challenger
 measures the quantization and calls it the model.
 
+⚠️ **Since 2026-08-30 the "incumbent" row is `qwen3:8b`, not deepseek.** `model_bakeoff.py`
+takes its incumbent from `config.OLLAMA_MODEL` rather than a literal, so the default swap
+moved it automatically — which is correct (the thing to beat is the thing that ships) but
+easy to misread against the table below, written when deepseek held that slot. Deepseek is
+now an ordinary challenger arm: `--models t1c/deepseek-math-7b-rl:Q4 …`, or
+`--incumbent t1c/deepseek-math-7b-rl:Q4` to score everything against the old default
+instead. Note also that qwen3 has **no `REFERENCE_BENCHMARKS` row**, so `--check` prints
+"no published numbers on file" for the incumbent — the paper column simply does not exist
+for it, which is a reason to run §13.6 rather than a defect in the harness.
+
 | arm | role | the question it answers |
 |---|---|---|
-| `t1c/deepseek-math-7b-rl:Q4` | incumbent | the thing to beat |
+| `t1c/deepseek-math-7b-rl:Q4` | *former* incumbent (now a challenger) | the thing the new default has to justify displacing |
 | `hf.co/bartowski/Qwen2.5-Math-7B-Instruct-GGUF:Q4_K_M` | math specialist, newer | does a year-newer specialist close §11.6's arithmetic gap? |
 | `qwen2.5:7b-instruct-q4_K_M` | strong generalist | does a generalist beat a math specialist *at math*? |
 
@@ -1322,8 +1332,19 @@ Read in this order, and stop at the first one that fails:
 
 Not yet run. Record each arm's table, its `TOOL USE` block, and its
 `BEYOND VOTING'S REACH` count here, then state the decision and the date — the same shape
-as §11.5. **The default in `config.OLLAMA_MODEL` stays deepseek-math until this section
-has numbers in it.**
+as §11.5.
+
+⚠️ **This gate was overridden on 2026-08-30, and the debt is still owed.**
+`config.OLLAMA_MODEL` was changed to `qwen3:8b` before this section had any numbers in it.
+That was a deliberate call, not an oversight, and the reason was a capability rather than a
+score: qwen3 is the only pulled model with a tools template, so it is the only default under
+which the generator can run Python and re-search the documents mid-answer. The rule this
+section used to state — *no swap without a measurement* — was there to stop exactly this
+move being made on vibes, so record it plainly: **the current default is unmeasured against
+its predecessor on our own questions.** Running the arms below is what would settle whether
+it deserves to stay, and until then "qwen3 is the default" is not evidence that qwen3 is
+better. deepseek-math remains one env var away and is still the incumbent this comparison
+has to beat.
 
 ⚠️ **Read this before running arm D or E.** The harness did not pass `reasoning=` to
 `ChatOllama` until 2026-08-20, so qwen3 ran with **thinking mode on** — its default. The
@@ -1339,4 +1360,3 @@ an older checkout is measuring thinking-mode overflow, not the model. Fixed in
 smoke of the college tier: `greedy answers that ran a program: 3/3`, 3/3 correct, 0 sandbox
 failures. That is a wiring check and **not a result** — three questions is not an exam, and
 the arm is only worth reading against arm C and arm D on the full 30.
-||||||| 1783c86

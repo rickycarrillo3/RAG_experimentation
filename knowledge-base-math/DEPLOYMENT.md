@@ -55,8 +55,8 @@ Three things are load-bearing:
 - **The pod must actually stop.** An always-on 24GB card is ~$115/mo. `ops/idle_stop.py`
   is what keeps this honest; without it there is no budget, only an intention.
 - **Card choice.** RTX 4090 community is $0.34/hr → $35.70/mo on compute alone, over
-  budget before storage. The A5000's 24GB covers the ~8GB steady-state query footprint
-  on the default generator, or ~10.7GB in agent mode on `qwen3:8b`
+  budget before storage. The A5000's 24GB covers the ~10.7GB steady-state query footprint
+  on the default generator (`qwen3:8b`, agent mode), or ~8GB if you fall back to deepseek
   (`ARCHITECTURE.md §4`), with room for a Q8 generator either way — so the cheap card is
   also the sufficient one. **If the generator benchmark picks a model needing >24GB,
   this table has to be redone** — treat that as an exit criterion of the benchmark, not
@@ -84,7 +84,7 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
 | `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
-| `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `kbm/llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `t1c/deepseek-math-7b-rl:Q4`. |
+| `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `kbm/llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `qwen3:8b` (defined once, in `kbm/config.py`; `startup.sh` and `evaluation/eval.sh` read it from there). Set it to `t1c/deepseek-math-7b-rl:Q4` for the previous default. |
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. `NUM_PREDICT` now defaults per model (350 for deepseek, 1024 for a TIR model, which needs room to reason, write a program, and reason again). |
 | `KBM_NUM_CTX` | Context window sent to Ollama. Defaults to the model's real window. **Do not raise it above what the model was trained for** — Ollama will not refuse, it will degrade. Ollama also shifts an overflowing context from the *left*, which eats the system prompt first and silently. |
 | `KBM_TIR` | `1`/`0` forces tool-integrated reasoning on or off, overriding the model's profile. On, the generator may write Python and have it executed between passes (§8). |
