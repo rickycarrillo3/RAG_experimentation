@@ -8,6 +8,7 @@ eval can build exactly the prompt that ships.
 """
 
 import os
+import re
 
 from langchain_core.documents import Document
 
@@ -571,6 +572,39 @@ HISTORY_BLOCK = 8   # the window start only ever moves in steps of this
 
 PREVIEW_CHARS = 200
 
+# ── Follow-up detection, for the retrieval query only ─────────────────────────
+# A follow-up turn is a question the student wrote assuming the previous one is still
+# in the room: "explain it again", "why is that true?", "another example". The prompt
+# handles those fine — `history` is right there in it — but RETRIEVAL does not, because
+# retrieval only ever saw the message itself. BM25 tokenises stopwords, the dense
+# embedder encodes a contentless sentence, every chunk scores under RELEVANCE_FLOOR,
+# select_context keeps none and decide_mode returns `general`: the student's own
+# textbook is skipped on a question that was entirely about their textbook.
+#
+# The failure is invisible, which is the reason to fix it rather than tolerate it. The
+# answer still reads well (the previous turn is in the prompt), the `Sources:` footer
+# just quietly stops appearing and provenance flips to `general` — collapsing exactly
+# the grounded/ungrounded distinction the whole provenance mechanism exists to keep.
+
+# Short enough to be elliptical on its own. "why?", "explain that again", "another
+# example" all land here; "what is the derivative of sin(x)?" is seven words and does not.
+FOLLOWUP_MAX_WORDS = 6
+
+# How much of the borrowed question may enter the query. A student who pasted a whole
+# word problem last turn must not have it swamp the two words they typed this turn.
+FOLLOWUP_CONTEXT_CHARS = 200
+
+# Words that point at something outside the sentence they are in. Deliberately only
+# object-anaphors and demonstratives: "you" and "me" refer to the two people in the
+# conversation and are present in plenty of perfectly standalone questions ("can you
+# show me how to integrate by parts"), so including them would fire on everything.
+_ANAPHORS = frozenset({
+    "it", "its", "that", "this", "those", "these", "they", "them", "their",
+    "there", "again", "instead",
+})
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
 
 def history_window(history: list[Message]) -> list[Message]:
     """The slice of history sent to the model, trimmed in blocks rather than per turn.
@@ -604,6 +638,62 @@ def format_history(history: list[Message]) -> str:
         role = "Student" if m.role.value == "user" else "Tutor"
         lines.append(f"{role}: {m.content}")
     return "\n".join(lines) if lines else "None yet."
+
+
+def is_follow_up(message: str, history: list[Message]) -> bool:
+    """Does this question only make sense given the turn before it?
+
+    Two signals, either of which is enough, and both require a previous turn to borrow
+    from — with an empty history there is nothing a pronoun could be pointing at, so a
+    first message is never a follow-up however it is phrased.
+
+        an anaphor        "why is THAT true", "explain IT again", "prove THIS"
+        very short        "why?", "and the converse?", "keep going"
+
+    Deliberately a heuristic and not a model. The rewrite it gates is a string
+    concatenation, so a false positive costs a query vector pulled toward a topic the
+    student was asking about seconds ago — bounded, and the relevance floor still decides
+    whether anything is grounded. An LLM rewriter would be more accurate and would cost
+    ~4-5GB of VRAM (ARCHITECTURE.md 4) and a prefill+decode sitting directly in front of
+    time-to-first-token, which is the part of the latency budget the student feels. The
+    numbers that would justify that price are evaluation/eval_followup.py's, and they do
+    not exist yet.
+    """
+    if not history:
+        return False
+    words = _WORD_RE.findall(message.casefold())
+    if not words:
+        return False
+    if len(words) <= FOLLOWUP_MAX_WORDS:
+        return True
+    return any(w in _ANAPHORS for w in words)
+
+
+def retrieval_query(message: str, history: list[Message]) -> tuple[str, bool]:
+    """The string retrieval searches on, and whether it differs from the message.
+
+    ⚠️ THE RETRIEVAL QUERY ONLY. The prompt still gets `message` verbatim, and so does
+    QuestionEcho. Anything else moves text inside the prompt prefix, which is the one
+    thing the KV cache cannot survive (LATENCY.md), and would desynchronise the echo
+    guards from what the model was actually asked.
+
+    AUGMENTS rather than replaces, with the student's own words first. BM25 is a bag of
+    words so the order means nothing to it; on the dense side the borrowed text shifts
+    the query vector toward the topic instead of defining it, which is what keeps a false
+    positive from answering the previous question outright.
+
+    Borrows the last STUDENT message, never the tutor's reply. The reply is hundreds of
+    words of explanation and would swamp a two-word follow-up completely — and the topic
+    vocabulary the query needs was in the question that prompted it anyway.
+    """
+    if not is_follow_up(message, history):
+        return message, False
+
+    prior = next((m.content for m in reversed(history) if m.role.value == "user"), "")
+    prior = " ".join(prior.split())[:FOLLOWUP_CONTEXT_CHARS].strip()
+    if not prior:
+        return message, False
+    return f"{message} {prior}", True
 
 
 def to_sources(results: list[tuple[Document, float]]) -> list[Source]:

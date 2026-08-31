@@ -15,6 +15,8 @@ Env vars
     DATA_DIR          base dir for the indexes            (default: ".")
     CHROMA_DIR        override the Chroma dir outright    (default: $DATA_DIR/chroma_db)
     BM25_DIR          override the BM25 dir outright      (default: $DATA_DIR/bm25_indexes)
+    KBM_MEMORY_DIR    override the curated-memory dir     (default: $DATA_DIR/memory)
+    KBM_MEMORY_TOKENS token budget for recalled memory    (default: per llm_profiles)
     OLLAMA_BASE_URL   where Ollama is served              (default: http://localhost:11434)
     APP_HOST          Gradio bind address                 (default: 0.0.0.0)
     APP_PORT          Gradio port                         (default: 7860)
@@ -39,6 +41,12 @@ from kbm.llm_profiles import profile_for
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 CHROMA_DIR = os.environ.get("CHROMA_DIR") or os.path.join(DATA_DIR, "chroma_db")
 BM25_DIR = os.environ.get("BM25_DIR") or os.path.join(DATA_DIR, "bm25_indexes")
+
+# Curated per-user memory (kbm/memory.py): a small profile the tutor carries between
+# conversations, added by hand via `python -m kbm.memory`. DATA_DIR-relative for the same
+# reason the indexes are — on a pod it must sit on the persistent volume or it is gone on
+# restart — and ops/backup_indexes.py archives it alongside them.
+MEMORY_DIR = os.environ.get("KBM_MEMORY_DIR") or os.path.join(DATA_DIR, "memory")
 
 # ── Where Ollama is ────────────────────────────────────────────────────────────
 # Defaults to the local daemon, which is the pod layout (app and Ollama on the same
@@ -93,6 +101,13 @@ NUM_PREDICT = int(os.environ.get("KBM_NUM_PREDICT") or PROFILE.num_predict)
 # stops the model being a tutor. Setting this explicitly is what makes the overflow
 # bounded and diagnosable instead.
 NUM_CTX = int(os.environ.get("KBM_NUM_CTX") or PROFILE.num_ctx)
+
+# How many tokens of recalled per-user memory (kbm/memory.py) may be injected into the
+# prompt. 0 disables recall entirely — which is the profile default for any 4096-token
+# model, where the prompt already runs ~3.4k with context and history (LATENCY.md).
+# qwen3 (8192) sets 400. Env var wins, so `KBM_MEMORY_TOKENS=150` opts deepseek in
+# knowingly. Writing memory via the CLI is unaffected by this; only recall is gated.
+MEMORY_TOKENS = int(os.environ.get("KBM_MEMORY_TOKENS") or PROFILE.mem_tokens)
 
 # Which tool protocol the generator gets, and the one place that decides it.
 #

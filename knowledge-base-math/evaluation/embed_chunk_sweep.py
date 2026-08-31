@@ -40,7 +40,9 @@ CHUNK_KEYS = list(CHUNKERS)                 # baseline, eqaware, eqaware_context
 EVAL_CONFIGS = ["dense", "hybrid+rerank"]   # isolate embedding, then shipping reality
 
 DEFAULT_DOC = "docs/extracted/calculus_chainrule.mmd"
-GOLDSET_PATH = os.path.join("evaluation", "goldset.jsonl")
+# __file__-relative rather than CWD-relative — see evaluation/eval.py for why, and
+# for what it does NOT fix (the indexes are still DATA_DIR-relative).
+GOLDSET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "goldset.jsonl")
 OUT_PATH = os.path.join("evaluation", "results", "sweep_results.json")
 
 

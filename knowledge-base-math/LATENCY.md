@@ -201,6 +201,15 @@ bugs that waste time on *both* machines, which is why they were worth doing rega
   tokens; keep them equal and a multiple of 2 for evenly spaced anchors.
 - **Never put per-query content before stable content in a prompt.** That is the rule fix 3
   encodes, and it is easy to undo by accident when editing `SYSTEM_PROMPT`.
+- **The follow-up query rewrite costs nothing here, by construction.**
+  `chat.retrieval_query` borrows the previous question into the *retrieval* query on an
+  elliptical turn (`EVALUATION.md §14`). It is a regex and a string concatenation — no model
+  call, no VRAM, and it runs before retrieval, which is ~4% of query time. It is also the
+  reason an LLM rewriter was not the first thing tried: a second instruct model would put a
+  prefill *and* a decode in front of `ttft_ms`, the one number the student actually watches.
+  ⚠️ It must never reach the prompt. `base_messages` gets `req.message` verbatim; a rewrite
+  in the human message is per-query text moved inside the cached prefix, i.e. exactly the
+  bullet above.
 
 ## 6. Reproducing
 

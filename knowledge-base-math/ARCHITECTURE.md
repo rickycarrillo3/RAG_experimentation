@@ -222,15 +222,33 @@ is sized to hold the whole thing (`DEPLOYMENT.md §2`).
 
 ---
 
-## 7. When these tiers become separate machines
+## 7. These tiers are now two machines — but not where you would expect
 
-Not yet. Today one pod holds all three.
+Done, and deliberately **not** along the line this section used to predict.
 
-Because retrieval runs fine on CPU and generation is ~90% of query time, the natural next
-architecture is a cheap always-on CPU host running BM25 + Chroma + RRF, with the GPU pod
-holding only Ollama and Marker. That is the moment the CPU and GPU rows above become two
-hosts with a network hop between them.
+The prediction was: retrieval runs fine on CPU and generation is ~90% of query time, so
+move BM25 + Chroma + RRF to a cheap always-on host and leave the GPU pod with Ollama and
+Marker. That would split the CPU and GPU rows of §5 down the middle.
 
-`DEPLOYMENT.md §1` explains why it is deferred: it adds a second always-on bill to a
-budget that already works. **The FastAPI boundary is what keeps it cheap to do later** —
-retrieval moves, and no client changes.
+**We split somewhere else, and row 7b is the reason.** Since agent mode, retrieval is no
+longer strictly upstream of generation: `search_documents` re-enters rows 3a–5 from
+*inside* the decode loop. Moving retrieval to another host would put a network hop in the
+middle of an answer, up to `agent.MAX_SEARCH_ROUNDS` times, and the expensive part of a
+re-search is the cross-encoder — a GPU model this table already accounts for. Splitting
+CPU-work from GPU-work would have separated two things that now call each other.
+
+So the actual boundary is **stateless from stateful**:
+
+| Host | Holds | Tiers from §1 |
+|---|---|---|
+| CPU pod, always on | `app.py` and nothing else | a browser's worth of CPU |
+| GPU pod, on demand | `api/`, retrieval, extraction, Ollama, the volume | GPU + CPU + Disk |
+
+The FastAPI boundary is what made this cheap, exactly as predicted — `app.py` was already
+an HTTP client, so the move cost it no code beyond the wake path. What changed hands was
+not a pipeline stage but a *responsibility*: the always-on host exists to be reachable
+when the expensive one is asleep (`DEPLOYMENT.md §5`).
+
+The prediction still stands for a later day. If generation ever moves to a serverless
+endpoint, retrieval has to choose a side again — and by then the question will be whether
+agent mode's mid-answer searches are worth their round trips.

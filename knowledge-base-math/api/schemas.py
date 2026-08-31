@@ -207,7 +207,7 @@ class Job(BaseModel):
                     "failed and pymupdf4llm was used, so the chunks contain no LaTeX",
     )
     stage: str | None = Field(
-        None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index"
+        None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index | backup"
     )
     diagnostic: str | None = Field(
         None,

@@ -1,0 +1,17 @@
+# Dependencies for the Gradio client ALONE — docker/Dockerfile.cpu installs this and
+# never requirements.txt.
+#
+# The whole point of the split is that this list is short. app.py's complete import list
+# is `json, logging, os, time, gradio, httpx, kbm.config`; kbm/config.py imports only
+# kbm/llm_profiles.py (dataclasses), and torch is imported lazily inside resolve_device(),
+# which app.py never calls. So the UI host needs no torch, no sentence-transformers, no
+# chromadb, and no marker-pdf — roughly 3GB of wheels that only the API host has any use
+# for. If something ever makes this file need torch, that is a sign the UI has stopped
+# being an HTTP client and started importing the pipeline again.
+#
+# Keep the gradio pin identical to requirements.txt. It is a three-way constraint
+# documented there (marker-pdf<2.0 -> transformers<5 -> huggingface-hub<1.0 vs gradio
+# 6.18's hub>=1.2), and although marker-pdf is not installed here, letting the two files
+# drift would mean the UI you test locally is not the UI that ships.
+gradio==6.17.3
+httpx

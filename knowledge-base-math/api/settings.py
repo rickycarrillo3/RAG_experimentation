@@ -124,11 +124,39 @@ SANDBOX_TIMEOUT_S = float(os.environ.get("KBM_SANDBOX_TIMEOUT", "10"))
 # not rendered by default.
 SHOW_TOOL_CODE = os.environ.get("KBM_SHOW_TOOL_CODE", "").strip().lower() in ("1", "true", "yes")
 
+# ── Retrieval ─────────────────────────────────────────────────────────────────
+# Whether a follow-up turn's retrieval query may borrow the previous question
+# (api/chat.py:retrieval_query). Default ON: without it "explain that again" retrieves on
+# a sentence made of stopwords, every chunk falls under RELEVANCE_FLOOR, and the answer
+# silently loses its grounding.
+#
+# A flag rather than a constant because it is the A/B switch the measurement needs. The
+# rewrite is a heuristic — evaluation/eval_followup.py prices both the win and the
+# false-positive cost — and turning it off on the pod must not require a redeploy.
+QUERY_REWRITE = os.environ.get("KBM_QUERY_REWRITE", "1").strip().lower() not in ("0", "false", "no")
+
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 # Declared in kbm/config.py, not here, and re-exported at the top of this file:
 # kbm/telemetry.py reads them, and kbm/ must not import from api/. Same rule as
 # DATA_DIR and OLLAMA_BASE_URL — anything needed outside the HTTP service belongs
 # in kbm/config.py. KBM_TELEMETRY_PATH / KBM_TELEMETRY_SALT are unchanged.
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Which browser origins may call this API. A literal list was fine while the only
+# client was app.py on the same pod — app.py is a *server-side* httpx client, so CORS
+# never applied to it at all. It stops being fine the moment the UI runs on its own
+# host: the Gradio origin is no longer localhost:7860, and the TypeScript frontend
+# api/main.py's comment anticipates will be somewhere else again.
+#
+# Comma-separated, and deliberately still a list rather than gaining a wildcard escape:
+# allow_credentials=True forbids "*" outright, and a wildcard plus a bearer token would
+# mean any page a family member visits can spend that token.
+CORS_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "KBM_CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:3000,http://localhost:7860",
+    ).split(",") if o.strip()
+]
 
 # ── Idle stop ─────────────────────────────────────────────────────────────────
 # Minutes without a /chat request before the pod stops itself. This is what keeps

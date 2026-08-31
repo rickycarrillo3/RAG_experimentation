@@ -48,4 +48,9 @@ torchvision
 fastapi
 uvicorn[standard]
 python-multipart   # required by FastAPI for the multipart /upload form
-httpx              # SSE client for app.py + Ollama health probe + RunPod stop call
+httpx              # SSE client for app.py + Ollama health probe + RunPod start/stop (ops/runpod.py)
+# Backup target client (ops/backup_indexes.py). Imported lazily, inside the upload
+# call, so a deployment that never sets KBM_BACKUP_URL neither needs it nor pays for
+# it at import — but the pod that holds the only copy of the family's documents does.
+# Not in requirements-ui.txt: the UI host has no indexes to archive.
+boto3
