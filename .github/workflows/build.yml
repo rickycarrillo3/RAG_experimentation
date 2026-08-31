@@ -1,0 +1,139 @@
+# Build the two deployment images and prove they can be imported.
+#
+# Be clear-eyed about what this buys. There is no test suite in this repo — test_chat.py
+# is a manual smoke test, not pytest — so this workflow is not catching logic bugs. What
+# it is for is that the IMAGE is now the deployment artifact (docker/Dockerfile.gpu is
+# SETUP.md §1 executed at build time), and an artifact nobody builds automatically is one
+# that quietly stops building. In particular the torch/torchvision CUDA pairing check in
+# Dockerfile.gpu only protects anything if a build actually runs it.
+#
+# The images are also the first real verification of that Dockerfile: it was authored on
+# a Mac with no Docker daemon, so CI is where it first gets built at all.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  CONTEXT: knowledge-base-math
+
+jobs:
+  compile:
+    name: byte-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Cheapest possible catch for a syntax error or a bad f-string reaching main.
+      # Excludes venv/, which is gitignored but may exist in a local run of `act`.
+      - run: python -m compileall -q -x 'venv|__pycache__' ${{ env.CONTEXT }}
+
+  ui-image:
+    name: UI image (CPU)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/kbm-ui
+
+      # Load into the local daemon on PRs so the smoke test below can run without a
+      # registry push. On main we push instead; `load` and `push` are mutually exclusive.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.CONTEXT }}/docker/Dockerfile.cpu
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=ui
+          cache-to: type=gha,mode=max,scope=ui
+
+      # Two things worth asserting about the UI image, both of which have been true by
+      # accident before and should be true on purpose:
+      #   1. app.py imports — safe to run because app.launch() sits under __main__.
+      #   2. torch is ABSENT. The image is small only as long as nothing drags the
+      #      pipeline back into the UI, and an accidental `import torch` in app.py would
+      #      otherwise show up as a slow build nobody reads.
+      - name: Smoke test the UI image
+        if: github.event_name == 'pull_request'
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker run --rm --entrypoint python "$IMAGE" -c "import app; print('app imports OK')"
+          if docker run --rm --entrypoint python "$IMAGE" -c "import torch" 2>/dev/null; then
+            echo "::error::torch is installed in the UI image — it should not be."
+            exit 1
+          fi
+          echo "confirmed: no torch in the UI image"
+
+  gpu-image:
+    name: API image (GPU)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # A CUDA base plus a cu128 torch/torchvision pair and marker-pdf runs to several
+      # GB, and a GitHub-hosted runner ships with ~14GB free. Reclaim the preinstalled
+      # toolchains we do not use before building, or the build fails on ENOSPC partway
+      # through pip — which looks like a dependency problem and is not one.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/kbm-gpu
+
+      # No `load:` on PRs here — the image is too large to be worth materialising in the
+      # daemon just to import it. The build itself is the test: Dockerfile.gpu runs
+      # `from torchvision.ops import nms` and `pip check` as build steps, which is the
+      # documented failure this image exists to make impossible.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.CONTEXT }}/docker/Dockerfile.gpu
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu

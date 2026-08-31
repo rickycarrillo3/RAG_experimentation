@@ -1,0 +1,49 @@
+# docker/Dockerfile.cpu — the UI host: Gradio, and nothing else.
+#
+# Runs on an always-on CPU pod in front of a GPU pod that stops itself when idle. That
+# arrangement is what closes the wake gap (DEPLOYMENT.md §5): the URL a family member
+# bookmarks now always answers, and app.py's ensure_awake() starts the GPU pod and shows
+# the wait as progress instead of a dead link.
+#
+# Build (from knowledge-base-math/):
+#     docker build -f docker/Dockerfile.cpu -t ghcr.io/<owner>/kbm-ui:latest .
+#
+# No CUDA base, no torch, no marker-pdf — see requirements-ui.txt for why that is a
+# property of app.py's imports rather than an optimisation. The practical consequence is
+# an image measured in hundreds of MB against the GPU image's several GB, which is what
+# makes an always-on host cheap enough to be worth having.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-ui.txt ./
+RUN pip install --upgrade pip && pip install -r requirements-ui.txt
+
+# Copy the four things this host runs, explicitly, rather than the whole tree.
+#
+# This is a security boundary as much as an image-size one. api/ never lands here, so
+# the UI host physically cannot read an index, execute model-written code, or reach
+# Ollama — and kbm/retrieval.py is absent, so the "do not reintroduce a second copy of
+# the pipeline" rule in CLAUDE.md is enforced by the image, not only by review.
+#
+# ops/runpod.py is here for the wake call and deliberately imports nothing from api/
+# (which is why its credentials are arguments) — see the header of that file.
+COPY app.py startup.sh ./
+# kbm/logsetup.py is in this list because app.py imports it. It deliberately imports
+# nothing from the repo, so it drags nothing else in behind it — that is what keeps
+# this list short enough to stay a security boundary.
+COPY kbm/__init__.py kbm/config.py kbm/llm_profiles.py kbm/logsetup.py kbm/
+COPY ops/__init__.py ops/runpod.py ops/
+
+ENV APP_PORT=7860
+
+EXPOSE 7860
+
+# --ui-only refuses to start if KBM_API_URL is still the loopback default, because on
+# this host there is no API behind it and every action would fail as a bare connection
+# error with nothing naming the cause.
+ENTRYPOINT ["bash", "startup.sh", "--ui-only"]

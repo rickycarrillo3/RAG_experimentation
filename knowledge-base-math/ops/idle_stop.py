@@ -9,27 +9,21 @@ Enabled only when KBM_IDLE_STOP_MINUTES > 0 and the RunPod credentials are prese
 a laptop run can never accidentally try to stop something.
 """
 
-import sys
+import logging
 import threading
 import time
 
-import httpx
-
 from api.settings import IDLE_STOP_MINUTES, RUNPOD_API_KEY, RUNPOD_POD_ID
+from ops.runpod import stop_pod
+
+# This runs inside the API process — api/main.py's lifespan starts the thread — so
+# kbm/logsetup.py's configuration is already installed by the time anything here emits.
+# It also settles an inconsistency: four of these five lines went to stderr and the
+# "watchdog armed" one went to stdout, so `2>/dev/null` hid some of the watchdog's
+# output and not the rest.
+log = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 60
-RUNPOD_API = "https://rest.runpod.io/v1"
-
-
-def _stop_pod() -> None:
-    """Ask RunPod to stop this pod. Stop, not terminate — the volume and its 15GB of
-    model weights must survive, or every wake re-downloads them."""
-    r = httpx.post(
-        f"{RUNPOD_API}/pods/{RUNPOD_POD_ID}/stop",
-        headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
-        timeout=30.0,
-    )
-    r.raise_for_status()
 
 
 def _watch() -> None:
@@ -45,24 +39,23 @@ def _watch() -> None:
         # An ingest can run for many minutes without any /chat traffic. Stopping the pod
         # mid-Marker would lose the work and leave a half-built index.
         if any(j.status.value in ("queued", "running") for j in routes._jobs.values()):
-            print("[idle_stop] idle, but an ingest job is active — deferring.", file=sys.stderr)
+            log.info("idle, but an ingest job is active — deferring.")
             continue
 
-        print(f"[idle_stop] idle {idle_for / 60:.1f} min — stopping pod {RUNPOD_POD_ID}.", file=sys.stderr)
+        log.info("idle %.1f min — stopping pod %s.", idle_for / 60, RUNPOD_POD_ID)
         try:
-            _stop_pod()
+            stop_pod(RUNPOD_POD_ID, RUNPOD_API_KEY)
             return
         except Exception as e:  # noqa: BLE001 - retry on the next tick rather than dying
-            print(f"[idle_stop] stop failed, will retry: {e}", file=sys.stderr)
+            log.warning("stop failed, will retry: %s", e)
 
 
 def start_watchdog() -> None:
     if not (RUNPOD_API_KEY and RUNPOD_POD_ID):
-        print(
-            "[idle_stop] KBM_IDLE_STOP_MINUTES is set but RUNPOD_API_KEY/RUNPOD_POD_ID "
-            "are not — the pod will NOT stop itself and will bill continuously.",
-            file=sys.stderr,
+        log.warning(
+            "KBM_IDLE_STOP_MINUTES is set but RUNPOD_API_KEY/RUNPOD_POD_ID "
+            "are not — the pod will NOT stop itself and will bill continuously."
         )
         return
     threading.Thread(target=_watch, name="idle-stop", daemon=True).start()
-    print(f"[idle_stop] watchdog armed: stop after {IDLE_STOP_MINUTES} min idle.")
+    log.info("watchdog armed: stop after %s min idle.", IDLE_STOP_MINUTES)

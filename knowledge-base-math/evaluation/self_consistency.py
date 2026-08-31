@@ -95,7 +95,9 @@ from kbm.llm_profiles import profile_for
 from kbm.retrieval import OLLAMA_MODEL
 from kbm.tools import agent, sandbox, tir
 
-EVAL_DIR = "evaluation"
+# __file__-relative rather than CWD-relative — see evaluation/eval.py for why, and
+# for what it does NOT fix (the indexes are still DATA_DIR-relative).
+EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")
 
 

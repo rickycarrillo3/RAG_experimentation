@@ -42,6 +42,12 @@ class Profile:
     # (qwen3 + TIR) still be measured against arm E (qwen3 + tools).
     tools: bool = False
     think: bool | None = None   # Qwen3-style thinking mode; None = model has none
+    # Tokens of recalled per-user memory (kbm/memory.py) the prompt may carry. 0 = memory
+    # recall off for this model. It is a property of the window: deepseek-math and
+    # Qwen2.5-Math run at 4096 where the prompt already reaches ~3.4k with context and
+    # history (LATENCY.md), so they get 0 and memory is opt-in there via KBM_MEMORY_TOKENS;
+    # qwen3's 8192 has the room. The CLI write path is unaffected by this — only recall is.
+    mem_tokens: int = 0
     notes: str = ""
 
 
@@ -96,6 +102,10 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
             tools=True,
             num_ctx=8192,
             num_predict=1024,
+            # 8192 leaves room the 4096 models do not have, and this is the only model
+            # with a write path (native tools), so memory recall and capture line up on
+            # the same deployment. ~400 tokens is a handful of short profile facts.
+            mem_tokens=400,
             # Thinking mode emits a <think> block before the answer. It would land in the
             # student's bubble, and it makes traces incomparable with the other arms.
             think=False,

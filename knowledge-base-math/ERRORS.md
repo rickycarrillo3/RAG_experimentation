@@ -17,6 +17,47 @@ the symptom pointed somewhere misleading. Routine typos don't belong here.
 
 ---
 
+## 2026-08-22 · Two recurring failures retired by the image (not fixed — made impossible)
+
+**Not a new bug.** This entry exists because two of the most-repeated failures in this log
+can no longer occur on the containerised path, and someone re-reading their old entries
+should know which advice has expired.
+
+**1. `ollama: command not found`.** `CLAUDE.md` called this "the single most repeated error
+in this project." The cause was never Ollama — it was that `SETUP.md §1` deliberately
+installs the binary onto `$WORKSPACE` and adds it to `PATH`, because `/usr/local/bin` is
+container filesystem and is wiped on every pod restart. Every fresh SSH session then needed
+the `~/.bashrc` line, and nobody remembered it.
+
+`docker/Dockerfile.gpu` installs Ollama to `/usr/local/bin` — **the exact opposite of what
+SETUP.md tells you to do, and correct there**, because in an image the container filesystem
+*is* the artifact and comes back on every start. The instruction was never about Ollama; it
+was a workaround for an unmanaged filesystem, and the workaround outlived its reason.
+
+**2. `operator torchvision::nms does not exist`.** Caused by installing torch from the CUDA
+index *before* `requirements.txt`, which pulls marker-pdf, which pulls a PyPI torchvision
+built against a different torch. The fix was always "requirements first, CUDA pair last" —
+a procedure, i.e. a thing that can be done in the wrong order.
+
+It is now a build step, and the build asserts it: `from torchvision.ops import nms` runs in
+the Dockerfile. Note *why* that is the check rather than `import torchvision` — a mismatched
+pair imports the package fine and only fails when the compiled op is resolved. A build that
+merely imported the module would pass and ship the bug.
+
+**The general lesson, and it is the point of the whole change.** Both of these were
+*procedures with traps*, and a procedure's failure rate never reaches zero — it just depends
+on who is running it and how tired they are. Moving them into an image does not make them
+less error-prone; it makes them run **once**, under review, with a failure that stops the
+build rather than surfacing weeks later on someone's first PDF upload.
+
+**Still not solved by any of this:** the CUDA *driver* on the pod. The image pins the
+toolkit; `nvidia-smi` remains the only authority on what the driver supports, and RunPod's
+dashboard listing is still wrong (see 2026-08-17, `torch.cuda.is_available()` is False on a
+working A5000). Containerisation narrows
+that judgment call from four steps to one comparison. It does not remove it.
+
+---
+
 ## 2026-08-21 · The model searched once in six, because another tool's description told it not to
 
 **Symptom.** Reported from the running app as "the model is not searching properly", after
@@ -425,6 +466,9 @@ fixes. See `SETUP.md §1` and `§8`.
 ---
 
 ## 2026-08-17 · `operator torchvision::nms does not exist`
+
+> **Retired on the containerised path** — this is now asserted at image build time.
+> See 2026-08-22 above.
 
 **Symptom.** Any `import torchvision` died in `torchvision/_meta_registrations.py` at
 `@torch.library.register_fake("torchvision::nms")`. Would have surfaced to a user as

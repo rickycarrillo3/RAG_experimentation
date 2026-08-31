@@ -18,12 +18,15 @@ a rented box; there is no reason for it to carry names.
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import uuid
 from datetime import datetime, timezone
 
 from kbm.config import TELEMETRY_PATH, TELEMETRY_SALT
+
+log = logging.getLogger(__name__)
 
 # Writes are appends of a single line under a lock. Concurrency here is a handful of
 # family members, so a lock plus line-buffered appends is sufficient and keeps the log
@@ -59,6 +62,7 @@ def log_query(
     search_queries: list | None = None,
     late_sources: list | None = None,
     tool_log: list | None = None,
+    retrieval_query: str | None = None,
 ) -> None:
     _append({
         "kind": "query",
@@ -66,6 +70,18 @@ def log_query(
         "ts": datetime.now(timezone.utc).isoformat(),
         "user_hash": user_hash(user),
         "question": question,
+        # What retrieval actually SEARCHED on, when that differs from what the student
+        # typed — a follow-up whose query borrowed the previous question
+        # (api/chat.py:retrieval_query). None when the two are the same, so the field
+        # costs nothing on the common row and its presence is itself the signal.
+        #
+        # Logged for the same reason `search_queries` is, one line down from the same
+        # argument: the gap between the student's words and the words that found the
+        # chunk is the training pair a real query rewriter would need, and it cannot be
+        # backfilled. It is also the only way to tell, offline, whether a `general`
+        # answer was ungrounded because the corpus lacked it or because the rewrite
+        # heuristic did not fire.
+        "retrieval_query": retrieval_query,
         "mode": mode,
         "sources": sources,
         "timings": timings,
@@ -143,12 +159,20 @@ def log_feedback(event_id: str, rating: str, note: str = "") -> None:
 
 
 def _append(record: dict) -> None:
-    # Telemetry must never take down a query. A failed write is logged to stderr and
-    # dropped — losing an analytics row is strictly better than losing a student's answer.
+    # Telemetry must never take down a query. A failed write is logged and dropped —
+    # losing an analytics row is strictly better than losing a student's answer.
+    #
+    # WARNING, not INFO, and that is the point of using the logger rather than the print
+    # this used to be. The print claimed in this very comment to go to stderr and went to
+    # stdout; more importantly, most callers of this module (the CLI entry points, the
+    # eval harness) never configure logging, and Python's handler-of-last-resort emits
+    # WARNING and above. So a dropped event stays visible everywhere, while under the API
+    # — which does configure logging — it now carries a level and a source like every
+    # other line in the log.
     try:
         os.makedirs(os.path.dirname(TELEMETRY_PATH) or ".", exist_ok=True)
         line = json.dumps(record, ensure_ascii=False)
         with _lock, open(TELEMETRY_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception as e:  # noqa: BLE001 - deliberately swallowed, see above
-        print(f"[telemetry] dropped {record.get('kind')} event: {e}")
+        log.warning("dropped %s event: %s", record.get("kind"), e)

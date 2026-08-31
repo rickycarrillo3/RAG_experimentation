@@ -43,7 +43,9 @@ from langchain_ollama import ChatOllama
 from kbm.config import OLLAMA_BASE_URL
 from kbm.retrieval import chunk_id, load_bm25
 
-EVAL_DIR = "evaluation"
+# __file__-relative rather than CWD-relative — see evaluation/eval.py for why, and
+# for what it does NOT fix (the indexes are still DATA_DIR-relative).
+EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")
 REVIEW_PATH = os.path.join(EVAL_DIR, "goldset_review.md")
 QUESTION_MODEL = "qwen2:7b"  # an *instruct* model; deepseek-math is a solver, not a writer

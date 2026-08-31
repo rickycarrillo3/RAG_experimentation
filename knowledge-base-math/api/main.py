@@ -9,45 +9,38 @@ from knowledge-base-math/, with the venv active and Ollama running.
 
 import contextlib
 import logging
-import os
-import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from kbm.logsetup import configure_logging
+
 from .deps import models
 from .routes import router
-from .settings import API_TOKEN, DATA_DIR, ENABLE_DOCS, IDLE_STOP_MINUTES
+from .settings import API_TOKEN, CORS_ORIGINS, DATA_DIR, ENABLE_DOCS, IDLE_STOP_MINUTES
 
-# Give the application's loggers a handler and a level. Without this the root logger has
-# none, so Python falls back to its handler-of-last-resort — which emits WARNING and above
-# and drops INFO entirely. Every `log.info` in api/routes.py was therefore invisible,
-# including the sandbox-failure line whose own comment says it is logged, and every tool
-# call. Errors still appeared, which is exactly why nobody noticed the rest was missing.
-#
-# basicConfig and not dictConfig: uvicorn owns its own loggers and this must not fight
-# them. It only installs a handler on the ROOT logger, which is what `logging.getLogger(
-# __name__)` in this package resolves to. KBM_LOG_LEVEL=WARNING restores the old quiet.
-logging.basicConfig(
-    level=os.environ.get("KBM_LOG_LEVEL", "INFO").upper(),
-    format="%(levelname)s:     %(name)s - %(message)s",
-)
+# Give the application's loggers a handler and a level, before anything else runs. The
+# rationale — and the bug that made it necessary — now lives with the implementation in
+# kbm/logsetup.py, because app.py needs the same configuration and had drifted into its
+# own second copy of it.
+configure_logging()
+
+log = logging.getLogger(__name__)
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     if not API_TOKEN:
-        print(
-            "[api] WARNING: KBM_API_TOKEN is unset — this API is OPEN. Fine on localhost; "
+        log.warning(
+            "KBM_API_TOKEN is unset — this API is OPEN. Fine on localhost; "
             "never deploy a pod like this. Anyone who finds the host can read every "
-            "uploaded document.",
-            file=sys.stderr,
+            "uploaded document."
         )
-    print(f"[api] data dir: {DATA_DIR}")
-    print(f"[api] OpenAPI docs: {'/docs (open)' if ENABLE_DOCS else 'disabled'}")
-    print("[api] loading embeddings, reranker, LLM client...")
+    log.info("data dir: %s", DATA_DIR)
+    log.info("OpenAPI docs: %s", "/docs (open)" if ENABLE_DOCS else "disabled")
+    log.info("loading embeddings, reranker, LLM client...")
     models.load()
-    print("[api] ready.")
+    log.info("ready.")
 
     if IDLE_STOP_MINUTES > 0:
         from ops.idle_stop import start_watchdog
@@ -70,12 +63,14 @@ app = FastAPI(
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
 
-# The TypeScript frontend will be served from a different origin during development.
-# Tighten `allow_origins` to the real frontend host before this is publicly reachable —
-# a wildcard plus a bearer token means any page the family visits can spend their token.
+# The TypeScript frontend will be served from a different origin during development,
+# and since the split the Gradio UI is on its own host too. Set KBM_CORS_ORIGINS to the
+# real frontend origins before this is publicly reachable — a wildcard plus a bearer
+# token means any page the family visits can spend their token, which is also why
+# allow_credentials=True below makes "*" invalid rather than merely unwise.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:7860"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

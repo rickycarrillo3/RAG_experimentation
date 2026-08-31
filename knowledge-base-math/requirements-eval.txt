@@ -1,0 +1,17 @@
+# The delta between running the app and running the eval harness — nothing more.
+#
+# Everything else evaluation/ imports (torch, sentence-transformers, langchain-*, sympy)
+# is already in requirements.txt, because the serving app needs it too. There is no
+# eval-only weight being carried by the deployment; the dependency runs the other way,
+# which is what this file exists to fix.
+#
+# datasets is imported by evaluation/calibrate_floor.py, which scores ARQMath-1
+# (hcju/mseqa) with the shipping reranker to calibrate KBM_RELEVANCE_FLOOR. Until now it
+# was declared nowhere and arrived only transitively via marker-pdf — so a clean
+# `pip install -r requirements.txt` gave you a working app and a calibration script that
+# died on import. A dependency you rely on by name belongs in a file that names it
+# (same rule as requirements.txt's sympy line).
+#
+# Install on top of requirements.txt, not instead of it:
+#     pip install -r requirements.txt -r requirements-eval.txt
+datasets

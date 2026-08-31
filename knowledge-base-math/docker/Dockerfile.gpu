@@ -1,0 +1,107 @@
+# docker/Dockerfile.gpu — the API host: retrieval, extraction, generation.
+#
+# This file is SETUP.md §1, executed once at build time instead of by hand on every new
+# pod. That is the whole point: the environment stops being the residue of a procedure
+# somebody ran months ago and becomes an artifact that is either built correctly or not
+# built at all. A pod created from this image cannot come out subtly different from the
+# last one, because there is no step at which anyone makes a choice.
+#
+# Build (from knowledge-base-math/):
+#     docker build -f docker/Dockerfile.gpu -t ghcr.io/<owner>/kbm-gpu:latest .
+#
+# ⚠️ The image pins the CUDA TOOLKIT; the pod supplies the DRIVER, and Docker does not
+# abstract that away. Within a CUDA major version compatibility is guaranteed (any 12.x
+# build runs on a driver supporting 12.0+), across one it is not. Read the driver's CUDA
+# version off `nvidia-smi` on the target pod and pick an image whose major matches —
+# never trust the number in RunPod's pod listing, which SETUP.md records as having been
+# wrong by two major versions.
+
+ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+FROM ${CUDA_IMAGE}
+
+ARG TORCH_VERSION=2.11.0
+ARG TORCHVISION_VERSION=0.26.0
+ARG CUDA_INDEX=cu128
+# "latest" is convenient and not reproducible. Pin it for a build you intend to keep.
+ARG OLLAMA_VERSION=latest
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/venv/bin:$PATH
+
+# zstd because Ollama's release asset is .tar.zst — the ollama.com/download/...tgz URL
+# 404s, and the redirect chain hides that behind a generic error (SETUP.md §1).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-pip \
+        curl ca-certificates zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# A venv rather than the system interpreter: Ubuntu 24.04 marks its Python
+# externally-managed (PEP 668), and `pip install --break-system-packages` into a distro
+# interpreter is exactly the kind of "works until it doesn't" the image exists to remove.
+RUN python3 -m venv /opt/venv && pip install --upgrade pip
+
+WORKDIR /app
+
+# ── The install order is load-bearing. Do not reorder these two steps. ────────────────
+# requirements.txt pulls marker-pdf, which pulls torchvision from PyPI. torchvision ships
+# compiled ops linked against one exact torch build, so a PyPI torchvision on top of a
+# CUDA-index torch breaks every import with "operator torchvision::nms does not exist".
+# Installing torch first therefore does NOT work — requirements.txt clobbers it. The CUDA
+# pair must be the LAST write. This is the single most expensive mistake in SETUP.md and
+# it is now a property of the image rather than a thing to remember.
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+RUN pip install --force-reinstall \
+        torch==${TORCH_VERSION}+${CUDA_INDEX} \
+        torchvision==${TORCHVISION_VERSION}+${CUDA_INDEX} \
+        --index-url https://download.pytorch.org/whl/${CUDA_INDEX}
+
+# Fail the BUILD on the trap above rather than the first PDF upload. Importing
+# torchvision.ops is the precise check: a mismatched pair imports `torchvision` fine and
+# dies only when the compiled op is resolved. `torch.cuda.is_available()` is deliberately
+# NOT checked here — the builder has no GPU, and asserting it would fail every build.
+# REQUIRE_GPU=1 covers that at runtime, which is where a GPU actually exists.
+RUN python -c "import torch, torchvision; from torchvision.ops import nms; \
+print('torch', torch.__version__, '/ torchvision', torchvision.__version__)" \
+    && pip check
+
+# ── Ollama ────────────────────────────────────────────────────────────────────────────
+# Into /usr/local, i.e. the container filesystem — which is now the CORRECT place, and a
+# direct reversal of SETUP.md §1. That instruction said to install onto $WORKSPACE
+# because /usr/local is wiped on every pod restart; in an image the filesystem IS the
+# artifact and comes back on every start. This is what finally retires the
+# `ollama: command not found` papercut and the ~/.bashrc PATH line, which CLAUDE.md calls
+# the single most repeated error in this project.
+#
+# The model WEIGHTS stay on the volume ($OLLAMA_MODELS), not in the image: they are
+# swapped deliberately during a generator bake-off (EVALUATION.md §12), and baking ~5GB
+# per candidate into a layer would make the image unusable for the thing it is for.
+RUN if [ "$OLLAMA_VERSION" = "latest" ]; then \
+        URL=https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst; \
+    else \
+        URL=https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst; \
+    fi; \
+    curl -fL "$URL" | tar --zstd -x -C /usr/local \
+    && ollama --version
+
+COPY . .
+
+# Defaults matching a RunPod pod with a network volume at /workspace. Every one of these
+# is why a pod restart does not cost ~15GB of re-downloads — and DATA_DIR is the one that
+# loses the family's documents outright if it is wrong, because the container filesystem
+# is wiped and the indexes are the only copy that exists (ARCHITECTURE.md §5).
+ENV WORKSPACE=/workspace \
+    OLLAMA_MODELS=/workspace/ollama-models \
+    HF_HOME=/workspace/.cache/huggingface \
+    DATA_DIR=/workspace/kb-data \
+    API_PORT=8000 \
+    REQUIRE_GPU=1
+
+EXPOSE 8000
+
+# Ollama's own port is deliberately NOT exposed. It is unauthenticated: a public 11434
+# lets anyone run inference on the GPU you are paying for (DEPLOYMENT.md §4).
+ENTRYPOINT ["bash", "startup.sh", "--api-only"]

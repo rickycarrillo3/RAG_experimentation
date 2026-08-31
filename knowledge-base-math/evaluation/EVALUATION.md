@@ -718,6 +718,16 @@ Still to do: re-calibrate from logged family questions (§10.9); 19 questions fr
 chapter is a bracket, not a distribution. The number is also a property of the reranker's
 output scale — **re-run the calibration if the reranker changes.**
 
+> **`calibrate_floor.py` needs one package the app does not.** The ARQMath run imports
+> `datasets`, which is declared in `requirements-eval.txt` — the *only* line in it, and
+> the only dependency the harness has that serving does not. It used to be declared
+> nowhere and arrived transitively via marker-pdf, so on a clean install this script died
+> on import while everything else worked:
+>
+> ```bash
+> pip install -r requirements.txt -r requirements-eval.txt
+> ```
+
 > ⚠️ The same ARQMath run is evidence on a second question. MIRB (arXiv:2505.15585)
 > reports that reranking with bge-reranker-v2-m3 *degrades* nDCG@10 across their math
 > tasks, and an AUC of 0.60 on fine-grained relevance is consistent with that. Our
@@ -1360,3 +1370,105 @@ an older checkout is measuring thinking-mode overflow, not the model. Fixed in
 smoke of the college tier: `greedy answers that ran a program: 3/3`, 3/3 correct, 0 sandbox
 failures. That is a wiring check and **not a result** — three questions is not an exam, and
 the arm is only worth reading against arm C and arm D on the full 30.
+
+---
+
+## 14. Follow-up turns: does retrieval survive a pronoun?
+
+Every question in `goldset.jsonl` stands on its own. Nobody talks that way for more than
+one turn, and the second turn is where retrieval quietly stops working.
+
+**The failure.** `api/routes.py` retrieves on the message the student sent. On "explain
+that again" BM25 tokenises stopwords, the dense embedder encodes a contentless sentence,
+every chunk falls under `KBM_RELEVANCE_FLOOR`, `select_context` keeps none and
+`decide_mode` returns `general`. The student's own textbook is skipped on a question that
+was entirely about their textbook — and **the answer still reads fine**, because the
+previous turn is in the prompt history. The only visible symptom is that the `Sources:`
+footer stops appearing, which is exactly the grounded/ungrounded distinction §4 exists to
+keep honest.
+
+**The fix under test.** `api/chat.py:retrieval_query` — if `is_follow_up` fires (history
+is non-empty *and* the message is ≤ `FOLLOWUP_MAX_WORDS` words or contains an anaphor),
+the previous **student** question is appended to the retrieval query. Retrieval query
+only: the prompt still gets the message verbatim. `KBM_QUERY_REWRITE=0` turns it off.
+
+### 14.1 The set
+
+`evaluation/followup_set.jsonl` — one row per gold row: `gold_chunk_id`, `q1` (the gold
+set's own question, as turn 1), `q2` (an elliptical restatement, hand-written). It
+carries **no `chunk_text`**; `eval_followup.py` joins to `goldset.jsonl` on the id, so
+there is exactly one copy of every gold passage and it is the hand-cleaned one.
+
+```bash
+python evaluation/eval_followup.py --user calctest
+```
+
+Three arms plus a guard, all on one retrieval config (`hybrid+rerank` by default):
+
+| arm | query |
+|---|---|
+| `turn1` | the standalone question — the ceiling, §7's number |
+| `raw` | the follow-up alone — what ships with the flag off |
+| `rewritten` | `chat.retrieval_query(...)` — what ships with it on |
+| false-positive | the *ordinary* gold set, with an unrelated prior question attached |
+
+### 14.2 How to read it
+
+**Two numbers decide it, and the second is the gate.**
+
+1. The win: `raw` should be near zero and `rewritten` should approach `turn1`.
+2. The false-positive cost: the heuristic fires on some standalone questions too (a short
+   question is indistinguishable from an elliptical one without reading it), and when it
+   does it staples an unrelated topic onto the query. **recall@5 must not fall.**
+
+recall@5 rather than recall@1, and that is a claim about the serving path rather than a
+convenient metric: retrieval hands the prompt `TOP_N=5` chunks and `select_context`
+filters them per chunk, so a gold chunk demoted from rank 1 to rank 3 is still in front of
+the model. One pushed past rank 5 is gone. The harness prints both; ship on the second.
+
+### 14.3 Baseline run — 2026-08-31, `--user apitest`, `hybrid+rerank`, MPS
+
+| arm | n | R@1 | R@5 | R@pool | MRR | nDCG@5 |
+|---|---|---|---|---|---|---|
+| turn1 (standalone) | 19 | 0.79 | **1.00** | 1.00 | 0.866 | 0.899 |
+| follow-up, raw | 19 | 0.05 | **0.21** | 0.26 | 0.125 | 0.142 |
+| follow-up, rewritten | 19 | 0.79 | **0.95** | 0.95 | 0.868 | 0.889 |
+
+**The failure is upstream of the reranker.** `recall@pool` on the raw arm is 0.26 — the
+gold chunk is not in the candidate pool at all on three questions in four, so no amount of
+reranking or floor-tuning could have recovered it. That is the same diagnostic §4 makes of
+recall@pool everywhere else, and it is why the fix belongs in front of retrieval.
+
+The rewrite recovers essentially the whole gap: 0.21 → 0.95 recall@5, and MRR **above**
+the standalone arm (0.868 vs 0.866), i.e. the borrowed question is not merely a crutch —
+two questions concatenated rank the shared chunk slightly better than either alone.
+
+False-positive cost, standalone questions with an unrelated prior turn attached:
+
+| arm | n | R@1 | R@5 | MRR |
+|---|---|---|---|---|
+| goldset, clean | 19 | 0.79 | **1.00** | 0.866 |
+| goldset, unrelated prior | 19 | 0.68 | **1.00** | 0.802 |
+
+Exposure 6/19 (32%) — that is how often the heuristic fires on a question that did not
+need it. recall@5 delta **+0.00**; recall@1 delta **−0.11**, i.e. two questions demoted out
+of rank 1 but still inside the top 5, so still in the prompt. That is the honest cost and
+it is the one to watch if the anaphor list is ever widened.
+
+**Verdict: ship it, default on.** Re-run before changing `FOLLOWUP_MAX_WORDS` or `_ANAPHORS`.
+
+### 14.4 What this run does not tell you
+
+Everything in §8, plus two specific to this set:
+
+- **Single-document corpus.** All 19 gold rows come from `calculus_chainrule.mmd`, so
+  every arm retrieves from the same book and this measures *within-document ranking*. The
+  production failure a follow-up causes — retrieving from the wrong document, or from
+  nothing — is bounded away by the corpus. The deltas are a lower bound on the win. The
+  harness prints this warning itself when it sees one source.
+- **n = 19.** Two questions are 0.11. Read the recall@5 column, which moved 0.74, not the
+  recall@1 column, which moved by two questions.
+- **The follow-ups are hand-written by the author of the fix**, which is the same
+  criticism §3 makes of `make_evalset.py`'s questions and it has the same answer:
+  `kbm/telemetry.py` now logs `retrieval_query` beside `question`, so the real follow-ups
+  the family types will replace these.
