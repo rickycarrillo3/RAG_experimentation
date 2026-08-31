@@ -1451,5 +1451,3 @@ Everything in §8, plus two specific to this set:
   criticism §3 makes of `make_evalset.py`'s questions and it has the same answer:
   `kbm/telemetry.py` now logs `retrieval_query` beside `question`, so the real follow-ups
   the family types will replace these.
-
-||||||| 1783c86
