@@ -112,24 +112,9 @@ def format_result(output: str) -> str:
     return f"\n```output\n{output}\n```\n"
 
 
-# Added to the static head of the system prompt, so `history` still comes last and the
-# cacheable prefix keeps its shape (see api/chat.py).
-#
-# Wording tracks Qwen's official TIR system prompt ("Please integrate natural language
-# reasoning with programs to solve the problem above, and put your final answer within
-# \boxed{}") with two deliberate changes:
-#
-#   - The \boxed{} clause is dropped. It belongs in evaluation/self_consistency.py,
-#     where a boxed answer is what the scorer parses; in a tutoring bubble it renders
-#     as literal LaTeX noise around a number the student can already see.
-#   - The protocol is spelled out. Qwen's one-liner works because the model is
-#     fine-tuned on the format; saying "stop after the block, the result comes back to
-#     you" costs a handful of cached tokens and makes the same prompt survive being
-#     pointed at a general instruct model, which is one of the bake-off arms.
-#
-# NO BRACES. This string is fed through ChatPromptTemplate, where { and } are variable
-# syntax — a literal brace here has to be doubled or it raises at format time.
-TIR_RULES = """- You can run Python to compute anything you are not certain of by hand. Write the program in a ```python code block and stop; the result comes back to you in an ```output block, and you carry on from there.
-- Use it for arithmetic, algebra, and anything numeric — a modular exponent, a determinant, an integral. sympy, numpy and the math module are available. Print what you want to see.
-- Then explain the result in your own words. The student is here to understand the method, not to read code, so the program is a tool you used and not the answer you give.
-"""
+# The TIR rules text moved to kbm/prompts/tools.py (with its "why this wording" comment).
+# Re-exported here so `from kbm.tools.tir import TIR_RULES` keeps working — api/chat.py
+# and the eval harness both import it that way. It is added to the static head of the
+# system prompt, so `history` still comes last and the cacheable prefix keeps its shape
+# (see api/chat.py).
+from kbm.prompts.tools import TIR_RULES  # noqa: F401  (re-export for back-compat)
