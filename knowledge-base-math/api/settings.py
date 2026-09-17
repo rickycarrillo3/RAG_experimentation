@@ -10,6 +10,7 @@ import os
 from kbm.config import (  # noqa: F401  (re-exported for callers)
     DATA_DIR,
     KEEP_ALIVE,
+    MEMORY_TOKENS,
     NUM_CTX,
     NUM_PREDICT,
     TELEMETRY_PATH,

@@ -63,6 +63,7 @@ def log_query(
     late_sources: list | None = None,
     tool_log: list | None = None,
     retrieval_query: str | None = None,
+    memories_recalled: int = 0,
 ) -> None:
     _append({
         "kind": "query",
@@ -139,6 +140,12 @@ def log_query(
         # re-calibrating KBM_RELEVANCE_FLOOR from real traffic would silently cover only
         # the retrievals the server initiated.
         "late_sources": late_sources or [],
+        # How many curated per-user memory facts (kbm/memory.py) were injected into this
+        # answer's prompt. A row where this is always 0 across a real corpus says the
+        # curated profile is not being maintained (or the model's window is too small for
+        # recall to be on); a non-zero value is what lets an offline read tell a
+        # memory-informed answer from a cold one.
+        "memories_recalled": memories_recalled,
         "error": error,
     })
 

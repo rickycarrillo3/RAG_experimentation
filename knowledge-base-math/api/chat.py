@@ -75,13 +75,13 @@ _GROUNDED_RULES = """- Context from the student's uploaded documents is provided
 - If the context does not cover part of the question, say so explicitly (say which part it does not cover) rather than filling the gap silently.
 - Do not write a source list or citation of your own: the server appends the exact one below your answer.
 
-Conversation so far:
+{memory}Conversation so far:
 {history}"""
 
 _GENERAL_RULES = """- No relevant material was found in the student's uploaded documents, so answer from your own expertise.
 - Do not claim or imply that any uploaded document supports what you say, and do not cite sources.
 
-Conversation so far:
+{memory}Conversation so far:
 {history}"""
 
 # Provenance is written by the server, NOT requested from the model.
@@ -523,6 +523,11 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
     grounded and general mid-conversation reuses the cached prefix instead of
     re-prefilling (LATENCY.md).
 
+    The mode block carries two more template variables filled at format time: `{memory}`
+    (curated per-user memory, see format_memory) sits just before `{history}` because it
+    is stable within a conversation and only varies by user, so it belongs in the
+    cacheable prefix ahead of history; `{history}` stays last.
+
     Four literal prompts would have been the same four strings with four places to forget
     to change one — which is why SYSTEM_PROMPTS below is derived from this function rather
     than written out beside it.
@@ -557,6 +562,9 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
 # DERIVED, not a second copy: an independent literal here would drift from system_prompt()
 # silently, and the drift would only show up as a quietly different prompt in the eval than
 # in production. Same rule as kbm/retrieval.py.
+#
+# These strings carry unfilled `{memory}` and `{history}` placeholders — a caller that
+# .format()s one must pass both (memory="" when it has no memory to inject).
 SYSTEM_PROMPTS = {mode: system_prompt(mode) for mode in _MODE_RULES}
 
 # `context` carries its own trailing blank line (see build_context) rather than the
@@ -638,6 +646,28 @@ def format_history(history: list[Message]) -> str:
         role = "Student" if m.role.value == "user" else "Tutor"
         lines.append(f"{role}: {m.content}")
     return "\n".join(lines) if lines else "None yet."
+
+
+def format_memory(facts: list[str]) -> str:
+    """The curated-memory block for the `{memory}` slot in the mode rules, or "".
+
+    `facts` comes from kbm.memory.recall, which has already chosen and budget-trimmed
+    them (pinned first, then the non-pinned ones the reranker judged relevant). This only
+    renders them.
+
+    Mirrors build_context's contract: it supplies its own trailing blank line rather than
+    the template baking one in, so an empty memory (the common case, and always the case
+    on a 4096-token model where MEMORY_TOKENS is 0) collapses to nothing instead of
+    leaving a blank line above "Conversation so far:". A verbatim question restated inside
+    a fact is not a concern here — these are operator-written strings, not model output.
+    """
+    if not facts:
+        return ""
+    bullets = "\n".join(f"- {f}" for f in facts)
+    return (
+        "What you know about this student, from earlier conversations:\n"
+        f"{bullets}\n\n"
+    )
 
 
 def is_follow_up(message: str, history: list[Message]) -> bool:
