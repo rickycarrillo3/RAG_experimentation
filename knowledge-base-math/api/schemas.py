@@ -167,6 +167,13 @@ class DoneEvent(BaseModel):
                     "raised, or timed out. The model sees the error text and usually "
                     "recovers, so this is a quality signal rather than a request failure.",
     )
+    memories_recalled: int = Field(
+        0,
+        description="Curated per-user memory entries (kbm/memory.py) injected into the "
+                    "prompt for this answer: pinned facts plus any non-pinned facts the "
+                    "reranker judged relevant to the question. 0 when memory recall is "
+                    "off (the default on a 4096-token model) or the user has none stored.",
+    )
 
 
 class ErrorEvent(BaseModel):

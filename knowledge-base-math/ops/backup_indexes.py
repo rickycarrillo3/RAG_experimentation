@@ -25,9 +25,10 @@ Configuration (all no-ops if KBM_BACKUP_URL is unset — a laptop run backs noth
     KBM_BACKUP_KEEP      how many archives to retain (default 7)
     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   standard boto3 credentials
 
-What is archived, and what is deliberately not: the indexes and the telemetry log, which
-are irreplaceable, and not the model caches, which are a re-download. That asymmetry is
-the whole point — bandwidth is recoverable, the corpus is not.
+What is archived, and what is deliberately not: the indexes, the curated per-user memory
+(kbm/memory.py) and the telemetry log, which are irreplaceable, and not the model caches,
+which are a re-download. That asymmetry is the whole point — bandwidth is recoverable, the
+corpus is not.
 """
 
 import argparse
@@ -37,7 +38,7 @@ import sys
 import tarfile
 import tempfile
 
-from kbm.config import BM25_DIR, CHROMA_DIR, DATA_DIR, TELEMETRY_PATH
+from kbm.config import BM25_DIR, CHROMA_DIR, DATA_DIR, MEMORY_DIR, TELEMETRY_PATH
 
 BACKUP_URL = os.environ.get("KBM_BACKUP_URL", "").strip()
 BACKUP_ENDPOINT = os.environ.get("KBM_BACKUP_ENDPOINT", "").strip()
@@ -54,6 +55,7 @@ def _targets() -> list[tuple[str, str]]:
     for path, arcname in (
         (CHROMA_DIR, "chroma_db"),
         (BM25_DIR, "bm25_indexes"),
+        (MEMORY_DIR, "memory"),
         (os.path.dirname(TELEMETRY_PATH), "telemetry"),
     ):
         if os.path.exists(path):

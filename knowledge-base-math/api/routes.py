@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+from kbm import memory as kbm_memory
 from kbm import retrieval, telemetry
 from kbm.config import OLLAMA_BASE_URL
 from kbm.retrieval import OLLAMA_MODEL
@@ -45,7 +46,9 @@ from .schemas import (
 )
 from .settings import (
     MAX_CONTINUATIONS,
+    MEMORY_TOKENS,
     QUERY_REWRITE,
+    RELEVANCE_FLOOR,
     SANDBOX_TIMEOUT_S,
     SHOW_TOOL_CODE,
     TIR_ENABLED,
@@ -118,6 +121,7 @@ async def _chat_stream(user: str, req: ChatRequest):
     sources = []
     mode = Mode.GENERAL
     answer = ""
+    memories_recalled = 0
     # Bound before the try so the error path below can log them: a request that fails
     # during retrieval is exactly the one where "what did we actually search for?" is
     # the question, and an UnboundLocalError inside an exception handler would replace
@@ -164,6 +168,20 @@ async def _chat_stream(user: str, req: ChatRequest):
         sources = chatmod.to_sources(selected) if mode is Mode.GROUNDED else []
         yield _sse("sources", SourcesEvent(mode=mode, sources=sources))
 
+        # Curated per-user memory (kbm/memory.py). Off unless the model's window has room
+        # for it (MEMORY_TOKENS, per llm_profiles) — 0 on any 4096-token model. Non-pinned
+        # facts are scored against the question by the reranker, so this goes off the
+        # event loop like retrieve_detailed above. It lands in the cacheable prefix ahead
+        # of history (chat.format_memory) and does not vary within a conversation.
+        memory_facts: list[str] = []
+        if MEMORY_TOKENS:
+            memory_facts = await anyio.to_thread.run_sync(
+                lambda: kbm_memory.recall(
+                    user, req.message, MEMORY_TOKENS, models.reranker, RELEVANCE_FLOOR
+                )
+            )
+        memories_recalled = len(memory_facts)
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", chatmod.system_prompt(mode, tir=TIR_ENABLED,
                                              tools=models.tools_enabled)),
@@ -180,6 +198,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # APPENDS after it. LATENCY.md's prefix rule depends on that and is load-bearing.
         base_messages = prompt.format_messages(
             context=chatmod.build_context(selected, mode),
+            memory=chatmod.format_memory(memory_facts),
             history=chatmod.format_history(req.history),
             input=req.message,
         )
@@ -686,6 +705,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             tool_errors=tool_errors,
             searches=search_rounds,
             late_sources=late_source_count,
+            memories_recalled=memories_recalled,
             protocol=models.protocol,
         ))
         # Telemetry logs every RETRIEVED chunk, not just the ones that cleared the floor.
@@ -703,6 +723,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             search_queries=search_queries, tool_log=tool_log,
             late_sources=[s.model_dump() for s in chatmod.to_sources(late_results)],
             retrieval_query=rquery if rewritten else None,
+            memories_recalled=memories_recalled,
         )
 
     except Exception as e:  # noqa: BLE001 - surfaced to the client as an SSE error frame
