@@ -90,8 +90,8 @@ Four things are load-bearing:
 - **The pod must actually stop.** An always-on 24GB card is ~$115/mo. `ops/idle_stop.py`
   is what keeps this honest; without it there is no budget, only an intention.
 - **Card choice.** RTX 4090 community is $0.34/hr → $35.70/mo on compute alone, over
-  budget before storage. The A5000's 24GB covers the ~8GB steady-state query footprint
-  on the default generator, or ~10.7GB in agent mode on `qwen3:8b`
+  budget before storage. The A5000's 24GB covers the ~10.7GB steady-state query footprint
+  on the default generator (`qwen3:8b`, agent mode), or ~8GB if you fall back to deepseek
   (`ARCHITECTURE.md §4`), with room for a Q8 generator either way — so the cheap card is
   also the sufficient one. **If the generator benchmark picks a model needing >24GB,
   this table has to be redone** — treat that as an exit criterion of the benchmark, not

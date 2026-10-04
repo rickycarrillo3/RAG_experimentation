@@ -131,18 +131,20 @@ carry deepseek's number as though the generator were a constant.
 
 | Model | Role | When | VRAM |
 |---|---|---|---|
-| generator weights — `deepseek-math-7b-rl:Q4` | generation | query | ~4.2 GB |
-| generator KV cache @ `num_ctx=4096` | generation | query | ~1.3 GB |
+| generator weights — `qwen3:8b` | generation | query | ~5.2 GB |
+| generator KV cache @ `num_ctx=8192` | generation | query | ~2.8 GB |
 | `bge-reranker-v2-m3` | cross-encoder | query | ~2.2 GB fp32 |
 | `bge-small-en-v1.5` | dense embed | query + ingest | ~0.5 GB |
-| | | **steady state (default)** | **~8.2 GB** |
+| | | **steady state (default)** | **~10.7 GB** |
 | Marker / Surya | PDF → LaTeX | ingest only | ~3–5 GB peak |
-| | | **upload peak (default)** | **~12.7 GB** |
+| | | **upload peak (default)** | **~15.2 GB** |
 
-**Agent mode costs about 2.5 GB more.** `qwen3:8b` is **5.2 GB** of weights against
-deepseek's 4.2, and `kbm/llm_profiles.py` runs it at `num_ctx=8192` rather than 4096, which
-roughly doubles the KV cache. Steady state becomes **~10.7 GB** and the upload peak
-**~15.2 GB** — still comfortably inside 24 GB, but no longer inside 12.
+**The default moved, and so did this table** (2026-08-30). `qwen3:8b` replaced
+`deepseek-math-7b-rl:Q4` as `config.OLLAMA_MODEL`, which costs about **2.5 GB more**: 5.2 GB
+of weights against deepseek's 4.2, and `kbm/llm_profiles.py` runs it at `num_ctx=8192`
+rather than 4096, roughly doubling the KV cache. Falling back to deepseek
+(`KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4`) returns steady state to **~8.2 GB** and the
+upload peak to **~12.7 GB** — the only configuration here that still fits inside 12 GB.
 
 Two notes on that context number. It is **our** choice, not the model's: `ollama show
 qwen3:8b` reports a real context length of **40960**, and 8192 is a deliberate cap. Raising

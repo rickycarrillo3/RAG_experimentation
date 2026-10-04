@@ -10,6 +10,15 @@ back for more.
 This file is the decision record: what the arm is, what it deliberately does *not* take
 from the model, and why it is hand-rolled rather than a LangGraph agent.
 
+> **Update, 2026-08-30: this is now the default arm.** `config.OLLAMA_MODEL` is `qwen3:8b`,
+> whose profile sets `tools=True`, so a plain `bash startup.sh` comes up with native tool
+> calling and `GET /healthz` reports `protocol: tools`. Nothing in the mechanism below
+> changed — what changed is that it is what the family gets rather than what an env var
+> buys. The two consequences worth carrying: everything §6 says about `search_documents`
+> returning **text the family uploaded** is now on the default path (`DEPLOYMENT.md §8`),
+> and the arm is the default *ahead of* `EVALUATION.md §13.6`, which still has no numbers
+> in it. `KBM_TOOLS=0` gives TIR; `KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4` gives neither.
+
 ---
 
 ## 1. Two protocols, one of them per model

@@ -35,10 +35,11 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
 - **Extraction** — Marker (LaTeX-faithful), falling back to pymupdf4llm
 - **Retrieval** — BM25 + `bge-small` dense, fused with Reciprocal Rank Fusion
 - **Reranking** — `bge-reranker-v2-m3` cross-encoder over the top-20 candidates
-- **Generation** — `deepseek-math-7b-rl` via Ollama by default; the generator is a
+- **Generation** — `qwen3:8b` via Ollama by default; the generator is a
   deployment knob (`KBM_LLM_MODEL`), and naming a model also configures it
-- **Tools** — on a tool-capable generator the model runs Python in a sandbox and decides
-  when to search the documents again ([`AGENT.md`](knowledge-base-math/AGENT.md))
+- **Tools** — the default generator is tool-capable, so out of the box the model runs
+  Python in a sandbox and decides when to search the documents again
+  ([`AGENT.md`](knowledge-base-math/AGENT.md))
 - **Serving** — `api/` is the deployable unit; `app.py` is an HTTP client of it
 - **Isolation** — per-username indexes (a naming convention, **not real auth**), which is
   load-bearing once the model can search: see [`DEPLOYMENT.md §8`](knowledge-base-math/DEPLOYMENT.md)
@@ -49,9 +50,9 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
 cd knowledge-base-math
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt        # pinned; read its header before changing
-ollama pull t1c/deepseek-math-7b-rl:Q4  # the generator
+ollama pull qwen3:8b                    # the generator (tool-capable: agent mode is on)
 ollama pull qwen2:7b                    # eval only (gold-set author + judge)
-ollama pull qwen3:8b                    # optional: the tool-capable generator
+ollama pull t1c/deepseek-math-7b-rl:Q4  # optional: the previous default, no tool protocol
 
 python prefetch_models.py              # warm the HF cache (~6GB, one time)
 
