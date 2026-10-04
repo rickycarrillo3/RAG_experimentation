@@ -154,6 +154,64 @@ There is no automated test suite/linter configured — `test_chat.py` is a manua
 
 Pipeline: PDF → `extract.py` → `.mmd` → `ingest.py` → per-user BM25 + Chroma indexes → `api/` (or `query.py`) → hybrid retrieval + RRF → cross-encoder rerank → LLM answer.
 
+### System flow: input to output
+
+```mermaid
+flowchart TD
+    subgraph ING["Ingestion (offline, per upload)"]
+        PDF[/"PDF upload"/] --> EX{"extract.py:\nmath glyphs?"}
+        EX -->|math-heavy| MARK["marker-pdf\n(Surya models)"]
+        EX -->|non-math / Marker fails| PYM["pymupdf4llm"]
+        MARK --> MMD[/".mmd\n(Markdown+LaTeX)"/]
+        PYM --> MMD
+        MMD --> CHUNK["kbm/chunking.py\nbaseline / eqaware / eqaware_context"]
+        CHUNK --> IDX1[("BM25 pickle\nbm25_indexes/user_*.pkl")]
+        CHUNK --> IDX2[("Chroma collection\nchroma_db/ user_*")]
+        CHUNK -.->|"async"| BACKUP["ops/backup_indexes.py\n(S3-compatible, if KBM_BACKUP_URL set)"]
+    end
+
+    subgraph Q["Query (api/ POST /chat, or query.py)"]
+        MSG[/"student message"/] --> REWRITE{"follow-up?\n(short / anaphor)"}
+        REWRITE -->|yes| RWQ["+ previous student question\n(chat.retrieval_query)"]
+        REWRITE -->|no| RWQ
+        RWQ --> RET["kbm/retrieval.py\nBM25 top-10 + dense top-10\n→ RRF (k=60) → top-20 pool\n→ cross-encoder rerank → top-5"]
+        IDX1 --> RET
+        IDX2 --> RET
+        RET --> FLOOR{"best score ≥\nKBM_RELEVANCE_FLOOR (0.15)?"}
+        FLOOR -->|yes| GROUNDED["mode = grounded"]
+        FLOOR -->|no| GENERAL["mode = general"]
+        MEM[("kbm/memory.py\nper-user curated facts")] -->|"recall() if mem_tokens>0"| PROMPT
+        GROUNDED --> PROMPT["api/chat.py\nprompt = static rules + {memory} + history + context + question\n(prefix order is cache-sensitive, LATENCY.md)"]
+        GENERAL --> PROMPT
+    end
+
+    subgraph GEN["Generation (Ollama)"]
+        PROMPT --> LLM["generator\n(qwen3:8b default, or deepseek-math)"]
+        LLM --> PROTO{"protocol\n(kbm/llm_profiles.py)"}
+        PROTO -->|"tools capable\n(qwen3, default)"| AGENT["kbm/tools/agent.py\nnative tool_calls:\nsearch_documents / run_python / list_documents"]
+        PROTO -->|"TIR\n(KBM_TOOLS=0)"| TIR["kbm/tools/tir.py\ntext protocol: ```python block\nstops at ```output"]
+        PROTO -->|"none\n(4096-token models)"| PLAIN["plain decode"]
+        AGENT -->|"run_python"| SANDBOX["kbm/tools/sandbox.py\nAST allow-list → subprocess,\nrlimits, no network"]
+        TIR -->|"```python block"| SANDBOX
+        AGENT -->|"search_documents\n(re-query mid-answer)"| RET
+        SANDBOX --> LLM
+        LLM --> TRUNC{"done_reason ==\nlength?"}
+        TRUNC -->|yes, up to\nKBM_MAX_CONTINUATIONS| LLM
+        TRUNC -->|no| DONE["final generated text"]
+    end
+
+    subgraph OUT["Output filtering & delivery"]
+        DONE --> FILT["api/chat.py filters:\nQuestionEcho · PrefillEcho ·\nCodeFenceFilter (hide code unless\nKBM_SHOW_TOOL_CODE=1)"]
+        FILT --> FOOT{"mode == grounded?"}
+        FOOT -->|yes| SRC["+ Sources: footer\n(deduped doc names)"]
+        FOOT -->|no| NOFOOT["no footer"]
+        SRC --> SSE
+        NOFOOT --> SSE["SSE stream:\nsources → token* → done\n(mode, timings, tool/search counters)"]
+        SSE --> UI[/"app.py (Gradio) or future TS frontend\n— HTTP clients only"/]
+        DONE -.-> TEL[("kbm/telemetry.py\nevents.jsonl: query + feedback")]
+    end
+```
+
 Serving is split: **`api/` is the deployable unit**; `app.py` and the future TypeScript
 frontend are both just HTTP clients of it. See `DEPLOYMENT.md` for hosting, cost, and env vars.
 
