@@ -1,0 +1,19 @@
+{"gold_chunk_id": "calculus_chainrule.mmd::47", "q1": "What is the derivative of k(x) = cos⁴(7x² + 1)?", "q2": "walk me through that one again"}
+{"gold_chunk_id": "calculus_chainrule.mmd::5", "q1": "What is the chain rule and why is it used when differentiating composite functions?", "q2": "why do we need it?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::40", "q1": "To differentiate a product like (2x+1)^5 (3x-2)^7, which two rules do you combine, and in what order?", "q2": "which order again?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::26", "q1": "What is the derivative of h(x) = sin³(x)?", "q2": "explain that step again"}
+{"gold_chunk_id": "calculus_chainrule.mmd::31", "q1": "What is the derivative of h(x) = cos(g(x)), and how does it use the chain rule?", "q2": "why does it work like that?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::52", "q1": "What does the proof demonstrate about calculating the derivative of a composite function, and what simplifying assumption is made regarding the function g(x)?", "q2": "what assumption was that?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::17", "q1": "If a function is built by plugging one function into another, h(x) = f(g(x)), what does the chain rule say its derivative equals?", "q2": "can you show me that with an example?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::37", "q1": "Why does the text also give the chain-rule formulas in Leibniz notation, and why does it say you don't need to memorize them as separate formulas?", "q2": "why don't I have to memorize them?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::19", "q1": "What are the steps to differentiate h(x) = f(g(x)) using the chain rule?", "q2": "list those steps again"}
+{"gold_chunk_id": "calculus_chainrule.mmd::33", "q1": "How do I differentiate cos(5x^2)?", "q2": "do that one again"}
+{"gold_chunk_id": "calculus_chainrule.mmd::58", "q1": "What does the chain rule using Leibniz's notation state when relating y as a function of u and u as a function of x?", "q2": "what do u and x mean there?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::12", "q1": "Why does the limit of (x^3 - a^3) / (x - a) equal the derivative of x^3 at x = a?", "q2": "why is that equal?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::23", "q1": "What is the formula for finding the derivative of a function that is a power of another function using the chain rule?", "q2": "give me another example of that"}
+{"gold_chunk_id": "calculus_chainrule.mmd::14", "q1": "How do you find the derivative of a composite function like h(x) = sin(x^3)?", "q2": "explain it again"}
+{"gold_chunk_id": "calculus_chainrule.mmd::63", "q1": "What is the derivative of y = tan(4x^2 - 3x + 1) with respect to x?", "q2": "how did you get that?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::10", "q1": "How do you write the limit definition of the derivative of sin(x^3) at a point a?", "q2": "why is it written that way?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::57", "q1": "What is the derivative of h(x) at x=2 given that h(x) = f(g(x)), g(2) = -3, g'(2) = 4, and f'(-3) = 7?", "q2": "where did those numbers come from?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::60", "q1": "What is the derivative of y with respect to x when y = (x/(3x+2))^5?", "q2": "can you show that again?"}
+{"gold_chunk_id": "calculus_chainrule.mmd::46", "q1": "How many parts does the derivative of the composition of three functions have, and what is the general approach for differentiating such compositions?", "q2": "how many parts was that?"}

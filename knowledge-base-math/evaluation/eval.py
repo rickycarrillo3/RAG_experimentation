@@ -49,7 +49,12 @@ from kbm.retrieval import (
 )
 from query import SYSTEM_PROMPT
 
-EVAL_DIR = "evaluation"                             # gold set + review live here
+# __file__-relative, not CWD-relative: the harness's own files (gold set, results/)
+# then resolve wherever it is invoked from. This does NOT make the harness
+# CWD-independent overall — the INDEXES still come from kbm.config's CHROMA_DIR/
+# BM25_DIR, which are DATA_DIR-relative and default to "." — so keep running these
+# from knowledge-base-math/. It removes one of the two CWD dependencies, not both.
+EVAL_DIR = os.path.dirname(os.path.abspath(__file__))  # gold set + review live here
 RESULTS_DIR = os.path.join(EVAL_DIR, "results")     # machine-specific run outputs
 GOLDSET_PATH = os.path.join(EVAL_DIR, "goldset.jsonl")
 JUDGE_MODEL = "qwen2:7b"  # NOT the generator — a model grading its own output is not evidence

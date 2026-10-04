@@ -10,35 +10,61 @@ models throughout.
 ## 1. Shape
 
 ```
-                    ┌─ RunPod pod (on-demand, stopped when idle) ────────┐
-  browser ──HTTPS──▶│  FastAPI (uvicorn)  api/main.py                    │
-                    │    /chat  SSE stream   /upload   /jobs   /feedback │
-                    │    ├─ kbm/retrieval.py  (BM25 + Chroma + reranker)     │
-                    │    ├─ extract.py    (Marker, GPU)                  │
-                    │    └─ Ollama        (generator)                    │
-                    │  idle watchdog ─── no /chat for N min ─▶ stop self │
-                    └─ /workspace network volume ───────────────────────┘
-                         docs/  chroma_db/  bm25_indexes/  telemetry/
-                         ollama-models/  .cache/huggingface/
+            ┌─ RunPod CPU pod (always on, ~$7/mo) ─┐
+ browser ──▶│  app.py  Gradio :7860                │   docker/Dockerfile.cpu
+            │  APP_AUTH login                      │   startup.sh --ui-only
+            │  ensure_awake() ── starts the GPU pod│
+            └──────────────┬───────────────────────┘
+                           │ HTTPS + KBM_API_TOKEN
+                           ▼
+            ┌─ RunPod GPU pod (on-demand, stopped when idle) ────┐
+            │  FastAPI (uvicorn --workers 1)  api/main.py        │   docker/Dockerfile.gpu
+            │    /chat  SSE stream   /upload   /jobs   /feedback │   startup.sh --api-only
+            │    ├─ kbm/retrieval.py  (BM25 + Chroma + reranker) │
+            │    ├─ extract.py    (Marker, GPU)                  │
+            │    └─ Ollama        (generator, :11434 loopback)   │
+            │  idle watchdog ─── no /chat for N min ─▶ stop self │
+            └─ /workspace network volume ───────────────────────┘
+                 chroma_db/  bm25_indexes/  telemetry/
+                 ollama-models/  .cache/huggingface/
+                       │
+                       └─▶ ops/backup_indexes.py ─▶ S3-compatible archive
 ```
 
-The frontend is currently `app.py` (Gradio), talking to the API over HTTP like any
-other client. A TypeScript frontend replaces it against the same endpoints.
+The frontend is `app.py` (Gradio), talking to the API over HTTP like any other client.
+A TypeScript frontend replaces it against the same endpoints — and now against the same
+*host*, since the UI already runs somewhere else.
 
 For which stage runs on which piece of hardware — and why only four things ever touch
 the GPU — see **`ARCHITECTURE.md`**.
 
-### Why one pod
+### Why the split is here and not somewhere else
 
-Retrieval (BM25 + bge-small + the cross-encoder) runs perfectly well on CPU — a few
-hundred milliseconds, versus the ~95% of query time that generation takes
-(`LATENCY.md`). So the *natural* split is a cheap always-on CPU host for retrieval plus
-an on-demand GPU for generation.
+The obvious cut is the one this document used to defer: retrieval is CPU work and
+generation is ~95% of query time (`LATENCY.md`), so move retrieval to the cheap host and
+leave the GPU pod with only Ollama and Marker.
 
-We are not doing that yet, because it adds a second always-on bill to a budget that
-already works, and because a cold start is acceptable here. **The FastAPI boundary is
-what makes the split cheap to do later**: when it's worth it, retrieval moves to a small
-CPU host and the pod keeps only Ollama + Marker, with no change to any client.
+**That is not the cut we made, and the reason is agent mode.** With `KBM_TOOLS` on,
+`search_documents` runs *inside* the generation loop (`ARCHITECTURE.md §2`, row 7b): the
+model can decide the retrieval the server already did was not the one the question
+needed and search again, up to `agent.MAX_SEARCH_ROUNDS` times. Splitting retrieval away
+from the generator turns each of those into a network round-trip mid-answer. Keeping
+retrieval, extraction and generation together on the GPU host keeps that loop local, and
+leaves the CPU host as a pure HTTP client — which is what `app.py` already was.
+
+So the boundary is not CPU-work vs GPU-work. It is **stateless vs stateful**: the UI host
+holds nothing, and everything that touches an index, a model, or the sandbox is on one
+side of one API. `ops/backup_indexes.py` exists because that side holds the only copy.
+
+### What the split is actually for
+
+Not the bill — a second always-on host makes the monthly cost slightly *worse* (§2). It
+buys two things:
+
+- **The wake gap closes.** A stopped pod meant a dead URL and no explanation
+  (§5). The always-on UI host now starts the GPU pod on demand and renders the wait.
+- **A GPU pod becomes disposable.** Combined with the image, "my pod is gone / the region
+  is full / I want a cheaper card" stops being a migration and becomes a re-create.
 
 ---
 
@@ -48,9 +74,18 @@ CPU host and the pod keeps only Ollama + Marker, with no change to any client.
 |---|---|---|
 | RTX A5000 24GB, **community** cloud | $0.16/hr × 3.5 hr/day × 30 | **$16.80** |
 | Network volume, 50GB | $0.07/GB/mo | **$3.50** |
-| | | **≈ $20/mo** |
+| CPU pod for the UI, always on | ~$0.01/hr × 730 | **~$7.30** |
+| Backup storage (S3-compatible, a few GB) | ~$0.005–0.015/GB/mo | **< $1** |
+| | | **≈ $28/mo** |
 
-Three things are load-bearing:
+⚠️ **The split spends most of the remaining headroom against the $30 target.** It was
+$20/mo on one pod; the always-on UI host is a real second bill, bought deliberately for
+the wake gap (§1) rather than for cost. Two consequences worth stating plainly: there is
+now little room for a more expensive card without breaching the target, and the CPU pod
+never stops, so nothing about it is elastic. If the budget matters more than the wake
+path, `startup.sh` with no flags still runs both halves on one pod and this line goes away.
+
+Four things are load-bearing:
 
 - **The pod must actually stop.** An always-on 24GB card is ~$115/mo. `ops/idle_stop.py`
   is what keeps this honest; without it there is no budget, only an intention.
@@ -65,6 +100,10 @@ Three things are load-bearing:
   **$0.20/GB/mo while the pod is stopped**, versus $0.07/GB/mo for a network volume.
   50GB of model weights on container disk would cost more sitting idle than the GPU
   costs running.
+- **The UI host must stay a CPU pod.** It is cheap because it runs a Gradio process and
+  nothing else — `docker/Dockerfile.cpu` installs `requirements-ui.txt`, which has no
+  torch. The moment anything on that host imports the pipeline, it needs a GPU and the
+  line above stops being $7.
 
 ---
 
@@ -83,7 +122,13 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `REQUIRE_GPU` | `1` turns a silent CPU fallback — which looks exactly like success, only 10–40× slower — into a startup error. |
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
-| `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Needed for idle-stop to work; without them it warns and does nothing. |
+| `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Pod identity and account credential. Needed **on the GPU host** for idle-stop, and **on the UI host** for wake (§5) — same pair, opposite verbs, one implementation in `ops/runpod.py`. Without them idle-stop warns and does nothing, and the UI reports the server as asleep rather than starting it. ⚠️ This key controls the whole RunPod account; it is why the UI host needs `APP_AUTH`. |
+| `KBM_API_URL` | **UI host only.** Where the API lives. Defaults to `http://127.0.0.1:8000`, which is right on one pod and silently wrong on a split — so `startup.sh --ui-only` refuses to start if it is still the default. |
+| `KBM_CORS_ORIGINS` | Comma-separated browser origins the API accepts. Defaults to the three localhost dev origins. Needed once a browser (not `app.py`, which is a server-side client) calls the API cross-origin. No wildcard: `allow_credentials=True` forbids it, and a wildcard plus a bearer token means any page a family member visits can spend that token. |
+| `KBM_WAKE_TIMEOUT_MIN` | **UI host only.** How long the UI polls `/healthz` while waiting for a woken pod before giving up and trying the request anyway. Default `5`. |
+| `KBM_BACKUP_URL` | `s3://bucket/prefix` for the index archive (`ops/backup_indexes.py`). **Unset disables backups entirely** — which is the laptop default and, until this is set on a pod, means the indexes still exist in exactly one place. |
+| `KBM_BACKUP_ENDPOINT` | S3-compatible endpoint (Backblaze B2, Cloudflare R2, RunPod's own S3 API). Omit for real AWS. |
+| `KBM_BACKUP_KEEP` | How many archives to retain before pruning the oldest. Default `7`. |
 | `KBM_LLM_MODEL` | The generator's Ollama tag. Selects a profile in `kbm/llm_profiles.py` that supplies the window size, decode budget and whether the Python sandbox is enabled — so naming a model configures it. Default: `qwen3:8b` (defined once, in `kbm/config.py`; `startup.sh` and `evaluation/eval.sh` read it from there). Set it to `t1c/deepseek-math-7b-rl:Q4` for the previous default. |
 | `KBM_NUM_PREDICT`, `KBM_KEEP_ALIVE` | Decode cap, and how long Ollama holds the weights in VRAM. Keep `KEEP_ALIVE` **≥** the idle-stop window — see §5. `NUM_PREDICT` now defaults per model (350 for deepseek, 1024 for a TIR model, which needs room to reason, write a program, and reason again). |
 | `KBM_NUM_CTX` | Context window sent to Ollama. Defaults to the model's real window. **Do not raise it above what the model was trained for** — Ollama will not refuse, it will degrade. Ollama also shifts an overflowing context from the *left*, which eats the system prompt first and silently. |
@@ -128,11 +173,25 @@ people who already trust each other with one password.
 
 ### Which ports to expose
 
-**HTTP: `7860` only.** `startup.sh` sets `KBM_API_URL=http://127.0.0.1:8000`, so the
-Gradio client reaches the API over loopback *inside* the container — nothing outside the
-pod needs to route to 8000. Exposing it adds a second public door guarded by one
-credential, where 7860 has `APP_AUTH` in front and the token behind it. Add TCP `22` only
-if you want `scp` for the eval corpus.
+**On the UI host: HTTP `7860` only.** That is the door the family uses, with `APP_AUTH`
+in front of it.
+
+**On the GPU host: HTTP `8000`, and this is new.** The single-pod layout kept the API on
+loopback and exposed nothing; the split makes 8000 a genuinely public hop, guarded by
+`KBM_API_TOKEN` alone. Three things follow, and none of them are optional:
+
+- **`KBM_API_TOKEN` stops being advisory.** Without it, port 8000 is an open document
+  store for anyone who finds the host and guesses a username — per-user isolation is a
+  lowercased string, not auth.
+- **Use TLS.** RunPod's `proxy.runpod.net` HTTP service terminates HTTPS for you; a raw
+  TCP mapping does not, and a bearer token over plain HTTP is a token in cleartext.
+- **Set `KBM_CORS_ORIGINS`** if a browser will ever call 8000 directly. `app.py` will not
+  — it is a server-side httpx client and CORS never applies to it — but the TypeScript
+  frontend will.
+
+If you run the single-pod layout instead (`bash startup.sh` with no flags), none of this
+applies: the client reaches the API over loopback and **7860 is still the only door.**
+Add TCP `22` only if you want `scp` for the eval corpus.
 
 **Never expose `11434`.** Ollama's API is unauthenticated: a public port there lets anyone
 run inference on the GPU you are paying for.
@@ -241,18 +300,37 @@ Poll the **status code**, not merely whether the request completed: a 401 and a 
 both "not ready", and treating any response as success is how a broken API reads as
 healthy.
 
-### The wake gap
+### The wake gap — closed
 
-Step 1 needs `RUNPOD_API_KEY`, which controls the whole RunPod account — start, stop,
-terminate, spend. It cannot go in a bookmark handed to a family member, so today waking
-the pod is something **you** do on request. Two ways out, neither built:
+This section used to say waking the pod was something *you* did on request, because
+step 1 needs `RUNPOD_API_KEY` and that key controls the whole RunPod account. The split
+is what resolved it: the UI now runs on an always-on host, so there is somewhere to keep
+the key that is not a family member's bookmark.
 
-- A small always-on free-tier function holding the key and exposing a single "wake"
-  button, with no other capability.
-- A wake-on-request page that starts the pod and then polls `/healthz` until
-  `model_loaded`, so the 1–2 minutes reads as a progress bar rather than a broken link.
+`app.py`'s `ensure_awake()` does both halves of the wake, in order:
 
-Worth building when "text me and I'll turn it on" gets annoying — not before.
+1. `GET /healthz`. If it answers 200 with `model_loaded`, nothing happens at all — the
+   normal case costs one request.
+2. If nothing answers, `ops.runpod.start_pod()` — then poll `/healthz` until
+   `model_loaded`, showing the wait as progress rather than a dead link.
+
+Four states, deliberately distinguished, because they need different responses:
+
+| `/healthz` | Meaning | What the family sees |
+|---|---|---|
+| 200 + `model_loaded` | ready | nothing; the question just runs |
+| 200, not loaded | container back, Ollama still loading the generator | "Server is up, loading the model… (Ns)" |
+| no answer | pod stopped | "Starting the tutor's server…", then polling |
+| 401 | pod **up**, token wrong | says so immediately — no pod start, no five-minute poll |
+
+It is best-effort by design: after `KBM_WAKE_TIMEOUT_MIN` it stops waiting and makes the
+request anyway, so there is **one** error path (the existing one) rather than two that
+can disagree. The same call guards `/upload`, since Marker is the more expensive thing to
+have to retry.
+
+⚠️ **The credential is the cost of this.** `RUNPOD_API_KEY` on the UI host can start,
+stop, terminate and spend. That host must have `APP_AUTH` set, and it should hold nothing
+else — which is exactly what `docker/Dockerfile.cpu` copies onto it.
 
 ---
 
@@ -284,18 +362,31 @@ Worth building when "text me and I'll turn it on" gets annoying — not before.
   uploading a shelf of textbooks still fills the volume, and a full network volume fails
   writes rather than auto-expanding. Watch `du -sh $DATA_DIR`; a per-user cap is the
   obvious next guard.
-- **No per-user auth** (§4).
-- **No unattended wake path** (§5). Sleep is automatic; wake requires the RunPod account
-  credential, so a family member who opens the link on a stopped pod gets a dead URL and
-  no explanation. This is the largest remaining gap in the day-to-day experience.
+- **No per-user auth** (§4). With the split this is now the largest remaining gap in the
+  day-to-day experience, the wake path having taken that title with it.
+- **The images have never run on a real pod.** `docker/Dockerfile.gpu` was authored on a
+  machine with no Docker daemon; CI is the first thing that builds it, and CI has no GPU.
+  So the build-time check (`from torchvision.ops import nms`) is verified and
+  `torch.cuda.is_available()` on the actual card is not. Run one pod from the image before
+  trusting the template.
+- **The CUDA base tag is a guess about the target pod's driver.** The image pins the
+  toolkit; the pod supplies the driver, and Docker does not bridge a major-version gap.
+  `nvidia/cuda:12.8.1-*` needs a 12.x driver. Check `nvidia-smi` on the pod you actually
+  rent and rebuild with `--build-arg CUDA_IMAGE=...` if it differs.
 - **`ops/idle_stop.py` has never run against a live pod.** It is the difference between
   ~$20/mo and ~$115/mo and carries zero evidence. Verify with
   `KBM_IDLE_STOP_MINUTES=2` before relying on it — a silent failure here surfaces on the
   invoice, not in a log.
-- **No backups, and now nothing to rebuild from.** Uploaded PDFs are no longer kept, so
-  the BM25 pickle and Chroma directory are not derived data any more — they are the only
-  copy on the pod. Back *those* up. Losing them means asking the family to re-upload every
-  document and paying for Marker again.
+- **Backups exist but are off by default.** `ops/backup_indexes.py` archives
+  `chroma_db/`, `bm25_indexes/` and `telemetry/` to S3-compatible storage after every
+  successful ingest — and does **nothing at all** unless `KBM_BACKUP_URL` is set. Until it
+  is set on the pod, this gap is unchanged: uploaded PDFs are not kept, so those indexes
+  are the only copy that exists, and losing them means asking the family to re-upload
+  every document and paying for Marker again. Setting one variable is the whole fix; not
+  setting it is indistinguishable from before.
+- **Restore has never been exercised.** Writing an archive is not the same as being able
+  to use one. Untar an archive into a fresh `DATA_DIR` and confirm a question still finds
+  its sources, before the day you need it.
 - **`KBM_RELEVANCE_FLOOR` is calibrated but on a thin sample.** 0.15, set from
   `evaluation/calibrate_floor.py`; see `api/settings.py` for the measurements. The
   deployment-shaped half of that calibration is 19 on-topic and 18 off-topic questions

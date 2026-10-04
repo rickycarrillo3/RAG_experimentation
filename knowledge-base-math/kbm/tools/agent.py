@@ -175,31 +175,12 @@ SEARCH_RESULT_CHARS = 1200
 
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
-# Added to the static head of the system prompt, where tir.TIR_RULES goes, so `history`
-# still comes last and the cacheable prefix keeps its shape (see api/chat.py, LATENCY.md).
-#
-# A tools-trained model already knows the *mechanics* — the schema tells it those. What
-# it cannot infer is the three things below, and the measured failure mode is over-eager
-# calling: asked "why is the derivative of a constant zero?", qwen2 called run_python
-# with code that printed nothing rather than simply answering. Hence rule 1 and the
-# explicit "print" note that mirrors TIR_RULES.
-#
-# The last line resolves a real contradiction rather than adding polish. api/chat.py's
-# general-mode rules open with "No relevant material was found in the student's uploaded
-# documents" — a sentence frozen into the prompt before generation, which a mid-answer
-# search can now falsify. Without an override the model is asked to trust a statement the
-# transcript has already disproved.
-#
-# NO BRACES. This string goes through ChatPromptTemplate, where { and } are variable
-# syntax and a literal brace raises at format time (kbm/tools/tir.py:130 learned this the hard way).
-AGENT_RULES = """- You have tools. Use them when they help and answer directly when they do not — a conceptual "why" question usually needs an explanation, not a computation.
-<tool_calling_rules>
-- Run Python (use run_python) for arithmetic or algebra you are not certain of by hand. Print what you want to see; a program that prints nothing returns nothing.
-- Search the student's documents (search_documents) when the question is about their own material, or when the context below does not cover it. Search with the terms the textbook would use, not the student's phrasing.
-- The student reads your answer, not your tool calls. Explain what came back in your own words.
-- If a tool returns nothing useful or refuses, say so and answer from what you have (say you could not find a proper answer). Never repeat a call with the same arguments.
-- If a search does find something the context below did not, use it and state which document it came from.
-"""
+# The AGENT_RULES text moved to kbm/prompts/tools.py (with its "why this wording"
+# comment). Re-exported here so `from kbm.tools.agent import AGENT_RULES` keeps working
+# — api/chat.py imports it that way. It is added to the static head of the system
+# prompt, where tir.TIR_RULES goes, so `history` still comes last and the cacheable
+# prefix keeps its shape (see api/chat.py, LATENCY.md).
+from kbm.prompts.tools import AGENT_RULES  # noqa: F401  (re-export for back-compat)
 
 
 # ── Argument handling ─────────────────────────────────────────────────────────

@@ -6,11 +6,12 @@ Usage:
     python test_chat.py --retrieval-only   # skip LLM, print chunks only
     python test_chat.py --selftest         # run the pure regression checks and exit
 
-`--selftest` covers the two invariants that fail *silently* if broken, which is why they
-are checked here rather than left to a manual pass: the prefill-echo filter (whose failure
-mode is showing the student a duplicated answer) and chunk-id stability (whose failure mode
-is every re-upload duplicating a document in the index instead of replacing it). Neither
-needs a GPU, a model, or a network.
+`--selftest` covers the invariants that fail *silently* if broken, which is why they are
+checked here rather than left to a manual pass: the prefill-echo filter (whose failure
+mode is showing the student a duplicated answer), chunk-id stability (whose failure mode
+is every re-upload duplicating a document in the index instead of replacing it), and the
+curated-memory paths (kbm/memory.py — dedupe, the token budget, delete-by-id). None needs
+a GPU, a model, or a network.
 """
 
 import argparse
@@ -106,6 +107,27 @@ def selftest() -> int:
     check("ids identical across two temp dirs", ids_a == [c.metadata["chunk_id"] for c in b])
     check("ids are basename-derived", ids_a[:1] == ["calculus.mmd::0"])
     check("re-upload replaces rather than duplicates", len(merge_chunks(a, b)) == len(a))
+
+    print("memory — curated per-user facts, pure paths (kbm/memory.py)")
+    from kbm import memory as kbm_memory
+
+    kbm_memory.MEMORY_DIR = tempfile.mkdtemp(prefix="kbm_selftest_mem_")
+    check("recall on an unknown user is empty", kbm_memory.recall("nobody", "q", 400) == [])
+    kbm_memory.add("kid", "in year 10", pinned=True)
+    kbm_memory.add("kid", "drops minus signs when distributing")
+    check("add is idempotent on a near-duplicate",
+          kbm_memory.add("kid", "  In Year 10 ") is False)
+    check("all_facts returns both", len(kbm_memory.all_facts("kid")) == 2)
+    # No reranker in a pure run, so only pinned facts come back — and never more than
+    # the budget allows.
+    check("recall without a reranker returns just the pinned fact",
+          kbm_memory.recall("kid", "why the sign error?", 400) == ["in year 10"])
+    check("recall respects the token budget",
+          kbm_memory.recall("kid", "q", 1) == [])
+    check("budget=0 disables recall", kbm_memory.recall("kid", "q", 0) == [])
+    fact_id = kbm_memory.all_facts("kid")[0]["id"]
+    check("forget removes by id", kbm_memory.forget("kid", fact_id) is True)
+    check("forget on a missing id is False", kbm_memory.forget("kid", "deadbeef") is False)
 
     print()
     if failures:

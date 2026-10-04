@@ -23,6 +23,7 @@ import gradio as gr
 import httpx
 
 from kbm.config import APP_HOST, APP_PORT, app_auth
+from kbm.logsetup import configure_logging
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,98 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
 
 def _headers() -> dict:
     return {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
+
+
+# ── Waking the API host ───────────────────────────────────────────────────────
+#
+# Since the split this UI runs on an always-on CPU pod and the API runs on a GPU pod
+# that stops itself when idle (ops/idle_stop.py). Sleep was already automatic; wake was
+# not, and DEPLOYMENT.md §5 called that "the largest remaining gap in the day-to-day
+# experience" — a family member who opened the link on a stopped pod got a dead URL and
+# no explanation, and the only fix was to text whoever holds the RunPod credentials.
+#
+# Wake is TWO things, and building only the first is the documented trap: the pod must
+# be started, AND its processes must come back, because a start recreates the container
+# from the image with nothing running. So starting is not readiness — /healthz is.
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
+RUNPOD_POD_ID = os.environ.get("RUNPOD_POD_ID", "").strip()
+WAKE_TIMEOUT = float(os.environ.get("KBM_WAKE_TIMEOUT_MIN", "5")) * 60
+WAKE_POLL_SECONDS = 5.0
+
+
+def _healthz() -> tuple[int, dict]:
+    """(status code, body). Code 0 means nothing answered at all.
+
+    Read the STATUS CODE, not merely whether the request completed. A 401 and a 500 are
+    both "not ready" but they are not the same problem, and treating any response as
+    success is how a broken API reads as healthy. `model_loaded` is the field that
+    matters: after a cold start the API answers 200 well before the generator is
+    resident, so a client that checks only for 200 fires its first question into a model
+    load and looks broken.
+    """
+    try:
+        r = httpx.get(f"{API_URL}/healthz", headers=_headers(), timeout=5.0)
+    except Exception:
+        return 0, {}
+    if r.status_code != 200:
+        return r.status_code, {}
+    try:
+        return 200, r.json()
+    except ValueError:
+        return 200, {}
+
+
+def ensure_awake():
+    """Yield human-readable progress while the API host comes up; return when there is
+    nothing further to wait for.
+
+    Best-effort by design. This makes the 1-2 minute wake legible instead of silent; it
+    is not the error path. Whatever state we return in, the caller goes on to make its
+    real request, and the existing failure handling reports what actually happened. That
+    keeps one error path instead of two that can disagree.
+    """
+    code, health = _healthz()
+    if code == 200 and health.get("model_loaded"):
+        return
+
+    if code == 401:
+        # The pod is up and talking; the token is wrong. Polling for five minutes would
+        # not fix a credential, and starting a pod that is already running does nothing.
+        yield "The API rejected this app's token. KBM_API_TOKEN here does not match the API host's."
+        return
+
+    if code == 0:
+        if not (RUNPOD_API_KEY and RUNPOD_POD_ID):
+            yield (
+                "_The tutor's server is not responding. It may be asleep — "
+                "ask whoever runs it to start it._"
+            )
+            return
+        yield "_Starting the tutor's server… this takes a minute or two._"
+        try:
+            from ops.runpod import start_pod
+
+            start_pod(RUNPOD_POD_ID, RUNPOD_API_KEY)
+        except Exception as e:  # noqa: BLE001 - a failed start is a message, not a crash
+            log.warning("wake: start_pod failed: %s", e)
+            yield "_Could not start the tutor's server. Trying anyway…_"
+
+    started = time.monotonic()
+    while time.monotonic() - started < WAKE_TIMEOUT:
+        time.sleep(WAKE_POLL_SECONDS)
+        code, health = _healthz()
+        if code == 200 and health.get("model_loaded"):
+            return
+        waited = int(time.monotonic() - started)
+        if code == 200:
+            # Container is back and uvicorn is serving; Ollama is still pulling the
+            # generator into VRAM. This is the second of the two waits, and naming it
+            # separately is what stops "still starting" looking like a hang.
+            yield f"_Server is up, loading the model… ({waited}s)_"
+        else:
+            yield f"_Waiting for the tutor's server… ({waited}s)_"
+
+    yield "_The server is taking longer than usual. Trying your question anyway…_"
 
 
 def _msg(role: str, content: str) -> dict:
@@ -90,6 +183,11 @@ def handle_upload(pdf_file, username: str, last_ingested):
         # press would re-run Marker — minutes of GPU for a document already indexed.
         yield f"Already ingested {os.path.basename(pdf_file.name)}. Choose another file to add more.", last_ingested, gr.update()
         return
+
+    # An upload to a sleeping pod fails the same way a question does, and Marker is the
+    # more expensive thing to have to retry — so wake here too rather than only in chat.
+    for note in ensure_awake():
+        yield note, last_ingested, gr.update()
 
     job_id = None
     try:
@@ -193,6 +291,10 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
         return
 
     base = history + [_msg("user", message)]
+    # Before anything else: the API host may be a stopped GPU pod. Yields nothing at all
+    # in the normal case where it is already awake, so this costs one /healthz call.
+    for note in ensure_awake():
+        yield "", base + [_msg("assistant", note)], clean_history, None
     yield "", base + [_msg("assistant", "_Searching your documents…_")], clean_history, None
 
     answer = ""   # what the student sees: model text plus the server's footer
@@ -350,6 +452,20 @@ with gr.Blocks(title="Math Tutor", analytics_enabled=False) as app:
 
 
 if __name__ == "__main__":
+    # One configuration, shared with api/main.py — see kbm/logsetup.py. This was a second
+    # basicConfig with its own format and a hardcoded level; it now honours KBM_LOG_LEVEL
+    # like the API does, which it never did before.
+    configure_logging()
+
+    # Say which API this UI is pointed at. The default is loopback, which is right on a
+    # single pod and silently wrong on a CPU host that has no API — there, every action
+    # fails as a connection error and nothing anywhere names the cause. startup.sh
+    # --ui-only refuses to start on the default for the same reason; this covers the
+    # `python app.py` path, which has no such gate.
+    log.info("API: %s (token %s)", API_URL, "set" if API_TOKEN else "UNSET")
+    if RUNPOD_POD_ID and RUNPOD_API_KEY:
+        log.info("Wake armed: can start pod %s on demand.", RUNPOD_POD_ID)
+
     # APP_AUTH gates the front door of this UI; KBM_API_TOKEN gates the API behind it.
     # They are different locks on different doors and both need setting on a public pod
     # — a login page in front of an open API only protects the page.

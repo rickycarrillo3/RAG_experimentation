@@ -21,9 +21,13 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+from kbm import memory as kbm_memory
 from kbm import retrieval, telemetry
+from kbm.config import OLLAMA_BASE_URL
 from kbm.retrieval import OLLAMA_MODEL
 from kbm.tools import agent, sandbox, tir
+from ops.backup_indexes import backup_indexes
+from ops.backup_indexes import enabled as backup_enabled
 
 from . import chat as chatmod
 from .deps import has_index, index_summary, models, normalize_user, require_token
@@ -42,6 +46,9 @@ from .schemas import (
 )
 from .settings import (
     MAX_CONTINUATIONS,
+    MEMORY_TOKENS,
+    QUERY_REWRITE,
+    RELEVANCE_FLOOR,
     SANDBOX_TIMEOUT_S,
     SHOW_TOOL_CODE,
     TIR_ENABLED,
@@ -114,10 +121,33 @@ async def _chat_stream(user: str, req: ChatRequest):
     sources = []
     mode = Mode.GENERAL
     answer = ""
+    memories_recalled = 0
+    # Bound before the try so the error path below can log them: a request that fails
+    # during retrieval is exactly the one where "what did we actually search for?" is
+    # the question, and an UnboundLocalError inside an exception handler would replace
+    # the real error with a useless one.
+    rquery, rewritten = req.message, False
 
     try:
         user_has_index = has_index(user)
         results = []
+        # The string retrieval searches on, which is NOT always the string the model is
+        # asked. On a follow-up ("explain that again") the message alone retrieves
+        # nothing — see chat.retrieval_query, which borrows the previous question. The
+        # prompt below still gets req.message verbatim, and so does QuestionEcho: the
+        # rewrite must never reach the prompt, or it moves text inside the cacheable
+        # prefix (LATENCY.md) and desynchronises the echo guards from what was asked.
+        rquery, rewritten = (
+            chatmod.retrieval_query(req.message, req.history)
+            if QUERY_REWRITE else (req.message, False)
+        )
+        if rewritten:
+            # At INFO because on the pod the uvicorn log is what you are watching, and a
+            # silently substituted query is the last thing that should be invisible: it
+            # is the difference between "the reranker missed" and "we searched for
+            # something else".
+            log.info("follow-up query rewritten for user=%s: %r -> %r",
+                     user, req.message, rquery)
         if user_has_index:
             # retrieve_detailed rather than retrieve: it returns the same `final` list
             # plus per-stage timings, which telemetry needs and which cost nothing extra.
@@ -125,7 +155,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             # the event loop and stall every other client's token stream.
             detail = await anyio.to_thread.run_sync(
                 lambda: retrieval.retrieve_detailed(
-                    req.message, user, models.embeddings, reranker=models.reranker
+                    rquery, user, models.embeddings, reranker=models.reranker
                 )
             )
             results = detail.final
@@ -137,6 +167,20 @@ async def _chat_stream(user: str, req: ChatRequest):
         mode = chatmod.decide_mode(selected, user_has_index)
         sources = chatmod.to_sources(selected) if mode is Mode.GROUNDED else []
         yield _sse("sources", SourcesEvent(mode=mode, sources=sources))
+
+        # Curated per-user memory (kbm/memory.py). Off unless the model's window has room
+        # for it (MEMORY_TOKENS, per llm_profiles) — 0 on any 4096-token model. Non-pinned
+        # facts are scored against the question by the reranker, so this goes off the
+        # event loop like retrieve_detailed above. It lands in the cacheable prefix ahead
+        # of history (chat.format_memory) and does not vary within a conversation.
+        memory_facts: list[str] = []
+        if MEMORY_TOKENS:
+            memory_facts = await anyio.to_thread.run_sync(
+                lambda: kbm_memory.recall(
+                    user, req.message, MEMORY_TOKENS, models.reranker, RELEVANCE_FLOOR
+                )
+            )
+        memories_recalled = len(memory_facts)
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", chatmod.system_prompt(mode, tir=TIR_ENABLED,
@@ -154,6 +198,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # APPENDS after it. LATENCY.md's prefix rule depends on that and is load-bearing.
         base_messages = prompt.format_messages(
             context=chatmod.build_context(selected, mode),
+            memory=chatmod.format_memory(memory_facts),
             history=chatmod.format_history(req.history),
             input=req.message,
         )
@@ -660,6 +705,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             tool_errors=tool_errors,
             searches=search_rounds,
             late_sources=late_source_count,
+            memories_recalled=memories_recalled,
             protocol=models.protocol,
         ))
         # Telemetry logs every RETRIEVED chunk, not just the ones that cleared the floor.
@@ -676,6 +722,8 @@ async def _chat_stream(user: str, req: ChatRequest):
             protocol=models.protocol, tool_counts=tool_counts,
             search_queries=search_queries, tool_log=tool_log,
             late_sources=[s.model_dump() for s in chatmod.to_sources(late_results)],
+            retrieval_query=rquery if rewritten else None,
+            memories_recalled=memories_recalled,
         )
 
     except Exception as e:  # noqa: BLE001 - surfaced to the client as an SSE error frame
@@ -684,6 +732,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             event_id=event_id, user=user, question=req.message, mode=mode.value,
             sources=[], timings=timings, model=OLLAMA_MODEL,
             n_completion_chars=len(answer), error=str(e),
+            retrieval_query=rquery if rewritten else None,
         )
 
 
@@ -800,6 +849,21 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         build_bm25(chunks, user)
         build_chroma(chunks, user, models.embeddings)
 
+        # Back up BEFORE reporting DONE, not after. ops/idle_stop.py defers a pod stop
+        # only while a job is queued or running, so an archive started once the status
+        # has flipped could be killed by the watchdog halfway through its upload. The
+        # cost is a few seconds on top of a multi-minute Marker run. What it buys is
+        # that the only copy of the family's documents (ARCHITECTURE.md §5) exists
+        # somewhere other than one region-pinned network volume — which is what makes
+        # "recreate the pod from the image" a complete recovery rather than a partial one.
+        #
+        # backup_indexes() never raises, by the same rule as kbm/telemetry.py: a failed
+        # upload must not fail an ingest the family already waited ten minutes for.
+        if backup_enabled():
+            job.stage = "backup"
+            line = backup_indexes()
+            (log.warning if "FAILED" in line else log.info)("ingest job %s: %s", job_id, line)
+
         job.status = JobStatus.DONE
         job.stage = None
         job.n_chunks = len(chunks)
@@ -871,7 +935,13 @@ async def healthz():
         import httpx
 
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get("http://localhost:11434/api/ps")
+            # OLLAMA_BASE_URL, not a literal. api/deps.py:59 already asks /api/show
+            # through it; this was the one site that did not, so pointing the app at an
+            # Ollama on another host left /healthz reporting model_loaded=false forever —
+            # and model_loaded is precisely the flag the wake path polls to decide the
+            # generator is ready. A cold-start probe that can never succeed reads as a
+            # pod that never finishes waking.
+            r = await client.get(f"{OLLAMA_BASE_URL}/api/ps")
             loaded = any(m.get("name") == OLLAMA_MODEL for m in r.json().get("models", []))
     except Exception:  # noqa: BLE001 - Ollama not up yet is a normal cold-start state
         loaded = False

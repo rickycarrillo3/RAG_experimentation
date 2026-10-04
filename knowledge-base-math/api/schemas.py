@@ -167,6 +167,13 @@ class DoneEvent(BaseModel):
                     "raised, or timed out. The model sees the error text and usually "
                     "recovers, so this is a quality signal rather than a request failure.",
     )
+    memories_recalled: int = Field(
+        0,
+        description="Curated per-user memory entries (kbm/memory.py) injected into the "
+                    "prompt for this answer: pinned facts plus any non-pinned facts the "
+                    "reranker judged relevant to the question. 0 when memory recall is "
+                    "off (the default on a 4096-token model) or the user has none stored.",
+    )
 
 
 class ErrorEvent(BaseModel):
@@ -207,7 +214,7 @@ class Job(BaseModel):
                     "failed and pymupdf4llm was used, so the chunks contain no LaTeX",
     )
     stage: str | None = Field(
-        None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index"
+        None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index | backup"
     )
     diagnostic: str | None = Field(
         None,

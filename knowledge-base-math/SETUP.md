@@ -10,7 +10,65 @@ impossible to rebuild (the family's uploaded documents) must live on `/workspace
 
 ---
 
-## 1. One-time pod setup
+## 0. From the image (do this instead of §1)
+
+§1 below is a ~12-step manual procedure with four documented traps in it. It is now the
+**fallback**, kept because it explains what the image does and because a bare pod is
+still sometimes the fastest way to debug. The normal path is a container.
+
+**Why this is the fix for migration pain, specifically.** In §1 the *pod* is the
+artifact: its environment is the residue of a procedure someone ran once, months ago,
+which cannot be reproduced — only moved. With an image the *image* is the artifact and
+the pod is disposable. There is no step at which anyone makes a choice, so a new pod
+cannot come out subtly different from the last one.
+
+```bash
+# Build and push (from knowledge-base-math/, or let .github/workflows/build.yml do it)
+docker build -f docker/Dockerfile.gpu -t ghcr.io/<owner>/kbm-gpu:latest .
+docker build -f docker/Dockerfile.cpu -t ghcr.io/<owner>/kbm-ui:latest  .
+docker push ghcr.io/<owner>/kbm-gpu:latest
+docker push ghcr.io/<owner>/kbm-ui:latest
+```
+
+Then, once, in the RunPod dashboard:
+
+1. **Templates → New Template** → container image `ghcr.io/<owner>/kbm-gpu:latest`,
+   expose HTTP port `8000`, volume mount path `/workspace`, and the environment
+   variables from the table at the end of §1. That template is the thing you reuse.
+2. **Templates → New Template** for `kbm-ui`, HTTP port `7860`, no volume, with
+   `KBM_API_URL`, `KBM_API_TOKEN`, `APP_AUTH`, `RUNPOD_API_KEY`, `RUNPOD_POD_ID`.
+3. Deploy a GPU pod from the first template with your network volume attached, and a
+   CPU pod from the second.
+
+Creating a replacement pod after that is: pick the template, attach the volume, start.
+
+⚠️ **Check the driver, still.** The image pins the CUDA *toolkit*; the pod supplies the
+*driver*, and Docker does not bridge a major-version gap. `nvidia-smi` on the target pod
+must report CUDA 12.x for the default `nvidia/cuda:12.8.1-*` base. If it reports 13.x,
+rebuild with `--build-arg CUDA_IMAGE=... --build-arg CUDA_INDEX=cu130`. This is the one
+judgment call from §1 that containerisation does **not** remove — it narrows it from four
+steps to one comparison.
+
+### What moves with you, and what does not
+
+A network volume is pinned to its datacenter and does not follow you to another region.
+After the image, that splits cleanly in two:
+
+| On the volume | If you land somewhere new |
+|---|---|
+| Ollama weights (~5GB), HF models (~6GB) | re-downloaded **automatically** by `startup.sh` stages 3–4 — bandwidth, not decisions |
+| `chroma_db/` + `bm25_indexes/` | **the only irreplaceable thing** — restore from `ops/backup_indexes.py`, which is why it exists |
+
+So a migration becomes: launch the template in the new region, restore one archive, wait
+for the weights. Set `KBM_BACKUP_URL` *before* you need that second row.
+
+---
+
+## 1. One-time pod setup (manual — the fallback path)
+
+> Prefer §0. Everything here is what `docker/Dockerfile.gpu` already does, in the same
+> order and for the same reasons; read it when you want to know *why* the image is shaped
+> the way it is, or when you are debugging on a bare pod.
 
 ```bash
 # ── Caches and data on the persistent volume ──────────────────────────────────
@@ -144,15 +202,36 @@ So every future session inherits them without re-exporting:
 
 ## 2. Every session
 
+**From the image (§0) there is no "every session" step** — the entrypoint is
+`startup.sh --api-only` or `--ui-only` and it runs when the container starts. What
+follows is the manual path, and the reference for what those entrypoints do.
+
 ```bash
 cd /workspace/RAG_experimentation/knowledge-base-math
 bash startup.sh                             # default generator (qwen3:8b, agent mode on)
 KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh   # the previous default, no tools
 ```
 
+One script, three layouts. The flags select which halves of the app this box is
+responsible for; passing neither is the original single-pod behaviour:
+
+```bash
+bash startup.sh              # both — API on :8000 (loopback) + Gradio on :7860
+bash startup.sh --api-only   # GPU host: Ollama + uvicorn. No Gradio.
+KBM_API_URL=https://<gpu-host>:8000 \
+  bash startup.sh --ui-only  # UI host: Gradio only. No GPU, Ollama or prefetch.
+```
+
+`--ui-only` **refuses to start** if `KBM_API_URL` is still the loopback default: on a
+host with no API behind it, every action would otherwise fail as a bare connection error
+with nothing naming the cause.
+
 You do **not** need to `ollama pull` first — stage 3 pulls whatever `KBM_LLM_MODEL` names.
 And if a bare `ollama …` gives you `command not found`, the `~/.bashrc` line from §1 is
-missing on this pod; `startup.sh` itself is unaffected either way.
+missing on this pod; `startup.sh` itself is unaffected either way. **From the image that
+cannot happen** — `docker/Dockerfile.gpu` installs Ollama to `/usr/local/bin`, which is
+correct there precisely because the container filesystem is the artifact and comes back
+on every start.
 
 `startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
 Gradio client on 7860. Open the public URL in your browser:
@@ -265,6 +344,18 @@ cd /workspace/RAG_experimentation/knowledge-base-math
 bash evaluation/eval.sh              # GPU check → data check → prefetch → 9-combo sweep
 bash evaluation/eval.sh --answers    # also ingest + eval.py --all --answers (Ollama-judged)
 ```
+
+`eval.sh` itself needs nothing beyond `requirements.txt`. Only
+`evaluation/calibrate_floor.py`, run by hand, needs the harness extra:
+
+```bash
+pip install -r requirements-eval.txt   # datasets, for the ARQMath floor calibration
+```
+
+The harness ships **inside the GPU image** (`.dockerignore` excludes only
+`evaluation/results/`), so these commands work on a pod built from `docker/Dockerfile.gpu`
+with no repo checkout. Run them from `knowledge-base-math/`: the scripts' own files
+resolve relative to themselves, but the indexes they read still come from `DATA_DIR`.
 
 **Generator work** — which model, and whether a tool protocol earns its keep. Every arm
 goes through the same script on purpose: it is what supplies the CUDA check, the data
