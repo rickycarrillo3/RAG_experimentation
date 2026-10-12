@@ -6,6 +6,13 @@
 # create_model_dict() succeeds because the Docker spawn happens at conversion time,
 # not at model load. See ERRORS.md.
 marker-pdf<2.0
+# marker-pdf and its surya-ocr dependency both cap Pillow at <11.0.0, but nothing in this
+# file pins Pillow itself — so pip's resolver is free to pick a newer one pulled in
+# transitively by something else (12.3.0, seen in CI), which satisfies no individual
+# requirement.txt line but fails Dockerfile.gpu's `pip check` at build time with
+# "surya-ocr ... has requirement pillow<11.0.0 ... but you have pillow 12.3.0". Pin to
+# marker-pdf/surya-ocr's own ceiling so the resolver can't wander past it.
+pillow<11.0.0
 pymupdf4llm
 langchain-core
 langchain-community
