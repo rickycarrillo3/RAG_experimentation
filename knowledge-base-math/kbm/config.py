@@ -17,6 +17,8 @@ Env vars
     BM25_DIR          override the BM25 dir outright      (default: $DATA_DIR/bm25_indexes)
     KBM_MEMORY_DIR    override the curated-memory dir     (default: $DATA_DIR/memory)
     KBM_MEMORY_TOKENS token budget for recalled memory    (default: per llm_profiles)
+    KBM_IMAGES_DIR    override the figure-sidecar dir     (default: $DATA_DIR/doc_images)
+    KBM_VISION_MODEL  the captioner's Ollama tag           (default: qwen2.5vl:7b)
     OLLAMA_BASE_URL   where Ollama is served              (default: http://localhost:11434)
     APP_HOST          Gradio bind address                 (default: 0.0.0.0)
     APP_PORT          Gradio port                         (default: 7860)
@@ -33,7 +35,7 @@ Env vars
 
 import os
 
-from kbm.llm_profiles import profile_for
+from kbm.llm_profiles import profile_for, vision_profile_for
 
 # ── Where the indexes live ─────────────────────────────────────────────────────
 # On a pod these must sit on the persistent volume, or every pod restart silently
@@ -47,6 +49,15 @@ BM25_DIR = os.environ.get("BM25_DIR") or os.path.join(DATA_DIR, "bm25_indexes")
 # reason the indexes are — on a pod it must sit on the persistent volume or it is gone on
 # restart — and ops/backup_indexes.py archives it alongside them.
 MEMORY_DIR = os.environ.get("KBM_MEMORY_DIR") or os.path.join(DATA_DIR, "memory")
+
+# Per-document figure sidecars (kbm/images.py): one <stem>.images.jsonl per ingested
+# document, `{image_id, doc_name, page, caption, nearby_chunk_id}` per figure. NOT
+# literally next to the .mmd (Information_files/IMAGE_DESIGN.md's stated location) — the
+# API upload path deletes its .mmd with the request's temp dir when the job ends, and a
+# sidecar written next to it would vanish too. One DATA_DIR-relative directory gives both
+# the CLI (ingest.py) and the API upload path (api/routes.py) one place to read/write,
+# and it survives pod restarts the same way CHROMA_DIR/BM25_DIR/MEMORY_DIR do.
+IMAGES_DIR = os.environ.get("KBM_IMAGES_DIR") or os.path.join(DATA_DIR, "doc_images")
 
 # ── Where Ollama is ────────────────────────────────────────────────────────────
 # Defaults to the local daemon, which is the pod layout (app and Ollama on the same
@@ -82,6 +93,16 @@ OLLAMA_MODEL = os.environ.get("KBM_LLM_MODEL", "qwen3:8b").strip()
 # Python sandbox — comes from its profile, so naming a model configures it. Env vars
 # still win: the table supplies each model's right default, not a policy.
 PROFILE = profile_for(OLLAMA_MODEL)
+
+# ── Which captioner, and what it needs ─────────────────────────────────────────
+# A separate model from OLLAMA_MODEL above, never bound as the chat generator — same
+# "separate task-specific model" shape as qwen2:7b already being eval-only (never the
+# generator). qwen2.5vl:7b is the default: Apache-2.0, stays in the Qwen family already
+# used elsewhere in this repo, and has strong OCR/diagram reading for exactly this
+# content (textbook figures, photographed problems). See kbm/llm_profiles.VisionProfile
+# and Information_files/IMAGE_DESIGN.md.
+VISION_OLLAMA_MODEL = os.environ.get("KBM_VISION_MODEL", "qwen2.5vl:7b").strip()
+VISION_PROFILE = vision_profile_for(VISION_OLLAMA_MODEL)
 
 
 def _flag(name: str, default: bool) -> bool:

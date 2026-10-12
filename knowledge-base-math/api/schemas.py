@@ -29,9 +29,24 @@ class Role(str, Enum):
     ASSISTANT = "assistant"
 
 
+class MessageType(str, Enum):
+    """What kind of turn this is, for history that is no longer text-only.
+
+    Defaults to TEXT so every existing client/request body keeps working byte-for-byte
+    (same additive-field discipline as Job.degraded/Job.extractor). IMAGE marks a turn
+    whose `content` is a caption the server produced for a chat-uploaded photo — see
+    Information_files/IMAGE_DESIGN.md and api/chat.py's is_image_turns/
+    most_recent_image/resolve_image_reference, which filter history to this type.
+    """
+
+    TEXT = "text"
+    IMAGE = "image"
+
+
 class Message(BaseModel):
     role: Role
     content: str
+    type: MessageType = MessageType.TEXT
 
 
 class ChatRequest(BaseModel):
@@ -46,6 +61,14 @@ class ChatRequest(BaseModel):
     user: str = Field(..., description="Username; selects the isolated index. Lowercased server-side.")
     message: str = Field(..., min_length=1)
     history: list[Message] = Field(default_factory=list)
+    image_b64: str | None = Field(
+        None,
+        description="Base64-encoded image attached to THIS turn, if any. Captioned once "
+                    "and discarded — no bytes are retained anywhere, not even a temp "
+                    "file (Information_files/IMAGE_DESIGN.md). An optional field rather "
+                    "than switching /chat to multipart, so every text-only client is "
+                    "unaffected.",
+    )
 
 
 class Source(BaseModel):

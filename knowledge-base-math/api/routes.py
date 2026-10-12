@@ -21,10 +21,11 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+from kbm import images as kbm_images
 from kbm import memory as kbm_memory
 from kbm import retrieval, telemetry
 from kbm.config import OLLAMA_BASE_URL
-from kbm.retrieval import OLLAMA_MODEL
+from kbm.retrieval import OLLAMA_MODEL, chunk_id
 from kbm.tools import agent, sandbox, tir
 from ops.backup_indexes import backup_indexes
 from ops.backup_indexes import enabled as backup_enabled
@@ -40,7 +41,10 @@ from .schemas import (
     Health,
     Job,
     JobStatus,
+    Message,
+    MessageType,
     Mode,
+    Role,
     SourcesEvent,
     TokenEvent,
     UserStatus,
@@ -136,7 +140,39 @@ async def _chat_stream(user: str, req: ChatRequest):
     # the real error with a useless one.
     rquery, rewritten = req.message, False
 
+    # The history this turn's prompt is actually built from. Starts as a copy of the
+    # client-held req.history (never mutated — it is the client's) and, when a photo is
+    # attached, gains one synthetic IMAGE turn below. NOT written back to the client:
+    # the caption is folded into the SSE stream as its own token frame (server_marker),
+    # and a client following history.ts's clean-history rule folds it into the history
+    # it sends back on its own, the same way it already drops any other server_marker
+    # run.
+    effective_history = list(req.history)
+    image_caption = ""
+
     try:
+        if req.image_b64:
+            # No bytes retained anywhere, not even a temp file — stricter than the
+            # PDF-upload temp-dir-then-delete pattern, matching
+            # Information_files/IMAGE_DESIGN.md's "discard the pixels" requirement for
+            # chat-uploaded images. Decoded straight from the request body and never
+            # written to disk.
+            try:
+                import base64
+
+                image_bytes = base64.b64decode(req.image_b64)
+                vision_llm = await anyio.to_thread.run_sync(models.ensure_vision_llm)
+                image_caption = await anyio.to_thread.run_sync(
+                    lambda: kbm_images.caption_image(image_bytes, vision_llm)
+                )
+            except Exception as e:  # noqa: BLE001 - a bad caption must not fail the turn
+                log.warning("chat image captioning failed for user=%s: %s", user, e)
+                image_caption = ""
+            if image_caption:
+                effective_history.append(
+                    Message(role=Role.USER, content=image_caption, type=MessageType.IMAGE)
+                )
+
         user_has_index = has_index(user)
         results = []
         # The string retrieval searches on, which is NOT always the string the model is
@@ -145,10 +181,19 @@ async def _chat_stream(user: str, req: ChatRequest):
         # prompt below still gets req.message verbatim, and so does QuestionEcho: the
         # rewrite must never reach the prompt, or it moves text inside the cacheable
         # prefix (Information_files/LATENCY.md) and desynchronises the echo guards from what was asked.
+        #
+        # A question that names the just-sent or an earlier photo ("what's in the
+        # picture I just sent?") is resolved the same way and folded in too — the
+        # caption text is what the retrieval query needs, not the fact that an image
+        # exists.
+        image_ref = chatmod.resolve_image_reference(req.message, effective_history)
         rquery, rewritten = (
-            chatmod.retrieval_query(req.message, req.history)
+            chatmod.retrieval_query(req.message, effective_history)
             if QUERY_REWRITE else (req.message, False)
         )
+        if image_ref is not None and image_ref.content not in rquery:
+            rquery = f"{rquery} {image_ref.content}"[:1000]
+            rewritten = True
         if rewritten:
             # At INFO because on the pod the uvicorn log is what you are watching, and a
             # silently substituted query is the last thing that should be invisible: it
@@ -175,6 +220,34 @@ async def _chat_stream(user: str, req: ChatRequest):
         mode = chatmod.decide_mode(selected, user_has_index)
         sources = chatmod.to_sources(selected) if mode is Mode.GROUNDED else []
         yield _sse("sources", SourcesEvent(mode=mode, sources=sources))
+
+        if image_caption:
+            marker = f'_📷 Captioned your photo: "{image_caption}"_\n\n'
+            answer += marker
+            yield _sse("token", TokenEvent(text=marker, server_marker=True))
+
+        # Document-embedded figures (kbm/images.py) — the other half of
+        # Information_files/IMAGE_DESIGN.md. Scored against rquery the same way the
+        # chunks above were, plus the figures sitting next to whichever chunks were
+        # actually selected ("see Figure 3"). Off the event loop for the same reason
+        # retrieve_detailed is.
+        figure_records: list[dict] = []
+        if user_has_index:
+            _, doc_sources = index_summary(user)
+            figure_records = await anyio.to_thread.run_sync(
+                lambda: kbm_images.recall_figures(
+                    doc_sources, rquery, models.reranker, RELEVANCE_FLOOR
+                )
+            )
+            seen_fig_ids = {f["image_id"] for f in figure_records}
+            for doc, _ in selected:
+                near = kbm_images.figures_near_chunk(
+                    chunk_id(doc), os.path.basename(doc.metadata.get("source", "unknown"))
+                )
+                for f in near:
+                    if f["image_id"] not in seen_fig_ids:
+                        seen_fig_ids.add(f["image_id"])
+                        figure_records.append(f)
 
         # Curated per-user memory (kbm/memory.py). Off unless the model's window has room
         # for it (MEMORY_TOKENS, per llm_profiles) — 0 on any 4096-token model. Non-pinned
@@ -205,9 +278,9 @@ async def _chat_stream(user: str, req: ChatRequest):
         # static text -> history -> context -> question, and continuation only ever
         # APPENDS after it. Information_files/LATENCY.md's prefix rule depends on that and is load-bearing.
         base_messages = prompt.format_messages(
-            context=chatmod.build_context(selected, mode),
+            context=chatmod.build_context(selected, mode, figure_records),
             memory=chatmod.format_memory(memory_facts),
-            history=chatmod.format_history(req.history),
+            history=chatmod.format_history(effective_history),
             input=req.message,
         )
 
@@ -812,7 +885,7 @@ def _mark_crashed(job_id: str, fut: Future) -> None:
 def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
     """The same sequence app.py's handle_upload ran, moved off the request thread."""
     from extract import extract_detailed
-    from ingest import build_bm25, build_chroma, load_mmd_files, merge_chunks
+    from ingest import build_bm25, build_chroma, build_image_sidecar, load_mmd_files, load_vision_llm, merge_chunks
     from kbm.chunking import split_baseline
 
     job = _jobs[job_id]
@@ -844,6 +917,7 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         for d in docs:
             d.metadata["source"] = os.path.basename(result.path)
         chunks = split_baseline(docs)
+        doc_chunks = chunks  # this document's own chunks, before the merge below
 
         # Merge with the user's existing chunks so a second upload adds to the corpus
         # rather than replacing it — build_bm25 overwrites the pickle wholesale.
@@ -856,6 +930,19 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
 
         build_bm25(chunks, user)
         build_chroma(chunks, user, models.embeddings)
+
+        # Figure sidecar for THIS document (kbm/images.py) — written to IMAGES_DIR, not
+        # tmp_dir, so it survives the `finally` cleanup below. This is the upload path's
+        # only chance to build one: unlike the CLI (ingest.py), nothing else ever calls
+        # build_image_sidecar for a document a family member actually uploads. Best
+        # effort — a captioning failure must not fail an ingest that already took
+        # minutes of Marker OCR.
+        try:
+            doc_source = os.path.basename(result.path)
+            vision_llm = load_vision_llm()
+            build_image_sidecar(doc_source, result.path, doc_chunks, vision_llm)
+        except Exception as e:  # noqa: BLE001 - figures are best-effort, see above
+            log.warning("ingest job %s: figure captioning skipped: %s", job_id, e)
 
         # Back up BEFORE reporting DONE, not after. ops/idle_stop.py defers a pod stop
         # only while a job is queued or running, so an archive started once the status

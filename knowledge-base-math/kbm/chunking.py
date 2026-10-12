@@ -30,6 +30,12 @@ CHUNK_OVERLAP = 80
 # Display is listed first so the alternation prefers it over two inline matches.
 EQUATION_RE = re.compile(r"\$\$.*?\$\$|\$[^$\n]+?\$", re.DOTALL)
 
+# extract.py inserts one of these at every page boundary so a page number survives
+# chunking — nothing upstream of chunking tracks page numbers otherwise (Document
+# metadata only ever carries `source`). Must never reach BM25/dense indexing or the LLM
+# context, so every chunker strips it before packing/splitting rather than after.
+_PAGE_MARKER_RE = re.compile(r"<!--\s*page:(\d+)\s*-->")
+
 
 # ── Chunk identity ────────────────────────────────────────────────────────────
 
@@ -176,20 +182,85 @@ def _bundle_with_context(segments: list[tuple[str, str]]) -> list[tuple[str, str
     return units
 
 
+# ── Page tracking ───────────────────────────────────────────────────────────────
+
+def _extract_page_markers(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Strip `<!-- page:N -->` sentinels from `text`.
+
+    Returns the cleaned text and an ascending list of (offset_in_cleaned_text, page) for
+    where each marker was, so a later pass can tell which page a given offset falls on.
+    """
+    clean_parts: list[str] = []
+    markers: list[tuple[int, int]] = []
+    pos = 0
+    offset = 0
+    for m in _PAGE_MARKER_RE.finditer(text):
+        clean_parts.append(text[pos:m.start()])
+        offset += m.start() - pos
+        markers.append((offset, int(m.group(1))))
+        pos = m.end()
+    clean_parts.append(text[pos:])
+    return "".join(clean_parts), markers
+
+
+def _assign_pages(
+    chunk_texts: list[str], clean_text: str, markers: list[tuple[int, int]]
+) -> list[int | None]:
+    """The page each chunk starts on, by locating it in `clean_text` and looking up the
+    nearest preceding marker. No markers at all (a document extracted before this
+    feature, or a non-PDF source) -> every chunk gets None rather than a guess.
+    """
+    if not markers:
+        return [None] * len(chunk_texts)
+    pages: list[int | None] = []
+    cursor = 0
+    for chunk in chunk_texts:
+        idx = clean_text.find(chunk, max(0, cursor - CHUNK_OVERLAP))
+        if idx == -1:
+            idx = clean_text.find(chunk)
+        at = idx if idx != -1 else cursor
+        page = None
+        for off, p in markers:
+            if off <= at:
+                page = p
+            else:
+                break
+        pages.append(page)
+        if idx != -1:
+            cursor = idx
+    return pages
+
+
 # ── Public splitters (list[Document] -> list[Document]) ───────────────────────
 
 def _rechunk(docs: list[Document], make_chunks) -> list[Document]:
     out: list[Document] = []
     for doc in docs:
-        for text in make_chunks(doc.page_content):
-            out.append(Document(page_content=text, metadata=copy.deepcopy(doc.metadata)))
+        clean_text, markers = _extract_page_markers(doc.page_content)
+        texts = make_chunks(clean_text)
+        pages = _assign_pages(texts, clean_text, markers)
+        for text, page in zip(texts, pages):
+            meta = copy.deepcopy(doc.metadata)
+            if page is not None:
+                meta["page"] = page
+            out.append(Document(page_content=text, metadata=meta))
     return assign_chunk_ids(out)
 
 
 def split_baseline(docs: list[Document]) -> list[Document]:
     """The current pipeline's splitter, equation-blind. Kept for A/B comparison."""
     splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    return assign_chunk_ids(splitter.split_documents(docs))
+    out: list[Document] = []
+    for doc in docs:
+        clean_text, markers = _extract_page_markers(doc.page_content)
+        texts = splitter.split_text(clean_text)
+        pages = _assign_pages(texts, clean_text, markers)
+        for text, page in zip(texts, pages):
+            meta = copy.deepcopy(doc.metadata)
+            if page is not None:
+                meta["page"] = page
+            out.append(Document(page_content=text, metadata=meta))
+    return assign_chunk_ids(out)
 
 
 def split_equation_aware(docs: list[Document]) -> list[Document]:

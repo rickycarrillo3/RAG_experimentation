@@ -13,6 +13,8 @@
 **/*.pkl
 # Usage telemetry — contains the questions people actually asked
 **/telemetry/
+# Figure captions derived from private uploaded documents (kbm/images.py)
+**/doc_images/
 
 # ── Secrets & config ───────────────────────────────────────────────────────────
 .env

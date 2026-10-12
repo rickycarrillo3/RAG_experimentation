@@ -12,7 +12,7 @@ import re
 
 from langchain_core.documents import Document
 
-from .schemas import Message, Mode, Source
+from .schemas import Message, MessageType, Mode, Source
 from .settings import RELEVANCE_FLOOR
 
 # Prompt TEXT lives in kbm/prompts/ so it can be read and edited in isolation. The
@@ -682,6 +682,90 @@ def retrieval_query(message: str, history: list[Message]) -> tuple[str, bool]:
     return f"{message} {prior}", True
 
 
+# ── Chat-image reference resolution ───────────────────────────────────────────
+# "Most recent photo" / "the one before that" / "the triangle picture" — resolving
+# these needs no persistence (Information_files/IMAGE_DESIGN.md: chat images are not
+# retained across turns, let alone conversations). The caption is already a normal
+# history turn (api/routes.py tags it type=IMAGE), so this walks `history` backward the
+# same shape retrieval_query already does for text follow-ups — filtered to a different
+# turn type, never touching the prompt text itself.
+
+# Words that point at "the image I sent", not a document figure — kept small and fixed
+# (not a model call) for the same cost-bound reasoning as is_follow_up.
+_IMAGE_WORDS = frozenset({"photo", "picture", "image", "pic", "snapshot"})
+_ORDINAL_BACK_WORDS = frozenset({"before", "previous", "earlier", "last"})
+
+
+def is_image_turns(history: list[Message]) -> list[Message]:
+    """All turns tagged type=IMAGE, in original order."""
+    return [m for m in history if m.type == MessageType.IMAGE]
+
+
+def most_recent_image(history: list[Message], offset: int = 0) -> Message | None:
+    """The image turn `offset` positions back (0 = most recent, 1 = 'the one before
+    that'). None if there aren't that many.
+    """
+    imgs = is_image_turns(history)
+    idx = len(imgs) - 1 - offset
+    return imgs[idx] if 0 <= idx < len(imgs) else None
+
+
+def resolve_image_reference(message: str, history: list[Message]) -> Message | None:
+    """The image-turn Message a question refers to, or None if it isn't about one.
+
+    Two cases: a position ("the one before that" -> offset 1, else offset 0 — "the
+    photo", "that picture"), or a description ("the triangle picture"), which scores the
+    small in-conversation set of captions with the cross-encoder — the chat-history
+    counterpart to kbm.images.recall_figures's corpus-wide lookup, same mechanism
+    (kbm.retrieval.rerank), never the same data source. Returns None immediately if the
+    message names no image at all, so an ordinary question never pays for a rerank call.
+    """
+    words = _WORD_RE.findall(message.casefold())
+    if not any(w in _IMAGE_WORDS for w in words):
+        return None
+
+    imgs = is_image_turns(history)
+    if not imgs:
+        return None
+
+    offset = 1 if any(w in _ORDINAL_BACK_WORDS for w in words) else 0
+    positional = most_recent_image(history, offset)
+
+    # A short reference ("the photo", "that picture") is positional by default — the
+    # description case only kicks in when there is more than one candidate to choose
+    # among and the message carries content words beyond the image/ordinal vocabulary.
+    descriptive_words = [
+        w for w in words if w not in _IMAGE_WORDS and w not in _ORDINAL_BACK_WORDS
+        and w not in _ANAPHORS
+    ]
+    if len(imgs) <= 1 or not descriptive_words:
+        return positional
+
+    try:
+        from langchain_core.documents import Document
+
+        from kbm.retrieval import rerank
+
+        # Reranker is a module-level singleton loaded by api/deps.py; imported lazily
+        # here so a caller with no reranker loaded (tests, CLI) never pays for torch.
+        from .deps import models
+
+        if models.reranker is None:
+            return positional
+        scored = rerank(
+            message,
+            [(Document(page_content=m.content), 0.0) for m in imgs],
+            models.reranker,
+            top_n=1,
+        )
+        if scored and scored[0][1] >= RELEVANCE_FLOOR:
+            best_content = scored[0][0].page_content
+            return next((m for m in imgs if m.content == best_content), positional)
+    except Exception:  # noqa: BLE001 - resolution must never break a chat turn
+        pass
+    return positional
+
+
 def to_sources(results: list[tuple[Document, float]]) -> list[Source]:
     from kbm.retrieval import chunk_id
 
@@ -753,13 +837,22 @@ def decide_mode(selected: list[tuple[Document, float]], has_index: bool) -> Mode
     return Mode.GROUNDED if has_index and selected else Mode.GENERAL
 
 
-def build_context(results: list[tuple[Document, float]], mode: Mode) -> str:
+def build_context(
+    results: list[tuple[Document, float]], mode: Mode, figures: list[dict] | None = None
+) -> str:
     """The context block for the human message.
 
     In `general` mode this is empty rather than a sentence telling the model there are
     no documents. The instruction to answer from general knowledge already lives in the
     system prompt, where it is part of the cacheable prefix; repeating it here would put
     per-query-varying text in front of the question for no benefit.
+
+    `figures` (kbm.images.recall_figures / figures_near_chunk records) render alongside
+    the chunk text, NOT in the `{memory}` slot: memory sits ahead of `{history}` because
+    it is stable within a conversation, which is what makes it safe ahead of the
+    KV-cache boundary (Information_files/LATENCY.md). Figure captions are per-query —
+    they depend on the question and the selected chunks, exactly like the chunk text
+    itself — so they belong in the one slot that already re-renders every turn.
     """
     if mode is Mode.GENERAL:
         return ""
@@ -767,6 +860,10 @@ def build_context(results: list[tuple[Document, float]], mode: Mode) -> str:
     for doc, _ in results:
         source = os.path.basename(doc.metadata.get("source", "unknown"))
         parts.append(f"[Source: {source}]\n{doc.page_content}")
+    for fig in figures or []:
+        page = fig.get("page")
+        where = f"{fig.get('doc_name', 'unknown')}" + (f", page {page}" if page is not None else "")
+        parts.append(f"[Figure: {where}]\n{fig.get('caption', '')}")
     # Trailing blank line, so HUMAN_PROMPT does not have to supply one that `general`
     # mode would then emit with nothing in front of it.
     return "\n\n".join(parts) + "\n\n"
