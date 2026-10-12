@@ -59,6 +59,13 @@ RUN pip install --force-reinstall \
         torchvision==${TORCHVISION_VERSION}+${CUDA_INDEX} \
         --index-url https://download.pytorch.org/whl/${CUDA_INDEX}
 
+# This torchvision install is a SEPARATE pip invocation from requirements.txt above, so
+# pip re-resolves from scratch and does not honor that file's `pillow<11.0.0` pin —
+# torchvision pulls in whatever current Pillow it wants (12.3.0, seen in CI) and clobbers
+# the one requirements.txt just installed. Re-pin it back down from the default PyPI
+# index (the PyTorch wheel index above carries no Pillow build to satisfy this from).
+RUN pip install "pillow<11.0.0"
+
 # Fail the BUILD on the trap above rather than the first PDF upload. Importing
 # torchvision.ops is the precise check: a mismatched pair imports `torchvision` fine and
 # dies only when the compiled op is resolved. `torch.cuda.is_available()` is deliberately
