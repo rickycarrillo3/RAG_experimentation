@@ -22,7 +22,7 @@ Env vars
     APP_PORT          Gradio port                         (default: 7860)
     APP_AUTH          "user:pass" pairs, comma-separated  (default: unset = no auth)
     REQUIRE_GPU       1 = refuse to run on CPU            (default: unset = allow CPU)
-    KBM_LLM_MODEL     the generator's Ollama tag          (default: deepseek-math)
+    KBM_LLM_MODEL     the generator's Ollama tag          (default: qwen3:8b)
     KBM_NUM_PREDICT   decode cap, in tokens               (default: per llm_profiles)
     KBM_NUM_CTX       context window, in tokens           (default: per llm_profiles)
     KBM_TIR           1/0 = force the ```python text protocol on/off (default: per llm_profiles)
