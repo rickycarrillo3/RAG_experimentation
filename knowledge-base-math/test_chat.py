@@ -74,7 +74,7 @@ def selftest() -> int:
     check("leading space preserved", echo_run(" The chain rule", [" The chain rule is"]) == (" is", False))
     # Divergence has TWO meanings, and these assertions used to conflate them — they
     # asserted the old two-case contract and had been failing since PrefillEcho was fixed
-    # (ERRORS.md 2026-08-20). Divergence inside ECHO_PROBE_CHARS is positive evidence that
+    # (Information_files/ERRORS.md 2026-08-20). Divergence inside ECHO_PROBE_CHARS is positive evidence that
     # no echo was attempted: ChatML models (Qwen) continue rather than replaying the
     # prefill, so the text must be emitted in full. Treating that as a fault is what made
     # every continuation and every tool round silently produce nothing on those models.

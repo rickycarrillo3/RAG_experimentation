@@ -2,7 +2,7 @@
 
 Pure strings, no logic. `kbm/tools/tir.py` and `kbm/tools/agent.py` re-export these
 for back-compat; `api/chat.py:system_prompt()` splices the right one in where
-`history` still ends up last (see api/chat.py, LATENCY.md).
+`history` still ends up last (see api/chat.py, Information_files/LATENCY.md).
 
 NO BRACES. Both strings are fed through ChatPromptTemplate, where `{` and `}` are
 variable syntax — a literal brace has to be doubled or it raises at format time

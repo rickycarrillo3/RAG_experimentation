@@ -42,7 +42,7 @@ def _headers() -> dict:
 #
 # Since the split this UI runs on an always-on CPU pod and the API runs on a GPU pod
 # that stops itself when idle (ops/idle_stop.py). Sleep was already automatic; wake was
-# not, and DEPLOYMENT.md §5 called that "the largest remaining gap in the day-to-day
+# not, and Information_files/DEPLOYMENT.md §5 called that "the largest remaining gap in the day-to-day
 # experience" — a family member who opened the link on a stopped pod got a dead URL and
 # no explanation, and the only fix was to text whoever holds the RunPod credentials.
 #
@@ -367,7 +367,7 @@ def send_feedback(event_id: str | None, rating: str) -> str:
 # Gradio moved `theme` from Blocks to launch() in 6.0, and dropped Chatbot's `type`
 # argument (messages is now the only format). requirements.txt pins gradio==6.17.3 — if
 # this file raises TypeError on a Chatbot or Blocks argument, the environment is on 5.x
-# and needs `pip install -r requirements.txt`, not a code change. See ERRORS.md.
+# and needs `pip install -r requirements.txt`, not a code change. See Information_files/ERRORS.md.
 # `analytics_enabled=False`: Gradio otherwise POSTs usage pings to its own servers on
 # launch. Nothing here needs that, and a family's private pod should not be talking to a
 # third party at all.

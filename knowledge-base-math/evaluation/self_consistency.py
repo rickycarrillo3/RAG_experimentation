@@ -8,7 +8,7 @@ sample k chains of thought, take the majority final answer — and it is the che
 accuracy fix available to us because it needs no new model, no fine-tune, and no data.
 
 It is also a k-times latency and GPU-cost multiplier on a pipeline where generation is
-already ~95% of query time (LATENCY.md). So the question is not "does it help" — it is
+already ~95% of query time (Information_files/LATENCY.md). So the question is not "does it help" — it is
 "does it help ENOUGH here to be worth 5-10x the decode". This script answers that with
 numbers instead of vibes.
 
@@ -442,7 +442,7 @@ class Generator:
             # additional_kwargs["reasoning_content"]), and it eats the entire num_predict
             # budget — so every answer came back with no \boxed{} and scored unparseable,
             # which reads exactly like a model that cannot do the questions. The kwarg is
-            # `reasoning`, NOT `think` — see ERRORS.md.
+            # `reasoning`, NOT `think` — see Information_files/ERRORS.md.
             reasoning=profile_for(model).think,
             keep_alive=KEEP_ALIVE,
             **({"seed": seed} if seed is not None else {}),
@@ -778,7 +778,7 @@ def print_report(per_q: list[dict], acc_at_k: dict[int, float], ks: list[int],
         print("  → NO. Voting does not beat greedy on this set. Spend the GPU elsewhere.")
     elif gain < 0.05:
         print("  → NO (not yet). Under 5 points for a multi-x latency bill on a pipeline where")
-        print("    generation is already ~95% of query time (LATENCY.md). Revisit if the set")
+        print("    generation is already ~95% of query time (Information_files/LATENCY.md). Revisit if the set")
         print("    grows or the model changes.")
     elif gain < 0.10:
         print("  → MARGINAL. Worth it only where correctness beats latency — consider making it")

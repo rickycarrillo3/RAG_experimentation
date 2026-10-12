@@ -36,7 +36,7 @@
 #
 #     KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh   # no tool protocol
 #
-# Stage 5 prints which tool protocol actually came up. See AGENT.md.
+# Stage 5 prints which tool protocol actually came up. See Information_files/AGENT.md.
 #
 set -euo pipefail
 
@@ -78,7 +78,7 @@ if [ -z "$KBM_API_TOKEN" ]; then
     # serves no API is the kind of wrong message that sends someone debugging the wrong
     # machine — the same rule as Job.detail vs Job.diagnostic in api/routes.py.
     if [ "$RUN_API" -eq 1 ]; then
-        echo "WARNING: KBM_API_TOKEN is unset — the API will be OPEN. See DEPLOYMENT.md §4." >&2
+        echo "WARNING: KBM_API_TOKEN is unset — the API will be OPEN. See Information_files/DEPLOYMENT.md §4." >&2
     else
         echo "WARNING: KBM_API_TOKEN is unset — this UI will send no Authorization header." >&2
         echo "         Every request fails with 401 if the API host has a token set." >&2
@@ -116,7 +116,7 @@ fi
 # (Which generator, further down: it asks kbm/config.py, so it waits for the venv.)
 # Exported so uvicorn and app.py inherit them. Unset by default: which tool protocol a
 # model gets is decided by its profile (kbm/llm_profiles.py), and these only override it.
-# See AGENT.md and DEPLOYMENT.md §3.
+# See Information_files/AGENT.md and Information_files/DEPLOYMENT.md §3.
 [ -n "${KBM_TOOLS:-}" ] && export KBM_TOOLS
 [ -n "${KBM_TIR:-}" ] && export KBM_TIR
 [ -n "${KBM_NUM_CTX:-}" ] && export KBM_NUM_CTX

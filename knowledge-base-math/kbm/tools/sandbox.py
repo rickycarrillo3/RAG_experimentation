@@ -24,7 +24,7 @@ WHAT THIS IS NOT
     seccomp filter and no container. The threat it is actually sized for is the real
     one: a 7B math model emitting a runaway loop, a typo, or — via text in a PDF the
     family uploaded — a prompt injection that tries something obvious. See
-    DEPLOYMENT.md before exposing this to anyone outside the household.
+    Information_files/DEPLOYMENT.md before exposing this to anyone outside the household.
 
 Qwen's own executor (evaluation/python_executor.py in QwenLM/Qwen2.5-Math) does less
 than this: a regex against `input(`, a pebble worker, and a TODO saying real sandboxing

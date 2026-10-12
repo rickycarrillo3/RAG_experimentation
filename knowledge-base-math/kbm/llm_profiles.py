@@ -45,7 +45,7 @@ class Profile:
     # Tokens of recalled per-user memory (kbm/memory.py) the prompt may carry. 0 = memory
     # recall off for this model. It is a property of the window: deepseek-math and
     # Qwen2.5-Math run at 4096 where the prompt already reaches ~3.4k with context and
-    # history (LATENCY.md), so they get 0 and memory is opt-in there via KBM_MEMORY_TOKENS;
+    # history (Information_files/LATENCY.md), so they get 0 and memory is opt-in there via KBM_MEMORY_TOKENS;
     # qwen3's 8192 has the room. The CLI write path is unaffected by this — only recall is.
     mem_tokens: int = 0
     notes: str = ""
@@ -61,7 +61,7 @@ _RULES: list[tuple[tuple[str, ...], Profile]] = [
             num_ctx=4096,
             num_predict=350,
             notes="The incumbent. RL-trained on chain-of-thought with \\boxed answers, and "
-                  "a solver rather than an instruction-follower (ERRORS.md:247) — which is "
+                  "a solver rather than an instruction-follower (Information_files/ERRORS.md:247) — which is "
                   "why the server writes the Sources line itself. No TIR training: asked to "
                   "emit a ```python block it writes prose about Python instead, so tir=False "
                   "is a statement about the weights, not a policy choice. tools=False is the "

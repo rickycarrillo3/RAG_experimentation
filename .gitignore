@@ -42,6 +42,11 @@ dist/
 build/
 .pytest_cache/
 
+# ── Node / frontend (knowledge-base-math/web) ─────────────────────────────────
+# `dist/` is already covered above. node_modules is not, and it is ~200MB.
+node_modules/
+*.tsbuildinfo
+
 # ── Model cache (large, not source code) ───────────────────────────────────────
 **/.cache/
 **/model_cache/

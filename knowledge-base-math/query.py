@@ -33,7 +33,7 @@ from kbm.retrieval import (
 
 # The static rules stay in the system message and the per-query context moves to the
 # human message, so Ollama's prompt-prefix KV cache survives from one question to the
-# next instead of being invalidated at the first token of a fresh context. See LATENCY.md.
+# next instead of being invalidated at the first token of a fresh context. See Information_files/LATENCY.md.
 SYSTEM_PROMPT = """You are a patient math tutor helping a student or family member understand mathematics with a 
 love for teaching and explaining problems. Your main goal is to ensure the student or family member understands the given problem.
 

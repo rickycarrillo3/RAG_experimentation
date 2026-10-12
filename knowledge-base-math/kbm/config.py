@@ -98,7 +98,7 @@ def _flag(name: str, default: bool) -> bool:
 # query.py), one of which hardcoded 350 — so raising the cap fixed the API and silently
 # left the CLI alone. Defined once here, imported everywhere, per CLAUDE.md.
 #
-# NUM_PREDICT is the direct lever on decode time, which LATENCY.md measures as the
+# NUM_PREDICT is the direct lever on decode time, which Information_files/LATENCY.md measures as the
 # dominant cost (~38 ms/token on the Mac, ~10x less on the pod). It is a *cap*, not a
 # target: hitting it means the answer was cut off, which api/routes.py now detects via
 # Ollama's done_reason and continues from. Do not raise this to "fix" truncation — it
@@ -118,7 +118,7 @@ NUM_CTX = int(os.environ.get("KBM_NUM_CTX") or PROFILE.num_ctx)
 
 # How many tokens of recalled per-user memory (kbm/memory.py) may be injected into the
 # prompt. 0 disables recall entirely — which is the profile default for any 4096-token
-# model, where the prompt already runs ~3.4k with context and history (LATENCY.md).
+# model, where the prompt already runs ~3.4k with context and history (Information_files/LATENCY.md).
 # qwen3 (8192) sets 400. Env var wins, so `KBM_MEMORY_TOKENS=150` opts deepseek in
 # knowingly. Writing memory via the CLI is unaffected by this; only recall is gated.
 MEMORY_TOKENS = int(os.environ.get("KBM_MEMORY_TOKENS") or PROFILE.mem_tokens)

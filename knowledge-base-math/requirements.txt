@@ -4,7 +4,7 @@
 # extraction dies with "docker binary not found" and falls back to pymupdf4llm, which
 # produces NO LaTeX (CLAUDE.md). It surfaces only on the first upload: prefetch's
 # create_model_dict() succeeds because the Docker spawn happens at conversion time,
-# not at model load. See ERRORS.md.
+# not at model load. See Information_files/ERRORS.md.
 marker-pdf<2.0
 # marker-pdf and its surya-ocr dependency both cap Pillow at <11.0.0, but nothing in this
 # file pins Pillow itself — so pip's resolver is free to pick a newer one pulled in
@@ -26,7 +26,7 @@ sentence-transformers
 # Not imported by any of our code. It is here because RunPod's images export
 # HF_HUB_ENABLE_HF_TRANSFER=1, and huggingface_hub raises on every download when that
 # is set without this package installed — prefetch_models.py fails on the embedder and
-# then reports the reranker as a missing config.json. See ERRORS.md 2026-08-19.
+# then reports the reranker as a missing config.json. See Information_files/ERRORS.md 2026-08-19.
 hf_transfer
 pylatexenc
 # Listed explicitly although torch already pulls it in transitively. Two things import it
@@ -41,7 +41,7 @@ sympy
 # ~30 sentence-transformers versions hunting for an escape that does not exist, stalls
 # for minutes, then fails with ResolutionImpossible pointing at sentence-transformers —
 # a package that is not the problem. 6.17.3 is the last release accepting hub>=0.33.5.
-# If marker-pdf<2.0 is ever lifted, this can move forward again. See ERRORS.md.
+# If marker-pdf<2.0 is ever lifted, this can move forward again. See Information_files/ERRORS.md.
 gradio==6.17.3
 torch
 # torchvision is a marker-pdf dependency, listed explicitly because it is a trap:

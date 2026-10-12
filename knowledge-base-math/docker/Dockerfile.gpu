@@ -99,7 +99,7 @@ COPY . .
 # Defaults matching a RunPod pod with a network volume at /workspace. Every one of these
 # is why a pod restart does not cost ~15GB of re-downloads — and DATA_DIR is the one that
 # loses the family's documents outright if it is wrong, because the container filesystem
-# is wiped and the indexes are the only copy that exists (ARCHITECTURE.md §5).
+# is wiped and the indexes are the only copy that exists (Information_files/ARCHITECTURE.md §5).
 ENV WORKSPACE=/workspace \
     OLLAMA_MODELS=/workspace/ollama-models \
     HF_HOME=/workspace/.cache/huggingface \
@@ -110,5 +110,5 @@ ENV WORKSPACE=/workspace \
 EXPOSE 8000
 
 # Ollama's own port is deliberately NOT exposed. It is unauthenticated: a public 11434
-# lets anyone run inference on the GPU you are paying for (DEPLOYMENT.md §4).
+# lets anyone run inference on the GPU you are paying for (Information_files/DEPLOYMENT.md §4).
 ENTRYPOINT ["bash", "startup.sh", "--api-only"]

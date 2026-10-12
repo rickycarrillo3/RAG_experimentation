@@ -39,10 +39,10 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
   deployment knob (`KBM_LLM_MODEL`), and naming a model also configures it
 - **Tools** — the default generator is tool-capable, so out of the box the model runs
   Python in a sandbox and decides when to search the documents again
-  ([`AGENT.md`](knowledge-base-math/AGENT.md))
+  ([`AGENT.md`](knowledge-base-math/Information_files/AGENT.md))
 - **Serving** — `api/` is the deployable unit; `app.py` is an HTTP client of it
 - **Isolation** — per-username indexes (a naming convention, **not real auth**), which is
-  load-bearing once the model can search: see [`DEPLOYMENT.md §8`](knowledge-base-math/DEPLOYMENT.md)
+  load-bearing once the model can search: see [`DEPLOYMENT.md §8`](knowledge-base-math/Information_files/DEPLOYMENT.md)
 
 ## Getting started
 
@@ -69,9 +69,9 @@ Running on a remote GPU box: see **[`knowledge-base-math/SETUP.md`](knowledge-ba
 ## Docs worth knowing about
 
 - [`SETUP.md`](knowledge-base-math/SETUP.md) — remote GPU pod setup, env vars, troubleshooting
-- [`LATENCY.md`](knowledge-base-math/LATENCY.md) — where query time actually goes, and the fixes applied
-- [`ARCHITECTURE.md`](knowledge-base-math/ARCHITECTURE.md) — what runs on the GPU, what on the CPU, and the VRAM budget
-- [`AGENT.md`](knowledge-base-math/AGENT.md) — the two tool protocols, why a model gets exactly one, and why the loop is hand-rolled
-- [`DEPLOYMENT.md`](knowledge-base-math/DEPLOYMENT.md) — hosting, cost, env vars, and what the sandbox does and does not protect
-- [`ERRORS.md`](knowledge-base-math/ERRORS.md) — failures actually hit and what really caused them; **check before debugging an environment problem**
+- [`LATENCY.md`](knowledge-base-math/Information_files/LATENCY.md) — where query time actually goes, and the fixes applied
+- [`ARCHITECTURE.md`](knowledge-base-math/Information_files/ARCHITECTURE.md) — what runs on the GPU, what on the CPU, and the VRAM budget
+- [`AGENT.md`](knowledge-base-math/Information_files/AGENT.md) — the two tool protocols, why a model gets exactly one, and why the loop is hand-rolled
+- [`DEPLOYMENT.md`](knowledge-base-math/Information_files/DEPLOYMENT.md) — hosting, cost, env vars, and what the sandbox does and does not protect
+- [`ERRORS.md`](knowledge-base-math/Information_files/ERRORS.md) — failures actually hit and what really caused them; **check before debugging an environment problem**
 - [`evaluation/EVALUATION.md`](knowledge-base-math/evaluation/EVALUATION.md) — the eval protocol; **read before changing retrieval**

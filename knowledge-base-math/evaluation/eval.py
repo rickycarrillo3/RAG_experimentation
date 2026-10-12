@@ -435,7 +435,7 @@ def main():
             # read. Without it a qwen3 arm spends its whole decode budget inside a <think>
             # block that never reaches `.text`, and the judge scores an empty answer as a
             # wrong one — the model looks incapable rather than misconfigured. The kwarg is
-            # `reasoning`, NOT `think`. See ERRORS.md.
+            # `reasoning`, NOT `think`. See Information_files/ERRORS.md.
             reasoning=profile_for(OLLAMA_MODEL).think,
         ) | StrOutputParser()
         judge = ChatPromptTemplate.from_template(JUDGE_PROMPT) | ChatOllama(

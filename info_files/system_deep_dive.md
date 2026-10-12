@@ -168,7 +168,7 @@ ChromaDB is great up to ~100k chunks (a few hundred textbooks). Beyond that, exa
 ## 5. Latency in Regular Use
 
 > **These are estimates from before the system was measured.** The real numbers, taken on
-> the running pipeline, are in **`../knowledge-base-math/LATENCY.md`** — along with the four
+> the running pipeline, are in **`../knowledge-base-math/Information_files/LATENCY.md`** — along with the four
 > fixes applied since and the reasoning behind each. Read that first; treat the sketch below
 > as the shape of the problem, not as data.
 

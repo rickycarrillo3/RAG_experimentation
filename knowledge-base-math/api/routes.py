@@ -32,6 +32,7 @@ from ops.backup_indexes import enabled as backup_enabled
 from . import chat as chatmod
 from .deps import has_index, index_summary, models, normalize_user, require_token
 from .schemas import (
+    ChatEvent,
     ChatRequest,
     DoneEvent,
     ErrorEvent,
@@ -95,13 +96,20 @@ def _sse(event: str, payload) -> str:
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
-@router.post("/chat")
+# `responses` documents the SSE payload union without declaring a `response_model`:
+# the four event models reach `openapi.json` (so the TypeScript client is generated
+# rather than hand-written) while the StreamingResponse below is still returned
+# untouched and unvalidated. Changing this to `response_model=` would break the route.
+@router.post(
+    "/chat",
+    responses={200: {"model": ChatEvent, "content": {"text/event-stream": {}}}},
+)
 async def chat(req: ChatRequest):
     """Stream one answer as Server-Sent Events: `sources`, then `token`*, then `done`.
 
     Sources are emitted *before* generation starts, not bundled into the final payload,
     so the UI can show what it found during the seconds the model spends decoding —
-    generation is ~95% of query time (LATENCY.md), and that window is otherwise dead.
+    generation is ~95% of query time (Information_files/LATENCY.md), and that window is otherwise dead.
     """
     user = normalize_user(req.user)
     return StreamingResponse(
@@ -136,7 +144,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # nothing — see chat.retrieval_query, which borrows the previous question. The
         # prompt below still gets req.message verbatim, and so does QuestionEcho: the
         # rewrite must never reach the prompt, or it moves text inside the cacheable
-        # prefix (LATENCY.md) and desynchronises the echo guards from what was asked.
+        # prefix (Information_files/LATENCY.md) and desynchronises the echo guards from what was asked.
         rquery, rewritten = (
             chatmod.retrieval_query(req.message, req.history)
             if QUERY_REWRITE else (req.message, False)
@@ -195,7 +203,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         #
         # Building the messages here does NOT change the prompt's shape: order stays
         # static text -> history -> context -> question, and continuation only ever
-        # APPENDS after it. LATENCY.md's prefix rule depends on that and is load-bearing.
+        # APPENDS after it. Information_files/LATENCY.md's prefix rule depends on that and is load-bearing.
         base_messages = prompt.format_messages(
             context=chatmod.build_context(selected, mode),
             memory=chatmod.format_memory(memory_facts),
@@ -222,7 +230,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # ENDS the turn — the transcript needs a real AIMessage carrying the structured
         # call, then a ToolMessage per result, then a fresh assistant turn.
         #
-        # Append-only, and always after the human message, so LATENCY.md's prefix rule
+        # Append-only, and always after the human message, so Information_files/LATENCY.md's prefix rule
         # holds exactly as it does for TIR: `base_messages` is never mutated and
         # everything before the append point is unchanged, so only new tokens prefill.
         # The one visible difference is that the chat template renders a genuine turn
@@ -313,7 +321,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             # In agent mode the tool arm below closes the turn and resets `generated` to
             # "", so PrefillEcho is constructed empty and is a pass-through: it carries
             # continuations, exactly as it does today, and is structurally absent from the
-            # native tool path. No flag, no branch — which matters, because ERRORS.md
+            # native tool path. No flag, no branch — which matters, because Information_files/ERRORS.md
             # 2026-08-20 is the record of what a wrong PrefillEcho verdict costs (every
             # continuation silently emitting nothing, on one model only).
             echo = chatmod.PrefillEcho(generated)
@@ -367,7 +375,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             # ever reached, and the student gets NO_ANSWER_TEXT instead of an answer. The
             # symptom would be silent, model-dependent, and would look like the model
             # failing rather than the server discarding its request — the same shape as
-            # ERRORS.md 2026-08-20.
+            # Information_files/ERRORS.md 2026-08-20.
             if echo.mismatch or (not produced and not calls):
                 truncated = done_reason == "length"
                 break
@@ -663,7 +671,7 @@ async def _chat_stream(user: str, req: ChatRequest):
         # case, and it lands in `answer` so telemetry and the faithfulness eval see
         # exactly what the student saw. Last, because it is a statement about the answer
         # above it — and because appending cannot disturb the prompt prefix the next
-        # turn's KV cache depends on (LATENCY.md).
+        # turn's KV cache depends on (Information_files/LATENCY.md).
         # Skipped when nothing was answered: there is no answer for the line to
         # attribute, and naming a document under "no answer came back" reads as though
         # the document were the reason. Also empty in `general` mode — the footer names
@@ -853,7 +861,7 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         # only while a job is queued or running, so an archive started once the status
         # has flipped could be killed by the watchdog halfway through its upload. The
         # cost is a few seconds on top of a multi-minute Marker run. What it buys is
-        # that the only copy of the family's documents (ARCHITECTURE.md §5) exists
+        # that the only copy of the family's documents (Information_files/ARCHITECTURE.md §5) exists
         # somewhere other than one region-pinned network volume — which is what makes
         # "recreate the pod from the image" a complete recovery rather than a partial one.
         #

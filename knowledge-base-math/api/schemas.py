@@ -6,7 +6,7 @@ are chosen deliberately and changing one is a breaking change, not a rename.
 """
 
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -179,6 +179,20 @@ class DoneEvent(BaseModel):
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
+
+
+# The union of everything POST /chat can put on the wire, discriminated by `type`.
+#
+# It exists for one reason: /chat returns a bare StreamingResponse, so without this the
+# four models above are referenced by no `response_model` and therefore never reach
+# `openapi.json` — and a TypeScript client generated from that schema would be missing
+# precisely the contract it uses most, leaving it hand-written and free to drift. It is
+# declared on the route via `responses=`, which registers the schema and nothing else:
+# no validation runs, and the StreamingResponse is returned untouched.
+ChatEvent = Annotated[
+    SourcesEvent | TokenEvent | DoneEvent | ErrorEvent,
+    Field(discriminator="type"),
+]
 
 
 # ── Upload / jobs ─────────────────────────────────────────────────────────────

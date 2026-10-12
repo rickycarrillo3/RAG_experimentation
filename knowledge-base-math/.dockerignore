@@ -1,7 +1,7 @@
 # Build context hygiene. Two rules matter here beyond image size:
 #
 #   1. The family's documents must never enter an image. chroma_db/ and bm25_indexes/
-#      are the only copy of them (ARCHITECTURE.md §5) and a layer is world-readable to
+#      are the only copy of them (Information_files/ARCHITECTURE.md §5) and a layer is world-readable to
 #      anyone who pulls the tag.
 #   2. venv/ must never be copied in. It is ~2.1GB, it is built for the host's Python
 #      and CPU, and startup.sh prefers ./venv over the image's interpreter if it exists
