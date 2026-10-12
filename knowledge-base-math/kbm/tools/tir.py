@@ -106,7 +106,7 @@ def format_result(output: str) -> str:
 
     The leading and trailing newlines are part of the format the model saw in training,
     not cosmetic. Appending — never inserting — is also what keeps Ollama's prompt-prefix
-    KV cache alive across rounds (LATENCY.md): everything before the splice point is
+    KV cache alive across rounds (Information_files/LATENCY.md): everything before the splice point is
     unchanged, so only the new tokens are prefilled.
     """
     return f"\n```output\n{output}\n```\n"

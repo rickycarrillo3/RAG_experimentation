@@ -3,7 +3,7 @@
 Pure strings, no logic. `api/chat.py:_MODE_RULES` maps the `Mode` enum onto these,
 and `system_prompt()` appends the chosen one LAST so `{history}` stays at the tail of
 the static prefix (two modes share every token before this block, so alternating
-grounded/general mid-conversation reuses the KV cache — LATENCY.md).
+grounded/general mid-conversation reuses the KV cache — Information_files/LATENCY.md).
 
 NO BRACES except the `{memory}` and `{history}` template variables: these go through
 ChatPromptTemplate. `{memory}` (api/chat.py:format_memory) sits just before

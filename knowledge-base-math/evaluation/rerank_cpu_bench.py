@@ -1,7 +1,7 @@
 """
 evaluation/rerank_cpu_bench.py - What does the cross-encoder cost on a CPU host?
 
-Why this exists. `LATENCY.md §4` declines to swap the reranker on the grounds that it is
+Why this exists. `Information_files/LATENCY.md §4` declines to swap the reranker on the grounds that it is
 "850 ms of a 20 s problem — the wrong end." That reasoning holds only while generation
 sits on the same box. Move generation to a serverless GPU and leave retrieval on a small
 always-on CPU pod and the arithmetic inverts: the reranker becomes the largest thing left

@@ -15,7 +15,7 @@ Which protocol a model gets is a property of the model, not a policy:
     Qwen2.5-Math-7B       fine-tuned on the ```python/```output shape      -> kbm/tools/tir.py
     qwen3:8b              Capabilities: completion, tools                  -> this file
 
-Measured on qwen2:7b before any of this was written (the ERRORS.md 2026-08-20 lesson —
+Measured on qwen2:7b before any of this was written (the Information_files/ERRORS.md 2026-08-20 lesson —
 when behaviour depends on the model, a second model is the only test):
 
   - `args` arrive as a COMPLETE parsed dict on a single chunk. Ollama does not stream
@@ -39,7 +39,7 @@ none may ever gain one. Multi-user isolation in this project is per-username dir
 naming, not auth (CLAUDE.md), so a `user` the model can write is a `user` the model can
 change. The caller closes `user` over from the request. This matters more here than
 anywhere else in the repo because search_documents reads text the family UPLOADED: a PDF
-carrying instructions aimed at the model is a prompt-injection route (DEPLOYMENT.md §8),
+carrying instructions aimed at the model is a prompt-injection route (Information_files/DEPLOYMENT.md §8),
 and the closure is what stops it reaching another family member's index.
 """
 
@@ -179,7 +179,7 @@ SEARCH_RESULT_CHARS = 1200
 # comment). Re-exported here so `from kbm.tools.agent import AGENT_RULES` keeps working
 # — api/chat.py imports it that way. It is added to the static head of the system
 # prompt, where tir.TIR_RULES goes, so `history` still comes last and the cacheable
-# prefix keeps its shape (see api/chat.py, LATENCY.md).
+# prefix keeps its shape (see api/chat.py, Information_files/LATENCY.md).
 from kbm.prompts.tools import AGENT_RULES  # noqa: F401  (re-export for back-compat)
 
 

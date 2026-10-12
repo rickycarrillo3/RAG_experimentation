@@ -19,7 +19,7 @@ module unimportable on the exact host that needs to start the pod. Each caller r
 its own configuration and passes it in; this file knows only HTTP.
 
 ⚠️ RUNPOD_API_KEY controls the whole RunPod account — start, stop, terminate, spend.
-Putting it on the CPU host is a deliberate trade (DEPLOYMENT.md §5, "the wake gap"):
+Putting it on the CPU host is a deliberate trade (Information_files/DEPLOYMENT.md §5, "the wake gap"):
 it is what turns a dead URL into a progress bar, and it is why the CPU pod must have
 APP_AUTH set. It is not a credential to put in anything a family member can read.
 """
@@ -46,7 +46,7 @@ def _call(action: str, pod_id: str, api_key: str) -> None:
 def stop_pod(pod_id: str, api_key: str) -> None:
     """Stop the pod. Stop, not terminate — the volume and its ~15GB of model weights
     must survive, or every wake re-downloads them (and the indexes are the only copy
-    of the family's documents, ARCHITECTURE.md §5)."""
+    of the family's documents, Information_files/ARCHITECTURE.md §5)."""
     _call("stop", pod_id, api_key)
 
 
@@ -54,6 +54,6 @@ def start_pod(pod_id: str, api_key: str) -> None:
     """Start the pod. Returns as soon as RunPod accepts the request, which is well
     before anything is serving: a start recreates the container from the image, so the
     caller still has to wait for the processes. Poll GET /healthz for `model_loaded`
-    rather than assuming this call means ready — DEPLOYMENT.md §5, "wake is two things".
+    rather than assuming this call means ready — Information_files/DEPLOYMENT.md §5, "wake is two things".
     """
     _call("start", pod_id, api_key)

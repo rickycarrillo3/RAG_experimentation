@@ -2,7 +2,7 @@
 api/chat.py - Prompt construction, history trimming, and answer-provenance mode.
 
 Ported from app.py. The prompt ordering and the history-trimming shape are latency
-fixes with measurements behind them (LATENCY.md) — read the comments before changing
+fixes with measurements behind them (Information_files/LATENCY.md) — read the comments before changing
 either. Everything here is pure: no I/O, no model handles, so it is testable and the
 eval can build exactly the prompt that ships.
 """
@@ -17,7 +17,7 @@ from .settings import RELEVANCE_FLOOR
 
 # Prompt TEXT lives in kbm/prompts/ so it can be read and edited in isolation. The
 # composition ORDER stays here in system_prompt() — it is a KV-cache/latency
-# constraint (see the comment below and LATENCY.md).
+# constraint (see the comment below and Information_files/LATENCY.md).
 from kbm.prompts import (
     TEACHING_STYLE,
     SAFETY_RULES,
@@ -33,7 +33,7 @@ from kbm.prompts import (
 # cached across turns. `context` is fresh every query, which is exactly why it must come
 # last — it lives in the human message, after the system message. Putting it before the
 # history (as app.py once did) invalidated the cache at token ~150 and re-prefilled the
-# whole ~3.4k-token prompt every single turn. See LATENCY.md.
+# whole ~3.4k-token prompt every single turn. See Information_files/LATENCY.md.
 # TEACHING_STYLE, SAFETY_RULES (persona.py) and GROUNDED_RULES / GENERAL_RULES
 # (grounding.py) are imported from kbm/prompts/ above. Their "why this text" comments
 # moved with them, including the `{memory}` slot ahead of `{history}` in the mode
@@ -477,7 +477,7 @@ def system_prompt(mode: Mode, tir: bool = False, tools: bool = False) -> str:
     the message, so it can grow by appending without moving anything in front of it; and
     the two modes still share every token up to the mode block, so alternating between
     grounded and general mid-conversation reuses the cached prefix instead of
-    re-prefilling (LATENCY.md).
+    re-prefilling (Information_files/LATENCY.md).
 
     The mode block carries two more template variables filled at format time: `{memory}`
     (curated per-user memory, see format_memory) sits just before `{history}` because it
@@ -640,7 +640,7 @@ def is_follow_up(message: str, history: list[Message]) -> bool:
     concatenation, so a false positive costs a query vector pulled toward a topic the
     student was asking about seconds ago — bounded, and the relevance floor still decides
     whether anything is grounded. An LLM rewriter would be more accurate and would cost
-    ~4-5GB of VRAM (ARCHITECTURE.md 4) and a prefill+decode sitting directly in front of
+    ~4-5GB of VRAM (Information_files/ARCHITECTURE.md 4) and a prefill+decode sitting directly in front of
     time-to-first-token, which is the part of the latency budget the student feels. The
     numbers that would justify that price are evaluation/eval_followup.py's, and they do
     not exist yet.
@@ -660,7 +660,7 @@ def retrieval_query(message: str, history: list[Message]) -> tuple[str, bool]:
 
     ⚠️ THE RETRIEVAL QUERY ONLY. The prompt still gets `message` verbatim, and so does
     QuestionEcho. Anything else moves text inside the prompt prefix, which is the one
-    thing the KV cache cannot survive (LATENCY.md), and would desynchronise the echo
+    thing the KV cache cannot survive (Information_files/LATENCY.md), and would desynchronise the echo
     guards from what the model was actually asked.
 
     AUGMENTS rather than replaces, with the student's own words first. BM25 is a bag of

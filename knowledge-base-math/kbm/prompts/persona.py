@@ -1,7 +1,7 @@
 """Persona and conduct text for the production tutor prompt.
 
 Pure strings, no logic. The composition order that splices these together lives in
-`api/chat.py:system_prompt()` and is a KV-cache/latency constraint (LATENCY.md) —
+`api/chat.py:system_prompt()` and is a KV-cache/latency constraint (Information_files/LATENCY.md) —
 only the text lives here.
 
 NO BRACES that are not doubled: these strings are fed through ChatPromptTemplate,
@@ -23,7 +23,7 @@ TEACHING_STYLE = """You are an expert mathematician and dedicated teacher. Your 
 # describe THIS deployment. The full text is mostly product information, political
 # even-handedness and CBRN/malware policy — none of which a family math tutor meets, and
 # all of which would be paid for out of deepseek-math's 4,096-token window, where the
-# prompt already runs ~3.4k with context and history (LATENCY.md). What survived is what
+# prompt already runs ~3.4k with context and history (Information_files/LATENCY.md). What survived is what
 # has a real failure mode here: children are among the users, a distressed student is a
 # plausible turn in a homework session, and a fabricated theorem is the failure this whole
 # pipeline exists to prevent.
@@ -31,7 +31,7 @@ TEACHING_STYLE = """You are an expert mathematician and dedicated teacher. Your 
 # The last line is not from Anthropic's prompt — it is this repo's own hazard. Retrieved
 # chunks are text the family UPLOADED, and kbm/tools/agent.py's search_documents makes that
 # text reachable from inside generation, so a document is a prompt-injection route
-# (DEPLOYMENT.md §8). Stating that the documents are material and not instructions is the
+# (Information_files/DEPLOYMENT.md §8). Stating that the documents are material and not instructions is the
 # only mitigation that lives in the prompt; it is not a substitute for the sandbox's gate.
 #
 # It sits between the teaching style and the tool/mode blocks, which preserves both

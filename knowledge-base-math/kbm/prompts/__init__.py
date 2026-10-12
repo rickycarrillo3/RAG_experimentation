@@ -2,7 +2,7 @@
 
 Every string here is a prompt fragment the deployed service sends to the generator.
 The *composition* logic that orders and splices them — which is latency-sensitive
-(KV-cache prefix reuse, LATENCY.md) — stays in `api/chat.py:system_prompt()`; this
+(KV-cache prefix reuse, Information_files/LATENCY.md) — stays in `api/chat.py:system_prompt()`; this
 package holds only the operands.
 
 Out of scope on purpose: `query.py`'s CLI prompts and the `evaluation/` harness

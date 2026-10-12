@@ -511,7 +511,7 @@ exam everyone passes.
   this for the parity run — it is now permanent.
 - **This applies to the repo-relative `docs/extracted/` corpus built with the `extract.py`
   CLI, which is the only corpus the eval harness reads.** Documents uploaded through the
-  web UI are *not* retained (`DEPLOYMENT.md §7`): their `.mmd` is deleted with the ingest
+  web UI are *not* retained (`Information_files/DEPLOYMENT.md §7`): their `.mmd` is deleted with the ingest
   job, so they cannot be re-chunked or used as gold-set sources without being uploaded
   again. Build the eval corpus with the CLI, deliberately, and keep it.
 
@@ -599,10 +599,10 @@ axis in its own right, not a fixed background condition.
 **A/B the prompt as a variable too.** `SYSTEM_PROMPTS` in `api/chat.py` has never been
 evaluated — it was written once and kept. Prompt changes routinely buy more than a model
 swap, and it is the cheapest axis here. When varying prompts,
-preserve the static → history → context → question order (`LATENCY.md`); a prompt A/B
+preserve the static → history → context → question order (`Information_files/LATENCY.md`); a prompt A/B
 that reorders those blocks measures latency, not quality.
 
-> **This benchmark's winner constrains deployment.** `DEPLOYMENT.md` sizes the pod for a
+> **This benchmark's winner constrains deployment.** `Information_files/DEPLOYMENT.md` sizes the pod for a
 > 7B-class model on a 24GB card. If the winner needs more, the cost table must be redone.
 > Treat that as an exit criterion of the benchmark, not a detail.
 
@@ -775,7 +775,7 @@ exploits that: sample k chains of thought, take the majority final answer.
 
 It is the cheapest accuracy fix available to this project — no new model, no fine-tune, no
 labelled data — and also a **k× multiplier on the single most expensive stage in the
-system**: generation is ~95% of query time (`LATENCY.md`). So the question is never "does
+system**: generation is ~95% of query time (`Information_files/LATENCY.md`). So the question is never "does
 it help" but "does it help *enough here*". `evaluation/self_consistency.py` answers that.
 
 ```bash
@@ -1090,7 +1090,7 @@ And the one confusion this table invites, stated explicitly: **every number in i
 TIR.** Qwen2.5-Math's TIR scores (94.6 / 85.2) are quoted above and were deliberately *not*
 used to choose arms, because nothing in this system executes tool calls — picking a model on
 its TIR column would be choosing on a capability we have not built. If TIR is ever adopted
-(`MAIN_LLM_ANALYSIS.md §4.3`), the arms must be re-chosen against the TIR column, and this
+(`Information_files/MAIN_LLM_ANALYSIS.md §4.3`), the arms must be re-chosen against the TIR column, and this
 bake-off's result does not carry over.
 
 Read as: a +31 MATH gap on paper is a strong reason to spend two hours of GPU time. It is not
@@ -1193,7 +1193,7 @@ the matching lever: *"let the model emit Python for the arithmetic step and exec
 §10.4 already listed the candidate generators. This section is that experiment.
 
 The independent reason to run it is instruction-following, and it is not a preference.
-Three separate places in this repo record the same finding — `ERRORS.md` (the model
+Three separate places in this repo record the same finding — `Information_files/ERRORS.md` (the model
 ignores "say this isn't from your documents", so the server writes the `Sources:` line
 itself), §5 (it writes poor gold-set questions, so `qwen2:7b` writes them), §10.8 (same
 again for provenance tags). `api/chat.py:SYSTEM_PROMPTS` is therefore mostly decorative
@@ -1212,7 +1212,7 @@ today. An instruct model would let the prompt do its job.
 - **`kbm/tools/agent.py`** — the *other* tool protocol: native tool calling, where a JSON
   schema goes out and a structured `tool_calls` array comes back. Reaches the sandbox and,
   in the server, retrieval as well. A model gets this or TIR, never both — `kbm/config.py`
-  decides in one line. See `AGENT.md`.
+  decides in one line. See `Information_files/AGENT.md`.
 - **`kbm/llm_profiles.py`** — window size, decode budget, TIR capability **and native-tools
   capability** per model, so naming a generator configures it. `KBM_LLM_MODEL` selects; env
   vars override.
@@ -1298,7 +1298,7 @@ hand and recording here:
 2. **Does it say when the context does not cover the question?** Ask something the corpus
    demonstrably lacks, in `grounded` mode. Silence here is the failure `RELEVANCE_FLOOR`
    only partly catches.
-3. **Does it stop?** `LATENCY.md` measures deepseek filling any budget it is given (534
+3. **Does it stop?** `Information_files/LATENCY.md` measures deepseek filling any budget it is given (534
    tokens for a one-line conceptual question). An instruct model that stops when it is
    done is worth real latency, and shows up as `truncated=false` at a *lower*
    `KBM_NUM_PREDICT`.
@@ -1329,7 +1329,7 @@ Read in this order, and stop at the first one that fails:
   `config.NUM_CTX` is what makes it explicit. Arm D exists partly because Qwen3 is not
   capped this way, which matters most in `grounded` mode where retrieved context is
   competing with the trace.
-- **Latency.** `LATENCY.md`: generation is ~95% of query time. TIR multiplies generation
+- **Latency.** `Information_files/LATENCY.md`: generation is ~95% of query time. TIR multiplies generation
   passes by up to 4 and adds prefill for a growing transcript. A TIR answer will be several
   times slower than a CoT one — `DoneEvent.timings.tool_ms` separates sandbox time from
   decode time so the two are not confused. Measure before flipping the default, and
@@ -1364,7 +1364,7 @@ so the answer is never reached and every sample scores *unparseable*. On a 3-que
 that was the difference between accuracy **0.50 with 50% unparseable** and **1.00 with 0%**,
 and between 7 minutes and 9 seconds for one question. Any arm-D or arm-E number produced by
 an older checkout is measuring thinking-mode overflow, not the model. Fixed in
-`Generator.__init__` (`reasoning=profile_for(model).think`); see `ERRORS.md` 2026-08-20.
+`Generator.__init__` (`reasoning=profile_for(model).think`); see `Information_files/ERRORS.md` 2026-08-20.
 
 **Harness status.** Arm E (`--tools`) is implemented and verified end to end on a 3-question
 smoke of the college tier: `greedy answers that ran a program: 3/3`, 3/3 correct, 0 sandbox

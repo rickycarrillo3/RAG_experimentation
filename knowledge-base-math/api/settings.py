@@ -96,7 +96,7 @@ RELEVANCE_FLOOR = float(os.environ.get("KBM_RELEVANCE_FLOOR", "0.15"))
 # is given, so a cap alone guarantees a cut-off answer sooner or later; continuing is
 # what makes the answer finish. Measured on the Mac: resuming re-prefills only the
 # partial answer (~160 ms for 350 tokens, because it appends to the END of the prompt
-# and the cached prefix survives — see LATENCY.md) against ~13 s to decode the same
+# and the cached prefix survives — see Information_files/LATENCY.md) against ~13 s to decode the same
 # tokens. So the cap bounds worst-case answer length, and costs almost nothing in
 # prefill. 0 disables continuation and falls back to labelling the answer truncated.
 MAX_CONTINUATIONS = int(os.environ.get("KBM_MAX_CONTINUATIONS", "2"))

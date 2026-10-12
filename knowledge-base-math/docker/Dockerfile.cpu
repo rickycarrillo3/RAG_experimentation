@@ -1,7 +1,7 @@
 # docker/Dockerfile.cpu — the UI host: Gradio, and nothing else.
 #
 # Runs on an always-on CPU pod in front of a GPU pod that stops itself when idle. That
-# arrangement is what closes the wake gap (DEPLOYMENT.md §5): the URL a family member
+# arrangement is what closes the wake gap (Information_files/DEPLOYMENT.md §5): the URL a family member
 # bookmarks now always answers, and app.py's ensure_awake() starts the GPU pod and shows
 # the wait as progress instead of a dead link.
 #

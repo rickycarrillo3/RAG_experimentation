@@ -1,11 +1,11 @@
 """
 ops/backup_indexes.py - Archive the indexes off the pod.
 
-DEPLOYMENT.md §6 has carried "no backups, and now nothing to rebuild from" as an open
+Information_files/DEPLOYMENT.md §6 has carried "no backups, and now nothing to rebuild from" as an open
 risk since uploaded PDFs stopped being retained. That change was right — the pod holds no
 copy of the family's library — but it inverted what is derived data. chroma_db/ and
 bm25_indexes/ used to be regenerable from the PDFs beside them; they are now the ONLY
-copy that exists anywhere except the family's own laptops (ARCHITECTURE.md §5).
+copy that exists anywhere except the family's own laptops (Information_files/ARCHITECTURE.md §5).
 
 A RunPod network volume is one delete, one unpaid storage charge, or one wrong region
 away from gone, and it does not follow you to another datacenter. That last point is why

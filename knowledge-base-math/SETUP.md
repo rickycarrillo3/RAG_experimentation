@@ -148,7 +148,7 @@ ollama pull qwen3:8b                     # generator, the default (~5.2GB)
 ollama pull qwen2:7b                     # eval only: gold-set author + answer judge
 # Optional: the previous default. It is the only arm with NO tool protocol — `ollama show`
 # reports it as completion-only, with no tools template — so it is what you pull to compare
-# the family's answers against a generator that cannot search or compute. See AGENT.md.
+# the family's answers against a generator that cannot search or compute. See Information_files/AGENT.md.
 ollama pull t1c/deepseek-math-7b-rl:Q4   # previous default (~4.2GB)
 
 # ── HuggingFace models (~6GB cold) ────────────────────────────────────────────
@@ -242,7 +242,7 @@ the container, so 8000 never needs to be public — and 11434 (Ollama, unauthent
 must never be. To poke the API, SSH in and use `localhost:8000`. `/docs` is *off*
 whenever `KBM_API_TOKEN` is set — those routes sit outside the token — so add
 `KBM_ENABLE_DOCS=1` if you need them, and only over the SSH tunnel. Full reasoning in
-`DEPLOYMENT.md §4`.
+`Information_files/DEPLOYMENT.md §4`.
 
 `startup.sh` **installs nothing** — it starts things. Creating the venv and the two `pip
 install` steps in §1 are one-time; this is what runs every session. Note that a missing
@@ -250,14 +250,14 @@ torch and a missing GPU both surface as stage 1's "No CUDA device visible to tor
 if you see that on a fresh clone, check the install before you blame the pod.
 
 To run it automatically on every pod start, set RunPod's **Container Start Command** —
-see `DEPLOYMENT.md §5`.
+see `Information_files/DEPLOYMENT.md §5`.
 
 > **Set `KBM_API_TOKEN` before exposing either port.** Without it the API is open and the
 > per-username "isolation" is just a guessable string — anyone who finds the host reads
-> every uploaded document. See `DEPLOYMENT.md §4`.
+> every uploaded document. See `Information_files/DEPLOYMENT.md §4`.
 
 For hosting shape, cost, idle-stop and the full environment-variable table, see
-**`DEPLOYMENT.md`**.
+**`Information_files/DEPLOYMENT.md`**.
 
 ---
 
@@ -278,7 +278,7 @@ nothing changes until you set one.
 | `KBM_TOOLS` | from the model's profile | `1`/`0` forces native tool calling (`search_documents`, `run_python`, `list_documents`). Wins over `KBM_TIR` |
 | `KBM_TIR` | from the model's profile | `1`/`0` forces the ` ```python ` text protocol. Forced off whenever tools are on |
 | `KBM_NUM_CTX` / `KBM_NUM_PREDICT` | from the model's profile | window and decode cap; override only to test |
-| `KBM_API_TOKEN` | unset (**API is open**) | bearer token for `api/`. Different lock from `APP_AUTH` — see `DEPLOYMENT.md §4` |
+| `KBM_API_TOKEN` | unset (**API is open**) | bearer token for `api/`. Different lock from `APP_AUTH` — see `Information_files/DEPLOYMENT.md §4` |
 
 **Agent mode is the default.** The default generator has a tools template, so `bash
 startup.sh` already gives you the arm where the model searches the documents and runs
@@ -291,7 +291,7 @@ KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh
 Stage 5 prints which protocol actually came up (`native tool calling`, `tool-integrated
 reasoning`, or `no tool protocol`) — if you asked for one and see "no tool protocol", the
 model was not pulled or has no tools template, and the log above says which.
-`DEPLOYMENT.md §3` is the full variable list.
+`Information_files/DEPLOYMENT.md §3` is the full variable list.
 
 **On `APP_AUTH`:** it is a front door lock, not real authentication. It controls *access to
 the app*. Behind it, users are still just lowercased strings typed into a textbox — anyone
@@ -415,7 +415,7 @@ pip check          # should print "No broken requirements found."
 **Why 6.17.3 and not something newer.** Gradio raised its `huggingface-hub` floor to
 `>=1.2.0` in **6.18.0**, and `marker-pdf<2.0` caps `transformers<5.0.0`, which in turn caps
 `huggingface-hub<1.0`. Those cannot both hold, so 6.18.0 makes the install unresolvable —
-see the comment block in `requirements.txt` and the ERRORS.md entry. 6.17.3 is the newest
+see the comment block in `requirements.txt` and the Information_files/ERRORS.md entry. 6.17.3 is the newest
 release still accepting `hub>=0.33.5`, and it is still Gradio 6, so the API changes above
 are unaffected.
 
@@ -478,7 +478,7 @@ A `UserWarning` about `theme` moving to `launch()` just above it is the same mis
 package is missing, so every HuggingFace download raises. The reranker's message is a
 red herring: the download never ran, so there is no `config.json` to load. `pip install
 hf_transfer` in the venv (it is in `requirements.txt`, so `pip install -r
-requirements.txt` also fixes it) and re-run. See `ERRORS.md 2026-08-19`.
+requirements.txt` also fixes it) and re-run. See `Information_files/ERRORS.md 2026-08-19`.
 
 **`ResolutionImpossible` when installing** — something has been added or bumped that
 re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the

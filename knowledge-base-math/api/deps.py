@@ -44,7 +44,7 @@ def _model_supports_tools(model: str) -> bool | None:
     the real cause named only inside an exception string.
 
     So ask the runtime rather than trusting the table, which is the same lesson
-    ERRORS.md 2026-08-20 records for `think=`: assert on what actually goes out, not on
+    Information_files/ERRORS.md 2026-08-20 records for `think=`: assert on what actually goes out, not on
     what the config says. Verified locally —
 
         t1c/deepseek-math-7b-rl:Q4  ->  ['completion']
