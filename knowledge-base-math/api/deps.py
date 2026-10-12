@@ -17,7 +17,7 @@ from fastapi import Header, HTTPException, status
 from langchain_ollama import ChatOllama
 
 from kbm import retrieval
-from kbm.config import OLLAMA_BASE_URL
+from kbm.config import OLLAMA_BASE_URL, VISION_OLLAMA_MODEL, VISION_PROFILE
 from kbm.retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 from kbm.tools import agent
 
@@ -89,6 +89,11 @@ class Models:
         self.embeddings = None
         self.reranker = None
         self.llm = None
+        # Separate client, separate model — never bound as the chat generator. Loaded
+        # lazily on first use (caption_image call), not in load() below, because it is
+        # needed far less often than the generator/reranker/embedder and must not add
+        # to every process's startup VRAM. See kbm/llm_profiles.VisionProfile.
+        self.vision_llm = None
         # The same client with agent.TOOL_SCHEMAS bound, or None when this model does not
         # get the native protocol. Two handles rather than one because binding is not
         # free of consequence: a `tools` array sent to a completion-only model is a 400
@@ -166,6 +171,28 @@ class Models:
                     self.llm_tools = self.llm.bind_tools(agent.TOOL_SCHEMAS)
                     log.info("native tool calling enabled for %s (%s)", OLLAMA_MODEL,
                              ", ".join(sorted(agent.TOOL_NAMES)))
+
+    def ensure_vision_llm(self) -> ChatOllama:
+        """Build the captioning client on first use. Thread-safe, built once.
+
+        Separate from load() because a chat-only process (no image ever uploaded)
+        should never pay for a second Ollama client, let alone the VRAM a captioning
+        call briefly needs.
+        """
+        with self._lock:
+            if self.vision_llm is None:
+                self.vision_llm = ChatOllama(
+                    model=VISION_OLLAMA_MODEL,
+                    base_url=OLLAMA_BASE_URL,
+                    temperature=0,
+                    num_predict=VISION_PROFILE.num_predict,
+                    num_ctx=VISION_PROFILE.num_ctx,
+                    # Short — captioning is infrequent (once per chat image), unlike
+                    # every-request generation, so it must not sit resident in VRAM
+                    # alongside the chat generator and reranker.
+                    keep_alive="2m",
+                )
+            return self.vision_llm
 
     @property
     def ready(self) -> bool:

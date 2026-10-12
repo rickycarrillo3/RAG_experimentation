@@ -1,10 +1,15 @@
 # Image metadata & indirect reference — decision record
 
-This records a plan for letting the tutor resolve indirect references to images —
+This records the plan for letting the tutor resolve indirect references to images —
 "the most recent photo", "the one before that", "the figure from chapter 3" — across the
 two places an image can come from: a photo a student sends mid-chat, and a figure embedded
-in an ingested textbook. **Nothing here is implemented yet.** Read this before adding
-automatic image logging, a vision-embedding store, or a vision-capable generator.
+in an ingested textbook. **v1 is implemented** as designed below: `kbm/images.py`
+(figure sidecars + recall), `api/chat.py`'s `is_image_turns`/`most_recent_image`/
+`resolve_image_reference` (chat-image reference resolution), the page-sentinel plumbing
+in `extract.py`/`kbm/chunking.py`, and the captioning model (`qwen2.5vl:7b`, see
+`kbm/llm_profiles.VisionProfile` and `KBM_VISION_MODEL`). Read this before adding
+automatic image logging, a vision-embedding store, or changing the vision-capable
+generator — the "out of scope for v1" section below is still current.
 
 ## The problem it solves
 

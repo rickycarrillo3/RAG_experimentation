@@ -156,3 +156,55 @@ def profile_for(model: str) -> Profile:
         if any(p in tag for p in patterns):
             return profile
     return FALLBACK
+
+
+# ── Vision (captioning) models ─────────────────────────────────────────────────
+# A deliberately separate concept from Profile above, not a reuse of it: Profile
+# describes a GENERATOR (tir/tools/mem_tokens — none of which mean anything for a model
+# that only ever produces a one-paragraph caption and is never bound as the chat model).
+# See Information_files/IMAGE_DESIGN.md.
+
+@dataclass(frozen=True)
+class VisionProfile:
+    """Everything the captioning code needs to know about a vision model."""
+
+    name: str
+    num_ctx: int
+    num_predict: int   # short — a caption, not an essay
+    notes: str = ""
+
+
+_VISION_RULES: list[tuple[tuple[str, ...], VisionProfile]] = [
+    (
+        ("qwen2.5vl", "qwen2-vl", "qwen2vl"),
+        VisionProfile(
+            name="qwen2.5-vl",
+            num_ctx=4096,
+            num_predict=200,
+            notes="Apache-2.0. Stays in the Qwen family already used for the generator "
+                  "(qwen3), TIR (qwen2.5-math) and eval (qwen2) roles, and has the "
+                  "strongest OCR/diagram reading of the free Ollama-servable options for "
+                  "textbook figures and photographed problems. Loaded on-demand with a "
+                  "short keep_alive (api/deps.py) — captioning is infrequent (once per "
+                  "upload, once per document figure at ingest time), unlike every-request "
+                  "generation, so it must not sit resident in VRAM alongside the generator.",
+        ),
+    ),
+]
+
+VISION_FALLBACK = VisionProfile(
+    name="unknown-vision",
+    num_ctx=4096,
+    num_predict=200,
+    notes="No profile matched this tag. Add one to llm_profiles._VISION_RULES before "
+          "trusting it to caption well.",
+)
+
+
+def vision_profile_for(model: str) -> VisionProfile:
+    """The VisionProfile for an Ollama tag. Always returns something; never raises."""
+    tag = (model or "").lower()
+    for patterns, profile in _VISION_RULES:
+        if any(p in tag for p in patterns):
+            return profile
+    return VISION_FALLBACK
