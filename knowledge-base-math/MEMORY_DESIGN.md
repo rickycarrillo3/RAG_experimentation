@@ -45,7 +45,7 @@ about a student on Monday.
 The obvious design — a `remember` tool the generator calls mid-answer — asks the model to
 make a write-time editorial judgment ("is this fact durable?"). That was rejected:
 
-- deepseek-math (the default) cannot call tools at all — `ollama show` reports
+- deepseek-math (the previous default, still one env var away) cannot call tools at all — `ollama show` reports
   `Capabilities: completion`. It is a solver, not an instruction-follower.
 - qwen3 can call tools, but small instruct models are measured **over-eager** at
   discretionary calls (`kbm/tools/agent.py` docstring, the `list_documents` regression).
