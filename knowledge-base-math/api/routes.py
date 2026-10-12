@@ -32,6 +32,7 @@ from ops.backup_indexes import enabled as backup_enabled
 from . import chat as chatmod
 from .deps import has_index, index_summary, models, normalize_user, require_token
 from .schemas import (
+    ChatEvent,
     ChatRequest,
     DoneEvent,
     ErrorEvent,
@@ -95,7 +96,14 @@ def _sse(event: str, payload) -> str:
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
-@router.post("/chat")
+# `responses` documents the SSE payload union without declaring a `response_model`:
+# the four event models reach `openapi.json` (so the TypeScript client is generated
+# rather than hand-written) while the StreamingResponse below is still returned
+# untouched and unvalidated. Changing this to `response_model=` would break the route.
+@router.post(
+    "/chat",
+    responses={200: {"model": ChatEvent, "content": {"text/event-stream": {}}}},
+)
 async def chat(req: ChatRequest):
     """Stream one answer as Server-Sent Events: `sources`, then `token`*, then `done`.
 

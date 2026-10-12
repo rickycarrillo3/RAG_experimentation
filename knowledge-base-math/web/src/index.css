@@ -1,0 +1,44 @@
+@import 'tailwindcss';
+@import 'katex/dist/katex.min.css';
+
+/* Design tokens. Dark-first: this is a tutor used in the evening, and the chat surface
+   is mostly text, so the palette is two greys, one accent, and one warning. */
+@theme {
+  --color-ink: oklch(0.97 0.005 260);
+  --color-ink-dim: oklch(0.72 0.012 260);
+  --color-ink-faint: oklch(0.56 0.015 260);
+  --color-surface: oklch(0.19 0.012 260);
+  --color-surface-2: oklch(0.24 0.014 260);
+  --color-surface-3: oklch(0.29 0.016 260);
+  --color-edge: oklch(0.34 0.016 260);
+  --color-accent: oklch(0.72 0.14 215);
+  --color-accent-dim: oklch(0.42 0.08 215);
+  --color-warn: oklch(0.78 0.13 75);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* KaTeX inherits a serif-ish size that reads large next to 14px chat text, and a long
+   display equation must scroll rather than widen the message column. */
+.katex {
+  font-size: 1.04em;
+}
+
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25rem;
+}
