@@ -4,13 +4,13 @@ prefetch_models.py - Download every model the app needs, before anyone uses it.
 The problem this solves is a cold `/workspace`. Three model sets live in the
 HuggingFace cache, and they are fetched at very different moments:
 
-    bge-small embedder    ~130MB   at app.py import      (startup blocks, silently)
-    bge-reranker-v2-m3    ~2.2GB   at app.py import      (startup blocks, silently)
+    bge-small embedder    ~130MB   at API startup        (startup blocks, silently)
+    bge-reranker-v2-m3    ~2.2GB   at API startup        (startup blocks, silently)
     Marker / surya        ~3-4GB   on the FIRST UPLOAD   (nothing warms it at all)
 
 The first two only make startup look like it hung. Marker is the real trap: its
 models are built inside extract_marker() (extract.py), which only runs when someone
-uploads a PDF — and app.py's handle_upload wraps that in a try/except that reports
+uploads a PDF — and the upload job wraps that in a try/except that reports
 any failure as "Ingestion failed: <e>". So on a fresh pod, the first family PDF
 either stalls for minutes or surfaces a multi-GB download as a generic error.
 

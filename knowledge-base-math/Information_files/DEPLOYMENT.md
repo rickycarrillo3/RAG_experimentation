@@ -10,16 +10,10 @@ models throughout.
 ## 1. Shape
 
 ```
-            ┌─ RunPod CPU pod (always on, ~$7/mo) ─┐
- browser ──▶│  app.py  Gradio :7860                │   docker/Dockerfile.cpu
-            │  APP_AUTH login                      │   startup.sh --ui-only
-            │  ensure_awake() ── starts the GPU pod│
-            └──────────────┬───────────────────────┘
-                           │ HTTPS + KBM_API_TOKEN
-                           ▼
             ┌─ RunPod GPU pod (on-demand, stopped when idle) ────┐
-            │  FastAPI (uvicorn --workers 1)  api/main.py        │   docker/Dockerfile.gpu
-            │    /chat  SSE stream   /upload   /jobs   /feedback │   startup.sh --api-only
+ browser ──▶│  uvicorn --workers 1  :8000          api/main.py   │   docker/Dockerfile.gpu
+            │    /            React UI (web/dist, static)        │   startup.sh
+            │    /api/*       the API, behind KBM_API_TOKEN      │
             │    ├─ kbm/retrieval.py  (BM25 + Chroma + reranker) │
             │    ├─ extract.py    (Marker, GPU)                  │
             │    └─ Ollama        (generator, :11434 loopback)   │
@@ -31,40 +25,27 @@ models throughout.
                        └─▶ ops/backup_indexes.py ─▶ S3-compatible archive
 ```
 
-The frontend is `app.py` (Gradio), talking to the API over HTTP like any other client.
-A TypeScript frontend replaces it against the same endpoints — and now against the same
-*host*, since the UI already runs somewhere else.
+One pod, one process, one port. The UI is the React build in `web/dist`, produced by a
+Node stage in `docker/Dockerfile.gpu` and served by the same uvicorn as the API; the
+browser is still just an HTTP client of `api/`, it simply loads its JavaScript from the
+same origin. For which stage runs on which piece of hardware — and why only four things
+ever touch the GPU — see **`ARCHITECTURE.md`**.
 
-For which stage runs on which piece of hardware — and why only four things ever touch
-the GPU — see **`ARCHITECTURE.md`**.
+### What happened to the split
 
-### Why the split is here and not somewhere else
+Until the Gradio UI was deleted this was two pods: an always-on CPU pod (~$7/mo) running
+`app.py`, and this GPU pod. The CPU pod existed for one reason — Gradio was a *server*,
+so it could hold `RUNPOD_API_KEY` and start a stopped GPU pod when someone opened the
+page (the wake path, §5). A static React bundle cannot hold that key, so serving it from
+anywhere other than the GPU pod would buy nothing, and the CPU pod went with Gradio.
 
-The obvious cut is the one this document used to defer: retrieval is CPU work and
-generation is ~95% of query time (`LATENCY.md`), so move retrieval to the cheap host and
-leave the GPU pod with only Ollama and Marker.
+The boundary that mattered is unchanged: retrieval, extraction and generation stay
+together, because agent mode's `search_documents` runs *inside* the generation loop
+(`ARCHITECTURE.md §2`, row 7b) and splitting them would put a network hop mid-answer.
 
-**That is not the cut we made, and the reason is agent mode.** With `KBM_TOOLS` on,
-`search_documents` runs *inside* the generation loop (`ARCHITECTURE.md §2`, row 7b): the
-model can decide the retrieval the server already did was not the one the question
-needed and search again, up to `agent.MAX_SEARCH_ROUNDS` times. Splitting retrieval away
-from the generator turns each of those into a network round-trip mid-answer. Keeping
-retrieval, extraction and generation together on the GPU host keeps that loop local, and
-leaves the CPU host as a pure HTTP client — which is what `app.py` already was.
-
-So the boundary is not CPU-work vs GPU-work. It is **stateless vs stateful**: the UI host
-holds nothing, and everything that touches an index, a model, or the sandbox is on one
-side of one API. `ops/backup_indexes.py` exists because that side holds the only copy.
-
-### What the split is actually for
-
-Not the bill — a second always-on host makes the monthly cost slightly *worse* (§2). It
-buys two things:
-
-- **The wake gap closes.** A stopped pod meant a dead URL and no explanation
-  (§5). The always-on UI host now starts the GPU pod on demand and renders the wait.
-- **A GPU pod becomes disposable.** Combined with the image, "my pod is gone / the region
-  is full / I want a cheaper card" stops being a migration and becomes a re-create.
+**What was given up is auto-wake.** A family member who opens the link while the pod is
+stopped gets a dead URL again (§5). Getting it back means a small always-on server that
+holds the key — `ops/runpod.start_pod()` is kept for exactly that.
 
 ---
 
@@ -74,16 +55,10 @@ buys two things:
 |---|---|---|
 | RTX A5000 24GB, **community** cloud | $0.16/hr × 3.5 hr/day × 30 | **$16.80** |
 | Network volume, 50GB | $0.07/GB/mo | **$3.50** |
-| CPU pod for the UI, always on | ~$0.01/hr × 730 | **~$7.30** |
 | Backup storage (S3-compatible, a few GB) | ~$0.005–0.015/GB/mo | **< $1** |
-| | | **≈ $28/mo** |
+| | | **≈ $21/mo** |
 
-⚠️ **The split spends most of the remaining headroom against the $30 target.** It was
-$20/mo on one pod; the always-on UI host is a real second bill, bought deliberately for
-the wake gap (§1) rather than for cost. Two consequences worth stating plainly: there is
-now little room for a more expensive card without breaching the target, and the CPU pod
-never stops, so nothing about it is elastic. If the budget matters more than the wake
-path, `startup.sh` with no flags still runs both halves on one pod and this line goes away.
+Dropping the CPU pod (with Gradio) took ~$7/mo off; the price is the wake path (§1, §5).
 
 Four things are load-bearing:
 
@@ -100,32 +75,24 @@ Four things are load-bearing:
   **$0.20/GB/mo while the pod is stopped**, versus $0.07/GB/mo for a network volume.
   50GB of model weights on container disk would cost more sitting idle than the GPU
   costs running.
-- **The UI host must stay a CPU pod.** It is cheap because it runs a Gradio process and
-  nothing else — `docker/Dockerfile.cpu` installs `requirements-ui.txt`, which has no
-  torch. The moment anything on that host imports the pipeline, it needs a GPU and the
-  line above stops being $7.
 
 ---
 
 ## 3. Environment
 
-Deployment knobs shared with the CLI and the Gradio client live in **`kbm/config.py`**
-(`DATA_DIR`, `CHROMA_DIR`, `BM25_DIR`, `OLLAMA_BASE_URL`, `APP_HOST`, `APP_PORT`,
-`APP_AUTH`, `REQUIRE_GPU`). `api/settings.py` holds only what is specific to the HTTP
+Deployment knobs shared with the CLI live in **`kbm/config.py`**
+(`DATA_DIR`, `CHROMA_DIR`, `BM25_DIR`, `OLLAMA_BASE_URL`, `REQUIRE_GPU`). `api/settings.py` holds only what is specific to the HTTP
 service. Do not add a second name for the same thing in both — see `SETUP.md §3`.
 
 | Variable | Purpose |
 |---|---|
-| `KBM_API_TOKEN` | **Required in any deployment.** Bearer secret for the API; fully open without it. |
-| `APP_AUTH` | **Required in any deployment.** `user:pass` pairs gating the Gradio login page. A *different* lock from `KBM_API_TOKEN` — see §4. |
+| `KBM_API_TOKEN` | **Required in any deployment.** Bearer secret for the API, and the "family password" the web UI asks for once per device; fully open without it. See §4. |
 | `DATA_DIR` | Root for `chroma_db/`, `bm25_indexes/`, `telemetry/`. Set to `/workspace/kb-data` on the pod. |
 | `REQUIRE_GPU` | `1` turns a silent CPU fallback — which looks exactly like success, only 10–40× slower — into a startup error. |
 | `KBM_RELEVANCE_FLOOR` | Cross-encoder score below which we answer in `general` mode. Sigmoid scale (0–1). |
 | `KBM_IDLE_STOP_MINUTES` | Minutes idle before the pod stops itself. `0` disables. |
-| `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Pod identity and account credential. Needed **on the GPU host** for idle-stop, and **on the UI host** for wake (§5) — same pair, opposite verbs, one implementation in `ops/runpod.py`. Without them idle-stop warns and does nothing, and the UI reports the server as asleep rather than starting it. ⚠️ This key controls the whole RunPod account; it is why the UI host needs `APP_AUTH`. |
-| `KBM_API_URL` | **UI host only.** Where the API lives. Defaults to `http://127.0.0.1:8000`, which is right on one pod and silently wrong on a split — so `startup.sh --ui-only` refuses to start if it is still the default. |
-| `KBM_CORS_ORIGINS` | Comma-separated browser origins the API accepts. Defaults to the three localhost dev origins. Needed once a browser (not `app.py`, which is a server-side client) calls the API cross-origin. No wildcard: `allow_credentials=True` forbids it, and a wildcard plus a bearer token means any page a family member visits can spend that token. |
-| `KBM_WAKE_TIMEOUT_MIN` | **UI host only.** How long the UI polls `/healthz` while waiting for a woken pod before giving up and trying the request anyway. Default `5`. |
+| `RUNPOD_API_KEY`, `RUNPOD_POD_ID` | Pod identity and account credential, for idle-stop. Without them idle-stop warns and does nothing. ⚠️ This key controls the whole RunPod account — never put it anywhere the web bundle could read it. |
+| `KBM_CORS_ORIGINS` | Comma-separated browser origins the API accepts. Defaults to the localhost dev origins (Vite on 5173). The built UI is same-origin and needs nothing here; this is only for a frontend hosted elsewhere. No wildcard: `allow_credentials=True` forbids it, and a wildcard plus a bearer token means any page a family member visits can spend that token. |
 | `KBM_BACKUP_URL` | `s3://bucket/prefix` for the index archive (`ops/backup_indexes.py`). **Unset disables backups entirely** — which is the laptop default and, until this is set on a pod, means the indexes still exist in exactly one place. |
 | `KBM_BACKUP_ENDPOINT` | S3-compatible endpoint (Backblaze B2, Cloudflare R2, RunPod's own S3 API). Omit for real AWS. |
 | `KBM_BACKUP_KEEP` | How many archives to retain before pruning the oldest. Default `7`. |
@@ -137,7 +104,7 @@ service. Do not add a second name for the same thing in both — see `SETUP.md �
 | `KBM_SANDBOX_TIMEOUT` | Wall-clock seconds for one sandboxed program. Default `10`. |
 | `KBM_SHOW_TOOL_CODE` | `1` shows the student the raw ```python block instead of just the computed result. Off by default — the same escape hatch as `KBM_SHOW_DIAGNOSTICS`, for the same reason. |
 | `KBM_MAX_CONTINUATIONS` | How many times the server may resume an answer cut off at `KBM_NUM_PREDICT`. `0` = label it truncated instead. |
-| `KBM_SHOW_DIAGNOSTICS` | `1` appends the technical cause to upload status messages. Off by default — the family sees plain sentences, the log keeps the exception. |
+| `KBM_SHOW_DIAGNOSTICS` | `1` lets `GET /jobs/{id}` return `diagnostic`, so the web UI shows the technical cause under an upload failure. Off by default — the server blanks the field, the family sees plain sentences, the log keeps the exception. |
 | `KBM_ENABLE_DOCS` | `1` serves `/docs`, `/redoc`, `/openapi.json`. Defaults **on** with no `KBM_API_TOKEN` (laptop) and **off** once one is set — those routes belong to the app, not the router, so the token never covered them. |
 | `KBM_TELEMETRY_SALT` | Salt for hashing usernames in the event log. Set it per deployment. |
 | `OLLAMA_MODELS`, `HF_HOME` | Must point at the volume, or ~15GB of weights re-download on every wake (`SETUP.md`). |
@@ -146,8 +113,8 @@ Run:
 
 ```bash
 cd knowledge-base-math
-uvicorn api.main:app --host 0.0.0.0 --port 8000
-python app.py                      # optional Gradio client, port 7860
+(cd web && npm ci && npm run build)   # once; the image does this for you
+uvicorn api.main:app --host 0.0.0.0 --port 8000   # UI at /, API at /api/* (and /*)
 ```
 
 ---
@@ -159,49 +126,37 @@ Per-user isolation is a **lowercased username string**, with no verification
 authenticate anyone. On a public URL with no token, anyone who finds the host can read
 every uploaded document by guessing a name.
 
-There are **two locks on two different doors**, and both must be set:
+There is **one lock: `KBM_API_TOKEN`.** Every API route sits behind it, under both `/`
+and `/api`. The web UI asks for it as the "family password", keeps it in the browser's
+localStorage, and sends it as the bearer header. The static bundle at `/` is *not*
+behind it — it is public JavaScript and holds no data — so a stranger who finds the URL
+sees a password box and nothing else.
 
-- **`APP_AUTH`** gates the Gradio login page (`config.app_auth()`).
-- **`KBM_API_TOKEN`** gates the API itself, on port 8000.
-
-Setting only `APP_AUTH` protects the page while leaving the API that serves it wide
-open on another port — anyone hitting `:8000` directly bypasses the login entirely.
-Setting only `KBM_API_TOKEN` leaves the UI open to anyone, though it could not talk to
-the API. Neither is multi-user auth: they are the difference between "private" and
-"crawlable". Real per-user auth is separate work, needed before this is shared beyond
-people who already trust each other with one password.
+This replaced Gradio's `APP_AUTH` login, which existed because the Gradio *server* held
+the token on the browser's behalf. Two consequences of the browser holding it instead:
+it is one shared secret rather than per-person logins, and anything that can run script
+on the page could read it — so keep the UI free of raw-HTML rendering (react-markdown
+does not render HTML by default; keep it that way). Neither lock was ever multi-user
+auth: real per-user auth is separate work, needed before this is shared beyond people
+who already trust each other with one password.
 
 ### Which ports to expose
 
-**On the UI host: HTTP `7860` only.** That is the door the family uses, with `APP_AUTH`
-in front of it.
+**HTTP `8000` only** — the UI and the API, one door, guarded by `KBM_API_TOKEN`:
 
-**On the GPU host: HTTP `8000`, and this is new.** The single-pod layout kept the API on
-loopback and exposed nothing; the split makes 8000 a genuinely public hop, guarded by
-`KBM_API_TOKEN` alone. Three things follow, and none of them are optional:
-
-- **`KBM_API_TOKEN` stops being advisory.** Without it, port 8000 is an open document
-  store for anyone who finds the host and guesses a username — per-user isolation is a
-  lowercased string, not auth.
+- **`KBM_API_TOKEN` is not advisory.** Without it, port 8000 is an open document store
+  for anyone who finds the host and guesses a username.
 - **Use TLS.** RunPod's `proxy.runpod.net` HTTP service terminates HTTPS for you; a raw
   TCP mapping does not, and a bearer token over plain HTTP is a token in cleartext.
-- **Set `KBM_CORS_ORIGINS`** if a browser will ever call 8000 directly. `app.py` will not
-  — it is a server-side httpx client and CORS never applies to it — but the TypeScript
-  frontend will.
 
-If you run the single-pod layout instead (`bash startup.sh` with no flags), none of this
-applies: the client reaches the API over loopback and **7860 is still the only door.**
 Add TCP `22` only if you want `scp` for the eval corpus.
 
 **Never expose `11434`.** Ollama's API is unauthenticated: a public port there lets anyone
 run inference on the GPU you are paying for.
 
-When the TypeScript frontend needs 8000 reachable, two things change together — expose the
-port, *and* add the proxy origin to `allow_origins` in `api/main.py`. It is currently
-`["http://localhost:5173", "http://localhost:3000", "http://localhost:7860"]`, so a browser
-calling from `*.proxy.runpod.net` is blocked by CORS until that list is updated. Keep it a
-list; a wildcard plus a bearer token means any page a family member visits can spend that
-token.
+CORS only matters for a frontend on *another* origin (the Vite dev server). If you ever
+host the UI elsewhere, add that origin to `KBM_CORS_ORIGINS`; keep it a list — a wildcard
+plus a bearer token means any page a family member visits can spend that token.
 
 ---
 
@@ -240,7 +195,7 @@ Sleep is one action; wake is two, and it is easy to plan for only the first:
 1. **The pod must be started.** A stopped pod has no container and no network — the
    `proxy.runpod.net` URL fails outright. Opening the link does not wake anything.
 2. **The processes must be started.** A pod start recreates the container from the image,
-   so nothing is running: no Ollama, no uvicorn, no Gradio. `/workspace` survives; running
+   so nothing is running: no Ollama, no uvicorn. `/workspace` survives; running
    processes do not. `startup.sh` is what brings them back.
 
 Starting the pod:
@@ -288,49 +243,33 @@ only checks for 200 fires its first question into a model load and looks broken.
 It also reports **`protocol`** (`tools` / `tir` / `none`) — the arm that is actually live,
 after the startup capability probe. Worth reading once per deploy rather than per query:
 `KBM_TOOLS` can ask for a protocol the model has no template for, and the server downgrades
-and carries on rather than failing every answer. `startup.sh` prints it at stage 5 for the
+and carries on rather than failing every answer. `startup.sh` prints it at stage 4 for the
 same reason.
 
 `/healthz` sits **behind `KBM_API_TOKEN`** like every other endpoint: every caller today
-(`startup.sh`, the Gradio client, you over SSH) already holds the token, and port 8000 is
-not publicly exposed, so an unauthenticated probe would buy nothing. Note the consequence
+(`startup.sh`, the web UI once the password is entered, you over SSH) already holds the
+token, so an unauthenticated probe would buy little — and the UI uses the 401 itself as
+its "ask for the password" signal. Note the consequence
 for the wake page in §6 — it would need a credential to poll readiness, which is an
 argument for giving that page its own narrow endpoint rather than for opening this one.
 Poll the **status code**, not merely whether the request completed: a 401 and a 500 are
 both "not ready", and treating any response as success is how a broken API reads as
 healthy.
 
-### The wake gap — closed
+### The wake gap — open again
 
-This section used to say waking the pod was something *you* did on request, because
-step 1 needs `RUNPOD_API_KEY` and that key controls the whole RunPod account. The split
-is what resolved it: the UI now runs on an always-on host, so there is somewhere to keep
-the key that is not a family member's bookmark.
+Waking is manual: start the pod from the RunPod dashboard (or the `curl` above), and the
+container start command brings the app up. A family member who opens the link while the
+pod is stopped gets a dead URL with no explanation.
 
-`app.py`'s `ensure_awake()` does both halves of the wake, in order:
+It was closed for a while. Gradio's `app.py` ran on an always-on CPU pod holding
+`RUNPOD_API_KEY`; on each request it probed `/healthz`, called `ops.runpod.start_pod()`
+if nothing answered, and showed the wait as progress. That died with Gradio, because a
+static React bundle cannot hold an account-wide credential.
 
-1. `GET /healthz`. If it answers 200 with `model_loaded`, nothing happens at all — the
-   normal case costs one request.
-2. If nothing answers, `ops.runpod.start_pod()` — then poll `/healthz` until
-   `model_loaded`, showing the wait as progress rather than a dead link.
-
-Four states, deliberately distinguished, because they need different responses:
-
-| `/healthz` | Meaning | What the family sees |
-|---|---|---|
-| 200 + `model_loaded` | ready | nothing; the question just runs |
-| 200, not loaded | container back, Ollama still loading the generator | "Server is up, loading the model… (Ns)" |
-| no answer | pod stopped | "Starting the tutor's server…", then polling |
-| 401 | pod **up**, token wrong | says so immediately — no pod start, no five-minute poll |
-
-It is best-effort by design: after `KBM_WAKE_TIMEOUT_MIN` it stops waiting and makes the
-request anyway, so there is **one** error path (the existing one) rather than two that
-can disagree. The same call guards `/upload`, since Marker is the more expensive thing to
-have to retry.
-
-⚠️ **The credential is the cost of this.** `RUNPOD_API_KEY` on the UI host can start,
-stop, terminate and spend. That host must have `APP_AUTH` set, and it should hold nothing
-else — which is exactly what `docker/Dockerfile.cpu` copies onto it.
+To restore it, the browser needs somewhere always-on to ask: a tiny server (a few dozen
+lines around `ops.runpod.start_pod()`, behind its own login) that the UI calls when
+`/healthz` does not answer. That host is where the key would live — never the bundle.
 
 ---
 

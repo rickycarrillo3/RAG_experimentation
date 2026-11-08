@@ -16,10 +16,52 @@
  */
 import type { ChatEvent, ChatRequest } from './types'
 
-/** Vite proxies this to the API, stripping the prefix (see vite.config.ts). */
+/**
+ * Vite proxies this to the API, stripping the prefix (see vite.config.ts); in
+ * production api/main.py serves this app and mounts the router under /api itself.
+ */
 export const API_BASE = '/api'
 
 export class ApiError extends Error {}
+
+/** Thrown on a 401, so the app can ask for the family password instead of erroring. */
+export class AuthError extends ApiError {}
+
+/**
+ * The family password IS the API's bearer token (KBM_API_TOKEN). Kept in localStorage
+ * so it is typed once per device. It is one shared secret, not per-person auth — the
+ * username box still selects an index, not an identity.
+ *
+ * In dev the Vite proxy sets the header from its own env and overwrites this one, so
+ * an empty token here is normal there.
+ */
+const TOKEN_KEY = 'kbm.token'
+
+export const getToken = () => {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export const setToken = (token: string) => {
+  try {
+    localStorage.setItem(TOKEN_KEY, token)
+  } catch {
+    /* private window: the token lasts this page load only */
+  }
+}
+
+/** fetch() against the API, with the bearer header and a typed 401. */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const token = getToken()
+  if (token) headers.set('authorization', `Bearer ${token}`)
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
+  if (res.status === 401) throw new AuthError('The family password is missing or wrong.')
+  return res
+}
 
 /**
  * Stream one answer. Yields `sources`, then `token`*, then `done`.
@@ -32,7 +74,7 @@ export async function* streamChat(
   req: ChatRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${API_BASE}/chat`, {
+  const res = await apiFetch('/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(req),
@@ -40,8 +82,8 @@ export async function* streamChat(
   })
 
   if (!res.ok) {
-    // Mirrors app.py's handling: surface the status and whatever the server said, since
-    // a 401 and a 422 need different fixes and "request failed" distinguishes neither.
+    // Surface the status and whatever the server said: a 422 and a 500 need different
+    // fixes and "request failed" distinguishes neither. (401 is AuthError, above.)
     const detail = await res.text().catch(() => '')
     throw new ApiError(`API returned ${res.status}: ${detail.slice(0, 500)}`)
   }
@@ -96,13 +138,16 @@ function parseFrame(frame: string): ChatEvent | null {
   return null
 }
 
-/** GET /healthz. Returns null when the API cannot be reached at all. */
-export async function health(): Promise<import('./types').Health | null> {
+/**
+ * GET /healthz. Returns null when the API cannot be reached at all, and 'auth' when it
+ * answered 401 — the two need different responses (wait vs. ask for the password).
+ */
+export async function health(): Promise<import('./types').Health | null | 'auth'> {
   try {
-    const res = await fetch(`${API_BASE}/healthz`)
+    const res = await apiFetch('/healthz')
     if (!res.ok) throw new ApiError(String(res.status))
     return (await res.json()) as import('./types').Health
-  } catch {
-    return null
+  } catch (e) {
+    return e instanceof AuthError ? 'auth' : null
   }
 }

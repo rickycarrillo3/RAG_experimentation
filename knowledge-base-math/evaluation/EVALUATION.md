@@ -60,7 +60,7 @@ The failure mode reranking is *supposed* to fix is the topically-right-but-speci
 chunk: retrieving the general section on integration when the student needs the worked example
 matching their actual problem. **The eval must be able to see that distinction, or it's useless.**
 
-All of this lives in one place — `kbm/retrieval.py` — imported by `query.py`, `app.py`, and
+All of this lives in one place — `kbm/retrieval.py` — imported by `query.py`, `api/`, and
 `eval.py`. That is load-bearing: an eval that measures a *reimplementation* of the pipeline
 rather than the pipeline itself will drift from what you ship and quietly start lying.
 

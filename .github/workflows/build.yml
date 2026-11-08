@@ -1,4 +1,4 @@
-# Build the two deployment images and prove they can be imported.
+# Build the deployment image (API + web UI) and prove it builds.
 #
 # Be clear-eyed about what this buys. There is no test suite in this repo — test_chat.py
 # is a manual smoke test, not pytest — so this workflow is not catching logic bugs. What
@@ -34,64 +34,28 @@ jobs:
           python-version: "3.12"
       # Cheapest possible catch for a syntax error or a bad f-string reaching main.
       # Excludes venv/, which is gitignored but may exist in a local run of `act`.
-      - run: python -m compileall -q -x 'venv|__pycache__' ${{ env.CONTEXT }}
+      - run: python -m compileall -q -x 'venv|__pycache__|node_modules' ${{ env.CONTEXT }}
 
-  ui-image:
-    name: UI image (CPU)
+  web:
+    name: web typecheck + build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    defaults:
+      run:
+        working-directory: ${{ env.CONTEXT }}/web
     steps:
       - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/kbm-ui
-
-      # Load into the local daemon on PRs so the smoke test below can run without a
-      # registry push. On main we push instead; `load` and `push` are mutually exclusive.
-      - uses: docker/build-push-action@v6
-        with:
-          context: ${{ env.CONTEXT }}
-          file: ${{ env.CONTEXT }}/docker/Dockerfile.cpu
-          load: ${{ github.event_name == 'pull_request' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=ui
-          cache-to: type=gha,mode=max,scope=ui
-
-      # Two things worth asserting about the UI image, both of which have been true by
-      # accident before and should be true on purpose:
-      #   1. app.py imports — safe to run because app.launch() sits under __main__.
-      #   2. torch is ABSENT. The image is small only as long as nothing drags the
-      #      pipeline back into the UI, and an accidental `import torch` in app.py would
-      #      otherwise show up as a slow build nobody reads.
-      - name: Smoke test the UI image
-        if: github.event_name == 'pull_request'
-        run: |
-          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
-          docker run --rm --entrypoint python "$IMAGE" -c "import app; print('app imports OK')"
-          if docker run --rm --entrypoint python "$IMAGE" -c "import torch" 2>/dev/null; then
-            echo "::error::torch is installed in the UI image — it should not be."
-            exit 1
-          fi
-          echo "confirmed: no torch in the UI image"
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.CONTEXT }}/web/package-lock.json
+      # Cheap and fast compared with the GPU image, which also builds the UI — this is
+      # the job that names a TS error in seconds instead of after a CUDA layer.
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
 
   gpu-image:
-    name: API image (GPU)
+    name: app image (GPU)
     runs-on: ubuntu-latest
     permissions:
       contents: read

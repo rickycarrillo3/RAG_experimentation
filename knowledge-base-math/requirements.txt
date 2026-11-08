@@ -34,15 +34,6 @@ pylatexenc
 # kbm/tools/sandbox.py's allow-list, which is the library Qwen's TIR traces reach for first. A
 # dependency you rely on by name belongs in the file that names dependencies.
 sympy
-# 6.17.3, NOT 6.18.0. This is a three-way pin, not a preference:
-#   marker-pdf<2.0 (above) -> transformers<5.0.0 -> huggingface-hub<1.0
-#   gradio 6.18.0          -> huggingface-hub>=1.2.0
-# Those are unsatisfiable together, and pip does not say so. It backtracks through
-# ~30 sentence-transformers versions hunting for an escape that does not exist, stalls
-# for minutes, then fails with ResolutionImpossible pointing at sentence-transformers —
-# a package that is not the problem. 6.17.3 is the last release accepting hub>=0.33.5.
-# If marker-pdf<2.0 is ever lifted, this can move forward again. See Information_files/ERRORS.md.
-gradio==6.17.3
 torch
 # torchvision is a marker-pdf dependency, listed explicitly because it is a trap:
 # it ships compiled C++ ops linked against one exact torch build. Installed from PyPI
@@ -55,9 +46,8 @@ torchvision
 fastapi
 uvicorn[standard]
 python-multipart   # required by FastAPI for the multipart /upload form
-httpx              # SSE client for app.py + Ollama health probe + RunPod start/stop (ops/runpod.py)
+httpx              # Ollama health probe + RunPod start/stop (ops/runpod.py)
 # Backup target client (ops/backup_indexes.py). Imported lazily, inside the upload
 # call, so a deployment that never sets KBM_BACKUP_URL neither needs it nor pays for
 # it at import — but the pod that holds the only copy of the family's documents does.
-# Not in requirements-ui.txt: the UI host has no indexes to archive.
 boto3

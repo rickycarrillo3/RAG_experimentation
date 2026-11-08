@@ -20,8 +20,8 @@ from kbm.config import (  # noqa: F401  (re-exported for callers)
     TOOLS_ENABLED,
 )
 
-# NOTE: deployment knobs shared with the CLI and the Gradio client — DATA_DIR,
-# CHROMA_DIR, BM25_DIR, OLLAMA_BASE_URL, APP_HOST/PORT, APP_AUTH, REQUIRE_GPU — live in
+# NOTE: deployment knobs shared with the CLI — DATA_DIR,
+# CHROMA_DIR, BM25_DIR, OLLAMA_BASE_URL, REQUIRE_GPU — live in
 # kbm/config.py, NOT here. This module holds only what is specific to the HTTP service.
 # An earlier version of this file read its own `KBM_DATA_DIR`, which meant setting the
 # documented `DATA_DIR` moved the indexes for ingest and query but not for the API.
@@ -143,11 +143,9 @@ QUERY_REWRITE = os.environ.get("KBM_QUERY_REWRITE", "1").strip().lower() not in 
 # in kbm/config.py. KBM_TELEMETRY_PATH / KBM_TELEMETRY_SALT are unchanged.
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-# Which browser origins may call this API. A literal list was fine while the only
-# client was app.py on the same pod — app.py is a *server-side* httpx client, so CORS
-# never applied to it at all. It stops being fine the moment the UI runs on its own
-# host: the Gradio origin is no longer localhost:7860, and the TypeScript frontend
-# api/main.py's comment anticipates will be somewhere else again.
+# Which OTHER browser origins may call this API. The built frontend is served by this
+# same process (api/main.py), so it is same-origin and CORS never applies to it; this
+# list is for a frontend hosted elsewhere, e.g. the Vite dev server.
 #
 # Comma-separated, and deliberately still a list rather than gaining a wildcard escape:
 # allow_credentials=True forbids "*" outright, and a wildcard plus a bearer token would
@@ -155,7 +153,7 @@ QUERY_REWRITE = os.environ.get("KBM_QUERY_REWRITE", "1").strip().lower() not in 
 CORS_ORIGINS = [
     o.strip() for o in os.environ.get(
         "KBM_CORS_ORIGINS",
-        "http://localhost:5173,http://localhost:3000,http://localhost:7860",
+        "http://localhost:5173,http://localhost:3000",
     ).split(",") if o.strip()
 ]
 
@@ -166,3 +164,9 @@ CORS_ORIGINS = [
 IDLE_STOP_MINUTES = int(os.environ.get("KBM_IDLE_STOP_MINUTES", "0"))
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
 RUNPOD_POD_ID = os.environ.get("RUNPOD_POD_ID", "").strip()
+
+# ── Job diagnostics ───────────────────────────────────────────────────────────
+# Job.diagnostic carries exception text and install URLs: for operators, not for the
+# family. The browser cannot read an env var, so the gate lives here and GET /jobs
+# blanks the field unless this deployment opted in.
+SHOW_DIAGNOSTICS = os.environ.get("KBM_SHOW_DIAGNOSTICS", "").strip() not in ("", "0")

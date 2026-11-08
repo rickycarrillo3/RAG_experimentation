@@ -7,7 +7,7 @@ cross-encoder reranker:
     query ─┬─→ BM25        top-10 ─┐
            └─→ bge-small   top-10 ─┴─→ RRF ─→ top-20 ─→ cross-encoder ─→ top-5 ─→ LLM
 
-This module is imported by query.py (CLI), app.py (web UI) and eval.py (benchmark).
+This module is imported by query.py (CLI), api/ (the service) and eval.py (benchmark).
 It exists so those three cannot drift apart: an eval that measures a different pipeline
 than the one you ship is worse than no eval at all.
 """
@@ -281,7 +281,7 @@ def retrieve(
     reranker: CrossEncoder | None = None,
     use_rerank: bool = True,
 ) -> list[tuple[Document, float]]:
-    """Top-N chunks for a query. The interface query.py and app.py use."""
+    """Top-N chunks for a query. The interface query.py and api/ use."""
     return retrieve_detailed(
         query,
         user,

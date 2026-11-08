@@ -243,13 +243,14 @@ So the actual boundary is **stateless from stateful**:
 
 | Host | Holds | Tiers from §1 |
 |---|---|---|
-| CPU pod, always on | `app.py` and nothing else | a browser's worth of CPU |
-| GPU pod, on demand | `api/`, retrieval, extraction, Ollama, the volume | GPU + CPU + Disk |
+| GPU pod, on demand | `api/`, retrieval, extraction, Ollama, the volume, and the React UI's static files | GPU + CPU + Disk |
 
-The FastAPI boundary is what made this cheap, exactly as predicted — `app.py` was already
-an HTTP client, so the move cost it no code beyond the wake path. What changed hands was
-not a pipeline stage but a *responsibility*: the always-on host exists to be reachable
-when the expensive one is asleep (`DEPLOYMENT.md §5`).
+There used to be a second row: an always-on CPU pod holding only the Gradio `app.py`,
+whose one job was to be reachable — and to start the GPU pod — while the expensive host
+slept. It went with Gradio: the React UI is static files, which cannot hold the RunPod
+key, so they are served by the GPU pod's own uvicorn and wake is manual again
+(`DEPLOYMENT.md §5`). The stateless/stateful line is unchanged; the stateless side is
+now just the browser.
 
 The prediction still stands for a later day. If generation ever moves to a serverless
 endpoint, retrieval has to choose a side again — and by then the question will be whether
