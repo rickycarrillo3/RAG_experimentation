@@ -22,6 +22,7 @@ import logging
 import os
 import threading
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 
 from kbm.config import TELEMETRY_PATH, TELEMETRY_SALT
@@ -64,6 +65,8 @@ def log_query(
     tool_log: list | None = None,
     retrieval_query: str | None = None,
     memories_recalled: int = 0,
+    passes: list | None = None,
+    tokens: dict | None = None,
 ) -> None:
     _append({
         "kind": "query",
@@ -146,6 +149,10 @@ def log_query(
         # recall to be on); a non-zero value is what lets an offline read tell a
         # memory-informed answer from a cold one.
         "memories_recalled": memories_recalled,
+        # Per-generation-pass Ollama counts and durations, plus their request totals
+        # (prompt/output tokens, mtpt_ms, tok_s). Read by the dashboard at web/#/dashboard.
+        "passes": passes or [],
+        "tokens": tokens or {},
         "error": error,
     })
 
@@ -163,6 +170,27 @@ def log_feedback(event_id: str, rating: str, note: str = "") -> None:
         "rating": rating,
         "note": note,
     })
+
+
+def read_events(limit: int = 500, path: str | None = None) -> list[dict]:
+    """The last `limit` records, oldest first. Malformed lines are skipped; a missing
+    file is an empty log.
+
+    ponytail: reads the whole file to tail it. Fine to ~100MB; seek from the end if the
+    log ever gets that big.
+    """
+    try:
+        with open(path or TELEMETRY_PATH, encoding="utf-8") as f:
+            lines = deque(f, maxlen=limit)
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def _append(record: dict) -> None:

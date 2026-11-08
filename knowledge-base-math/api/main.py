@@ -9,9 +9,11 @@ from knowledge-base-math/, with the venv active and Ollama running.
 
 import contextlib
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from kbm.logsetup import configure_logging
 
@@ -21,8 +23,7 @@ from .settings import API_TOKEN, CORS_ORIGINS, DATA_DIR, ENABLE_DOCS, IDLE_STOP_
 
 # Give the application's loggers a handler and a level, before anything else runs. The
 # rationale — and the bug that made it necessary — now lives with the implementation in
-# kbm/logsetup.py, because app.py needs the same configuration and had drifted into its
-# own second copy of it.
+# kbm/logsetup.py.
 configure_logging()
 
 log = logging.getLogger(__name__)
@@ -63,11 +64,10 @@ app = FastAPI(
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
 
-# The TypeScript frontend will be served from a different origin during development,
-# and since the split the Gradio UI is on its own host too. Set KBM_CORS_ORIGINS to the
-# real frontend origins before this is publicly reachable — a wildcard plus a bearer
-# token means any page the family visits can spend their token, which is also why
-# allow_credentials=True below makes "*" invalid rather than merely unwise.
+# Only matters for a frontend on ANOTHER origin (the Vite dev server); the built one
+# below is same-origin. A wildcard plus a bearer token would mean any page the family
+# visits can spend their token, which is also why allow_credentials=True below makes
+# "*" invalid rather than merely unwise.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -76,4 +76,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Twice, on purpose. At the root for the CLI, startup.sh's /healthz gate and the
+# generated schema; under /api for the frontend, which calls `/api/...` both here and
+# through the Vite dev proxy (which strips the prefix). Hidden from the schema so the
+# TS types are generated once, not twice.
 app.include_router(router)
+app.include_router(router, prefix="/api", include_in_schema=False)
+
+# The React build (web/dist, from `npm run build` or docker/Dockerfile.gpu), served by
+# this process so one pod and one port is the whole deployment. Mounted LAST: a mount at
+# "/" matches everything, so it must only see paths no route claimed. The static files
+# are not behind the bearer token — they are the public JS bundle; every request that
+# reads a document goes through the router above, which is.
+_WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+if _WEB_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
+else:
+    log.info("no web/dist — serving the API only (run `npm run build` in web/)")

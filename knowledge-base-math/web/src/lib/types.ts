@@ -26,6 +26,8 @@ export type ChatEvent = SourcesEvent | TokenEvent | DoneEvent | ErrorEvent
 
 export type ChatRequest = S['ChatRequest']
 export type Health = S['Health']
+export type Job = S['Job']
+export type UserStatus = S['UserStatus']
 
 /**
  * A run of answer text with one authorship.

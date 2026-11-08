@@ -255,7 +255,7 @@ def normalize_user(user: str) -> str:
     # Chroma collection names must be [a-zA-Z0-9._-] and end alphanumeric ("user_" covers
     # the start); dots are excluded too because the name also lands in filenames. A space
     # used to pass here and then crash ingest after the BM25 pickle was already written.
-    # Keep in sync with USER_RE in app.py and web/src/App.tsx.
+    # Keep in sync with USER_RE in web/src/App.tsx.
     if not re.fullmatch(r"[a-z0-9_-]*[a-z0-9]", u):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Names can only use letters, numbers, - and _ (no spaces or accents), and must end with a letter or number.")
     return u

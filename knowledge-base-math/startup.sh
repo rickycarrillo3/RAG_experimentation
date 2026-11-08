@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# startup.sh — start the math RAG web app on a remote GPU box (per session).
+# startup.sh — start the math RAG app (API + React UI, one process) on a GPU box.
 #
 # Usage (from knowledge-base-math/, on the pod):
 #     bash startup.sh                 # GPU-required (refuses to start on CPU)
@@ -8,27 +8,21 @@
 #     bash startup.sh --no-pull       # skip the ollama model check (faster restarts)
 #     bash startup.sh --no-prefetch   # skip the HuggingFace model warm-up
 #
-# Split deployment (docker/Dockerfile.gpu and docker/Dockerfile.cpu):
-#     bash startup.sh --api-only      # GPU host: Ollama + uvicorn, no Gradio
-#     bash startup.sh --ui-only       # CPU host: Gradio only, no GPU/Ollama/prefetch
-#
-# Two container entrypoints, one script. The stages the hosts share — the token warning,
-# the env defaults, the /healthz readiness gate — are exactly the ones that rot when
-# copied into a second file, so the modes are flags here rather than a fork. Passing
-# neither flag is the original single-pod behaviour and stays supported: app.py reaches
-# the API over loopback and only APP_PORT is ever exposed.
+# The UI is the React build in web/dist, served by uvicorn itself (api/main.py), so
+# API_PORT is the only port and the whole app. `--api-only` is still accepted and does
+# nothing: it named the GPU half of the old Gradio split, and pods may still pass it.
 #
 # Overridable via env (defaults suit a RunPod pod with a /workspace volume):
 #     WORKSPACE       persistent volume root          (default: /workspace)
 #     OLLAMA_MODELS   Ollama model cache              (default: $WORKSPACE/ollama-models)
 #     HF_HOME         HuggingFace cache               (default: $WORKSPACE/.cache/huggingface)
 #     DATA_DIR        where chroma_db/ + bm25_indexes/ live (default: $WORKSPACE/kb-data)
-#     APP_AUTH        "user:pass" login pairs, comma-separated
-#     APP_PORT        port to serve on                (default: 7860)
+#     API_PORT        port to serve on                (default: 8000)
 #     KBM_LLM_MODEL   generator to pull AND serve     (default: kbm/config.py's OLLAMA_MODEL)
 #     KBM_TOOLS       1/0 force native tool calling on/off, overriding the model profile
 #     KBM_TIR         1/0 force the ```python text protocol; KBM_TOOLS wins over it
-#     KBM_API_TOKEN   bearer token for the API (leave unset and the API is OPEN)
+#     KBM_API_TOKEN   the family password: bearer token for the API, typed once per
+#                     device in the web UI (leave unset and the app is OPEN)
 #
 # Agent mode (the model searches your documents and runs Python itself) needs a generator
 # with a tools template, and the default qwen3:8b has one — so agent mode is now ON by
@@ -43,17 +37,12 @@ set -euo pipefail
 ALLOW_CPU=0
 DO_PULL=1
 DO_PREFETCH=1
-# Which halves of the app this invocation is responsible for. Both, unless told otherwise
-# — the single-pod layout is still the default and still what `bash startup.sh` means.
-RUN_API=1
-RUN_UI=1
 for arg in "$@"; do
   case "$arg" in
     --allow-cpu)   ALLOW_CPU=1 ;;
     --no-pull)     DO_PULL=0 ;;
     --no-prefetch) DO_PREFETCH=0 ;;
-    --api-only)    RUN_UI=0 ;;
-    --ui-only)     RUN_API=0 ;;
+    --api-only)    : ;;   # legacy flag from the Gradio split; the API is all there is
     # Print the header block rather than a hardcoded line range: the range was '2,18p'
     # and this file's header has now grown past 18 lines twice. Stop at the first
     # non-comment line instead, so --help cannot silently truncate again.
@@ -62,27 +51,12 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$RUN_API" -eq 0 ] && [ "$RUN_UI" -eq 0 ]; then
-  echo "--api-only and --ui-only are mutually exclusive." >&2
-  exit 2
-fi
-
-# The Gradio client needs the same token as the API it calls. This is a *different*
-# lock from APP_AUTH: APP_AUTH gates the Gradio login page, KBM_API_TOKEN gates the API
-# behind it. A login page in front of an open API only protects the page.
+# The one lock: the web UI asks for this as the "family password" and sends it as the
+# bearer token. The static bundle is public; every request that reads a document is not.
 export KBM_API_TOKEN=${KBM_API_TOKEN:-}
 if [ -z "$KBM_API_TOKEN" ]; then
-    # Two hosts, two different consequences of the same missing variable. On the API host
-    # it means the document store is unauthenticated; on the UI host it means this client
-    # cannot authenticate to one that is. Saying "the API will be OPEN" on a box that
-    # serves no API is the kind of wrong message that sends someone debugging the wrong
-    # machine — the same rule as Job.detail vs Job.diagnostic in api/routes.py.
-    if [ "$RUN_API" -eq 1 ]; then
-        echo "WARNING: KBM_API_TOKEN is unset — the API will be OPEN. See Information_files/DEPLOYMENT.md §4." >&2
-    else
-        echo "WARNING: KBM_API_TOKEN is unset — this UI will send no Authorization header." >&2
-        echo "         Every request fails with 401 if the API host has a token set." >&2
-    fi
+    echo "WARNING: KBM_API_TOKEN is unset — the app will be OPEN to anyone with the URL." >&2
+    echo "         See Information_files/DEPLOYMENT.md §4." >&2
 fi
 
 # Run from this script's directory, so the relative paths the Python modules use
@@ -98,23 +72,11 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$WORKSPACE/ollama-models}"
 export HF_HOME="${HF_HOME:-$WORKSPACE/.cache/huggingface}"
 export DATA_DIR="${DATA_DIR:-$WORKSPACE/kb-data}"
-export APP_PORT="${APP_PORT:-7860}"
 export API_PORT="${API_PORT:-8000}"
-# In the single-pod layout app.py talks to the API over loopback, so only APP_PORT is
-# ever exposed publicly. Under --ui-only there is no API on this box and the loopback
-# default is a trap: the UI comes up, every action fails with a connection error, and
-# nothing anywhere says "you forgot to set KBM_API_URL". So it is required there.
-export KBM_API_URL="${KBM_API_URL:-http://127.0.0.1:$API_PORT}"
-if [ "$RUN_API" -eq 0 ] && [ "$KBM_API_URL" = "http://127.0.0.1:$API_PORT" ]; then
-  echo "✗ --ui-only needs KBM_API_URL pointing at the GPU host's API." >&2
-  echo "  It is still the loopback default, and there is no API on this box." >&2
-  echo "    KBM_API_URL=https://<gpu-host>:8000 bash startup.sh --ui-only" >&2
-  exit 1
-fi
 
 # ── Tool-protocol overrides ────────────────────────────────────────────────────
 # (Which generator, further down: it asks kbm/config.py, so it waits for the venv.)
-# Exported so uvicorn and app.py inherit them. Unset by default: which tool protocol a
+# Exported so uvicorn inherits them. Unset by default: which tool protocol a
 # model gets is decided by its profile (kbm/llm_profiles.py), and these only override it.
 # See Information_files/AGENT.md and Information_files/DEPLOYMENT.md §3.
 [ -n "${KBM_TOOLS:-}" ] && export KBM_TOOLS
@@ -128,9 +90,7 @@ fi
 # they would otherwise sit in a buffer until the process exits.
 export PYTHONUNBUFFERED=1
 
-# The UI host owns no indexes: every DATA_DIR read and write lives behind the API
-# (kbm/retrieval.py, ingest.py, kbm/telemetry.py), none of which ship in the CPU image.
-[ "$RUN_API" -eq 1 ] && mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR"
 
 # Ollama is not in the pod image, and the official install script puts it in
 # /usr/local/bin — container filesystem, wiped on every restart. It is installed to the
@@ -140,11 +100,10 @@ if [ -x "$WORKSPACE/ollama/bin/ollama" ]; then
   export PATH="$WORKSPACE/ollama/bin:$PATH"
 fi
 
-# Note the CPU image has no Ollama and needs none — it never generates anything. The
-# GPU image bakes the binary into /usr/local/bin, which is why this check now usually
+# The GPU image bakes the binary into /usr/local/bin, which is why this check now usually
 # passes without the volume install below: in an image the container filesystem IS the
 # artifact, so the reason for installing to $WORKSPACE (it gets wiped on restart) is gone.
-if [ "$RUN_API" -eq 1 ] && ! command -v ollama > /dev/null 2>&1; then
+if ! command -v ollama > /dev/null 2>&1; then
   echo "✗ ollama not found on PATH, and not at $WORKSPACE/ollama/bin/ollama." >&2
   echo "  The pod image does not ship it. Install it ON THE VOLUME — an install to" >&2
   echo "  /usr/local/bin does not survive a pod restart:" >&2
@@ -191,185 +150,156 @@ GEN_MODEL="$KBM_LLM_MODEL"
 hr() { printf '─%.0s' $(seq 1 72); echo; }
 
 # ── 1. GPU check ───────────────────────────────────────────────────────────────
-if [ "$RUN_API" -eq 1 ]; then
-  # This is the whole reason for renting the box. A CPU fallback is not an error —
-  # the app starts and answers questions, just 10-40x slower — so without an explicit
-  # gate you can pay for a GPU for days without ever touching it. REQUIRE_GPU makes
-  # the Python side refuse too, in case the app is started some other way.
-  hr; echo "1. GPU check"
-  if [ "$ALLOW_CPU" -eq 1 ]; then
-    echo "   --allow-cpu: skipping the CUDA requirement (expect slow answers)."
-    unset REQUIRE_GPU || true
+# This is the whole reason for renting the box. A CPU fallback is not an error —
+# the app starts and answers questions, just 10-40x slower — so without an explicit
+# gate you can pay for a GPU for days without ever touching it. REQUIRE_GPU makes
+# the Python side refuse too, in case the app is started some other way.
+hr; echo "1. GPU check"
+if [ "$ALLOW_CPU" -eq 1 ]; then
+  echo "   --allow-cpu: skipping the CUDA requirement (expect slow answers)."
+  unset REQUIRE_GPU || true
+else
+  export REQUIRE_GPU=1
+  if ! $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    echo "   ✗ No CUDA device visible to torch."
+    echo "     The embedder, reranker and Marker would all run on CPU."
+    echo "     Check the pod has a GPU attached and torch has CUDA support:"
+    echo "       $PY -c 'import torch; print(torch.__version__, torch.version.cuda)'"
+    echo "     Or run 'bash startup.sh --allow-cpu' to start anyway (slow)."
+    exit 1
+  fi
+  echo "   ✓ CUDA: $($PY -c 'import torch; print(torch.cuda.get_device_name(0))')"
+fi
+
+# ── 2. Ollama ──────────────────────────────────────────────────────────────────
+hr; echo "2. Ollama"
+if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo "   Already running."
+else
+    echo "   Starting ollama serve (models in $OLLAMA_MODELS)..."
+    ollama serve > /dev/null 2>&1 &
+    until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
+    echo "   Ready."
+fi
+
+# Pull on a cold volume rather than on the family's first question — a missing model
+# otherwise surfaces as a ~5GB stall inside the first chat request.
+if [ "$DO_PULL" -eq 1 ]; then
+  # Match the FULL tag. `${GEN_MODEL%%:*}` matched only the name, so an already-pulled
+  # qwen3:4b satisfied a request for qwen3:8b and the wrong model served the family.
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$GEN_MODEL"; then
+    echo "   ✓ $GEN_MODEL present."
   else
-    export REQUIRE_GPU=1
-    if ! $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-      echo "   ✗ No CUDA device visible to torch."
-      echo "     The embedder, reranker and Marker would all run on CPU."
-      echo "     Check the pod has a GPU attached and torch has CUDA support:"
-      echo "       $PY -c 'import torch; print(torch.__version__, torch.version.cuda)'"
-      echo "     Or run 'bash startup.sh --allow-cpu' to start anyway (slow)."
-      exit 1
-    fi
-    echo "   ✓ CUDA: $($PY -c 'import torch; print(torch.cuda.get_device_name(0))')"
+    echo "   Pulling $GEN_MODEL (4-6GB, one time on a fresh volume)..."
+    ollama pull "$GEN_MODEL"
   fi
 fi
 
-# ── 2. Access control ──────────────────────────────────────────────────────────
-if [ "$RUN_UI" -eq 1 ]; then
-  # The app binds 0.0.0.0 so RunPod's HTTP proxy can reach it, which means the pod URL
-  # is open to anyone who has it. Warn loudly rather than silently serving the family's
-  # documents to the internet.
-  hr; echo "2. Access"
-  if [ -n "${APP_AUTH:-}" ]; then
-    echo "   ✓ APP_AUTH set — the app will require a login."
+# ── 3. HuggingFace models ──────────────────────────────────────────────────────
+# Warm the HF cache before serving. The embedder and reranker would download at
+# API startup anyway (making startup look hung); Marker would not download until
+# the first PDF upload, surfacing a multi-GB fetch as an "Ingestion failed" error
+# in front of whoever uploaded it. Cheap no-op once the volume is warm.
+hr; echo "3. HuggingFace models (cache: $HF_HOME)"
+if [ "$DO_PREFETCH" -eq 1 ]; then
+  $PY prefetch_models.py || {
+    echo "   ✗ Prefetch reported failures — see above. Not starting the app."
+    echo "     Re-run with --no-prefetch to start anyway."
+    exit 1
+  }
+else
+  echo "   --no-prefetch: skipped."
+fi
+
+# ── 4. API + web UI ─────────────────────────────────────────────────────────────────────
+hr; echo "4. API + web UI (:$API_PORT)"
+
+if [ -n "${KBM_IDLE_STOP_MINUTES:-}" ] && [ "${KBM_IDLE_STOP_MINUTES:-0}" -gt 0 ]; then
+  if [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+    echo "   Idle-stop armed: pod stops after ${KBM_IDLE_STOP_MINUTES} min without a query."
   else
-    echo "   ⚠ APP_AUTH is not set: anyone with the pod URL can use the app and read"
-    echo "     any user's documents. Set it in the RunPod dashboard's Environment"
-    echo "     Variables, or inline:  APP_AUTH='name:password' bash startup.sh"
+    echo "   ⚠ KBM_IDLE_STOP_MINUTES is set but RUNPOD_API_KEY/RUNPOD_POD_ID are not."
+    echo "     The pod will NOT stop itself and will bill continuously (~\$115/mo)."
   fi
+else
+  echo "   ⚠ Idle-stop disabled: this pod bills until you stop it by hand."
 fi
 
-# ── 3. Ollama ──────────────────────────────────────────────────────────────────
-if [ "$RUN_API" -eq 1 ]; then
-  hr; echo "3. Ollama"
-  if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-      echo "   Already running."
-  else
-      echo "   Starting ollama serve (models in $OLLAMA_MODELS)..."
-      ollama serve > /dev/null 2>&1 &
-      until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
-      echo "   Ready."
-  fi
+# --workers 1 is load-bearing, not a default left alone. Ingest job state is an
+# in-process dict (api/routes.py `_jobs`), and ops/idle_stop.py reads that dict and
+# `routes.last_chat_at` directly. With N workers, GET /jobs/{id} would 404 on ~(N-1)/N
+# of the client's 3-second polls — indistinguishable from a bad job id — and one
+# worker's idle watchdog could not see another worker's running ingest, so it would
+# stop the pod mid-Marker and leave a half-built index. Raising this needs job state
+# moved out of process first.
+$PY -m uvicorn api.main:app --host 0.0.0.0 --port "$API_PORT" --workers 1 &
+API_PID=$!
 
-  # Pull on a cold volume rather than on the family's first question — a missing model
-  # otherwise surfaces as a ~5GB stall inside the first chat request.
-  if [ "$DO_PULL" -eq 1 ]; then
-    # Match the FULL tag. `${GEN_MODEL%%:*}` matched only the name, so an already-pulled
-    # qwen3:4b satisfied a request for qwen3:8b and the wrong model served the family.
-    if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$GEN_MODEL"; then
-      echo "   ✓ $GEN_MODEL present."
-    else
-      echo "   Pulling $GEN_MODEL (4-6GB, one time on a fresh volume)..."
-      ollama pull "$GEN_MODEL"
-    fi
-  fi
+# Trap so Ctrl-C or a failure below does not leave a headless uvicorn holding the GPU.
+trap 'kill "$API_PID" 2>/dev/null || true' EXIT
+# And convert a container stop into an ordinary exit. A shell killed by an UNCAUGHT
+# signal does not run its EXIT trap, so `docker stop` on the GPU image would otherwise
+# orphan uvicorn on the GPU instead of shutting it down.
+trap 'exit 143' TERM INT
+
+echo "   Loading embedder + 2.2GB reranker..."
+
+# /healthz is behind the bearer token like every other endpoint, so the probe sends it.
+# Expanded below as ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"}, not "${AUTH_HEADER[@]}":
+# macOS ships bash 3.2, which treats an EMPTY array expansion as an unbound variable under
+# `set -u` and aborts the script. The pod's bash 5 does not, so `startup.sh --allow-cpu`
+# was broken only on the machine the docs recommend it for.
+AUTH_HEADER=()
+if [ -n "$KBM_API_TOKEN" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer $KBM_API_TOKEN")
 fi
 
-# ── 4. HuggingFace models ──────────────────────────────────────────────────────
-if [ "$RUN_API" -eq 1 ]; then
-  # Warm the HF cache before serving. The embedder and reranker would download at
-  # app.py import anyway (making startup look hung); Marker would not download until
-  # the first PDF upload, surfacing a multi-GB fetch as an "Ingestion failed" error
-  # in front of whoever uploaded it. Cheap no-op once the volume is warm.
-  hr; echo "4. HuggingFace models (cache: $HF_HOME)"
-  if [ "$DO_PREFETCH" -eq 1 ]; then
-    $PY prefetch_models.py || {
-      echo "   ✗ Prefetch reported failures — see above. Not starting the app."
-      echo "     Re-run with --no-prefetch to start anyway."
-      exit 1
-    }
-  else
-    echo "   --no-prefetch: skipped."
-  fi
-fi
-
-# ── 5. API ─────────────────────────────────────────────────────────────────────
-if [ "$RUN_API" -eq 1 ]; then
-  # The deployable unit. app.py is a client of this and cannot start without it.
-  hr; echo "5. API (:$API_PORT)"
-
-  if [ -n "${KBM_IDLE_STOP_MINUTES:-}" ] && [ "${KBM_IDLE_STOP_MINUTES:-0}" -gt 0 ]; then
-    if [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
-      echo "   Idle-stop armed: pod stops after ${KBM_IDLE_STOP_MINUTES} min without a query."
-    else
-      echo "   ⚠ KBM_IDLE_STOP_MINUTES is set but RUNPOD_API_KEY/RUNPOD_POD_ID are not."
-      echo "     The pod will NOT stop itself and will bill continuously (~\$115/mo)."
-    fi
-  else
-    echo "   ⚠ Idle-stop disabled: this pod bills until you stop it by hand."
-  fi
-
-  # --workers 1 is load-bearing, not a default left alone. Ingest job state is an
-  # in-process dict (api/routes.py `_jobs`), and ops/idle_stop.py reads that dict and
-  # `routes.last_chat_at` directly. With N workers, GET /jobs/{id} would 404 on ~(N-1)/N
-  # of the client's 3-second polls — indistinguishable from a bad job id — and one
-  # worker's idle watchdog could not see another worker's running ingest, so it would
-  # stop the pod mid-Marker and leave a half-built index. Raising this needs job state
-  # moved out of process first.
-  $PY -m uvicorn api.main:app --host 0.0.0.0 --port "$API_PORT" --workers 1 &
-  API_PID=$!
-
-  # Trap so Ctrl-C or a failure below does not leave a headless uvicorn holding the GPU.
-  trap 'kill "$API_PID" 2>/dev/null || true' EXIT
-  # And convert a container stop into an ordinary exit. A shell killed by an UNCAUGHT
-  # signal does not run its EXIT trap, so `docker stop` on the GPU image would otherwise
-  # orphan uvicorn on the GPU instead of shutting it down.
-  trap 'exit 143' TERM INT
-
-  echo "   Loading embedder + 2.2GB reranker..."
-
-  # /healthz is behind the bearer token like every other endpoint, so the probe sends it.
-  # Expanded below as ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"}, not "${AUTH_HEADER[@]}":
-  # macOS ships bash 3.2, which treats an EMPTY array expansion as an unbound variable under
-  # `set -u` and aborts the script. The pod's bash 5 does not, so `startup.sh --allow-cpu`
-  # was broken only on the machine the docs recommend it for.
-  AUTH_HEADER=()
-  if [ -n "$KBM_API_TOKEN" ]; then
-    AUTH_HEADER=(-H "Authorization: Bearer $KBM_API_TOKEN")
-  fi
-
-  # Check the HTTP STATUS, not curl's exit code. The previous version tested only whether
-  # curl ran, so a 401 — or a 500 — printed "✓ Ready" and the app started against an API
-  # that answered nothing. Distinguishing 000/401/200 also turns "is it up?" and "is my
-  # token right?" into two different messages, which is the whole reason the check exists.
-  while :; do
-      CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-                  ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" || echo 000)
-      case "$CODE" in
-        200) break ;;
-        401) echo "   ✗ API is up but rejected the token." >&2
-             echo "     KBM_API_TOKEN here does not match the one uvicorn started with." >&2
-             echo "     Set it once, in the environment, before running this script." >&2
-             exit 1 ;;
-        000) : ;;   # not listening yet — normal during startup
-        *)   echo "   ... API returned HTTP $CODE, still waiting." >&2 ;;
-      esac
-      # If uvicorn died (bad env, missing model, port taken), stop waiting forever.
-      kill -0 "$API_PID" 2>/dev/null || { echo "   ✗ API failed to start (see above)." >&2; exit 1; }
-      sleep 2
-  done
-  # Which tool arm actually came up. /healthz reports the EFFECTIVE protocol, after the
-  # capability probe in api/deps.py — which downgrades to "none" if KBM_TOOLS was asked for
-  # on a model with no tools template, or if the model is not pulled. Printing only
-  # "✓ Ready." hid that: the operator who selected agent mode had no way to see they did not
-  # get it short of reading the uvicorn log.
-  PROTOCOL=$(curl -s --max-time 5 ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" \
-             | sed -n 's/.*"protocol":"\([a-z]*\)".*/\1/p')
-  case "${PROTOCOL:-unknown}" in
-    tools) echo "   ✓ Ready — $GEN_MODEL, native tool calling (search + sandbox)." ;;
-    tir)   echo "   ✓ Ready — $GEN_MODEL, tool-integrated reasoning (sandbox)." ;;
-    none)  echo "   ✓ Ready — $GEN_MODEL, no tool protocol."
-           if [ -n "${KBM_TOOLS:-}" ] || [ -n "${KBM_TIR:-}" ]; then
-             echo "     ⚠ You asked for a tool protocol and did not get one — see the log" >&2
-             echo "       above for why (usually: this model has no tools template)." >&2
-           fi ;;
-    *)     echo "   ✓ Ready — $GEN_MODEL." ;;
-  esac
-fi
-
-# ── 6. UI ──────────────────────────────────────────────────────────────────────
-if [ "$RUN_UI" -eq 1 ]; then
-  hr; echo "6. Web UI (:$APP_PORT)"
-  echo "   RunPod dashboard → Connect → HTTP Service → port $APP_PORT"
-  $PY app.py
-fi
+# Check the HTTP STATUS, not curl's exit code. The previous version tested only whether
+# curl ran, so a 401 — or a 500 — printed "✓ Ready" and the app started against an API
+# that answered nothing. Distinguishing 000/401/200 also turns "is it up?" and "is my
+# token right?" into two different messages, which is the whole reason the check exists.
+while :; do
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" || echo 000)
+    case "$CODE" in
+      200) break ;;
+      401) echo "   ✗ API is up but rejected the token." >&2
+           echo "     KBM_API_TOKEN here does not match the one uvicorn started with." >&2
+           echo "     Set it once, in the environment, before running this script." >&2
+           exit 1 ;;
+      000) : ;;   # not listening yet — normal during startup
+      *)   echo "   ... API returned HTTP $CODE, still waiting." >&2 ;;
+    esac
+    # If uvicorn died (bad env, missing model, port taken), stop waiting forever.
+    kill -0 "$API_PID" 2>/dev/null || { echo "   ✗ API failed to start (see above)." >&2; exit 1; }
+    sleep 2
+done
+# Which tool arm actually came up. /healthz reports the EFFECTIVE protocol, after the
+# capability probe in api/deps.py — which downgrades to "none" if KBM_TOOLS was asked for
+# on a model with no tools template, or if the model is not pulled. Printing only
+# "✓ Ready." hid that: the operator who selected agent mode had no way to see they did not
+# get it short of reading the uvicorn log.
+PROTOCOL=$(curl -s --max-time 5 ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "http://localhost:$API_PORT/healthz" \
+           | sed -n 's/.*"protocol":"\([a-z]*\)".*/\1/p')
+case "${PROTOCOL:-unknown}" in
+  tools) echo "   ✓ Ready — $GEN_MODEL, native tool calling (search + sandbox)." ;;
+  tir)   echo "   ✓ Ready — $GEN_MODEL, tool-integrated reasoning (sandbox)." ;;
+  none)  echo "   ✓ Ready — $GEN_MODEL, no tool protocol."
+         if [ -n "${KBM_TOOLS:-}" ] || [ -n "${KBM_TIR:-}" ]; then
+           echo "     ⚠ You asked for a tool protocol and did not get one — see the log" >&2
+           echo "       above for why (usually: this model has no tools template)." >&2
+         fi ;;
+  *)     echo "   ✓ Ready — $GEN_MODEL." ;;
+esac
 
 # ── Hold the foreground ────────────────────────────────────────────────────────
-# Under --api-only there is no stage 6 to block on, and uvicorn is backgrounded so the
-# readiness gate above could poll it. Without this wait the script would fall off the
-# end the instant the API reported healthy, fire the EXIT trap, and kill the server it
-# had just declared ready — a container that exits 0 immediately after starting.
-if [ "$RUN_API" -eq 1 ] && [ "$RUN_UI" -eq 0 ]; then
-  hr; echo "API running in the foreground. Ctrl-C or SIGTERM to stop."
-  wait "$API_PID"
+# uvicorn is backgrounded so the readiness gate above could poll it. Without this wait
+# the script would fall off the end the instant the API reported healthy, fire the EXIT
+# trap, and kill the server it had just declared ready.
+if [ -d web/dist ]; then
+  echo "   Web UI: http://<host>:$API_PORT/  (RunPod → Connect → HTTP Service → $API_PORT)"
+else
+  echo "   ⚠ web/dist missing — API only. Build it: (cd web && npm ci && npm run build)" >&2
 fi
+hr; echo "Running in the foreground. Ctrl-C or SIGTERM to stop."
+wait "$API_PID"

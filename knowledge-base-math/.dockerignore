@@ -32,6 +32,10 @@ evaluation/results/
 evaluation/goldset.raw.jsonl
 evaluation/goldset_review.md
 
+# The web UI is built inside the image (docker/Dockerfile.gpu's `web` stage).
+web/node_modules/
+web/dist/
+
 .git/
 .gitignore
 .DS_Store

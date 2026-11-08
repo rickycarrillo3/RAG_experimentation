@@ -1,4 +1,5 @@
-# docker/Dockerfile.gpu — the API host: retrieval, extraction, generation.
+# docker/Dockerfile.gpu — the whole app: retrieval, extraction, generation, and the
+# React UI (web/dist), which uvicorn serves on the same port (api/main.py).
 #
 # This file is SETUP.md §1, executed once at build time instead of by hand on every new
 # pod. That is the whole point: the environment stops being the residue of a procedure
@@ -17,6 +18,17 @@
 # wrong by two major versions.
 
 ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+# ── The web UI, built in a throwaway stage ────────────────────────────────────────────
+# Node exists only here: the runtime image gets the static bundle and nothing else, so
+# there is no Node process on the pod and no node_modules in the final layer.
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
 FROM ${CUDA_IMAGE}
 
 ARG TORCH_VERSION=2.11.0
@@ -95,6 +107,7 @@ RUN if [ "$OLLAMA_VERSION" = "latest" ]; then \
     && ollama --version
 
 COPY . .
+COPY --from=web /web/dist ./web/dist
 
 # Defaults matching a RunPod pod with a network volume at /workspace. Every one of these
 # is why a pod restart does not cost ~15GB of re-downloads — and DATA_DIR is the one that
@@ -111,4 +124,4 @@ EXPOSE 8000
 
 # Ollama's own port is deliberately NOT exposed. It is unauthenticated: a public 11434
 # lets anyone run inference on the GPU you are paying for (Information_files/DEPLOYMENT.md §4).
-ENTRYPOINT ["bash", "startup.sh", "--api-only"]
+ENTRYPOINT ["bash", "startup.sh"]

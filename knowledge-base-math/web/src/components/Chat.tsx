@@ -6,6 +6,7 @@ import { appendSegment, type Turn } from '../lib/types'
 import { Composer } from './Composer'
 import { Message } from './Message'
 import { SourcesPanel } from './SourcesPanel'
+import { Upload } from './Upload'
 
 export function Chat({ user }: { user: string }) {
   const [turns, setTurns] = useState<Turn[]>([])
@@ -117,11 +118,14 @@ export function Chat({ user }: { user: string }) {
         <Composer busy={busy} onSend={send} onStop={() => abort.current?.abort()} />
       </section>
 
-      <SourcesPanel
-        sources={latest?.sources}
-        mode={latest?.mode}
-        pending={busy && last?.sources === undefined}
-      />
+      <div className="flex min-h-0 flex-col gap-4">
+        <Upload user={user} />
+        <SourcesPanel
+          sources={latest?.sources}
+          mode={latest?.mode}
+          pending={busy && last?.sources === undefined}
+        />
+      </div>
     </div>
   )
 }

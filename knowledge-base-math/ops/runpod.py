@@ -1,11 +1,10 @@
 """
 ops/runpod.py - The RunPod REST calls that start and stop a pod.
 
-Two callers, on two different hosts, and that is the whole reason this file exists:
-
     ops/idle_stop.py   runs inside the API process on the GPU pod and STOPS it.
-    app.py             runs on the always-on CPU pod and STARTS it, when a family
-                       member asks a question and the generator is not there.
+    start_pod()        has no caller since the Gradio UI (and its always-on CPU pod)
+                       was removed. Kept for the planned wake host: a static web UI
+                       cannot hold RUNPOD_API_KEY, so waking needs a small server.
 
 Sleep and wake are the same endpoint with a different verb, so they belong in the same
 place. Left where it was, `RUNPOD_API` would now be declared twice on two machines, and
@@ -13,15 +12,14 @@ the pair would drift the way CHROMA_DIR/BM25_DIR did before kbm/config.py (CLAUD
 "when you add a path, a model, or a host, define it once and import it").
 
 **Credentials are arguments, not imports.** ops/ is documented as a client of api/
-(kbm/__init__.py), and api.settings is where RUNPOD_API_KEY/RUNPOD_POD_ID live — but
-api/ does not ship in the CPU image at all, so importing them here would make this
-module unimportable on the exact host that needs to start the pod. Each caller reads
+(kbm/__init__.py), and api.settings is where RUNPOD_API_KEY/RUNPOD_POD_ID live — but a
+wake host would not ship api/, so importing them here would make this module
+unimportable on the exact host that needs to start the pod. Each caller reads
 its own configuration and passes it in; this file knows only HTTP.
 
 ⚠️ RUNPOD_API_KEY controls the whole RunPod account — start, stop, terminate, spend.
-Putting it on the CPU host is a deliberate trade (Information_files/DEPLOYMENT.md §5, "the wake gap"):
-it is what turns a dead URL into a progress bar, and it is why the CPU pod must have
-APP_AUTH set. It is not a credential to put in anything a family member can read.
+Any wake host that holds it must itself be behind a login. It is not a credential to
+put in anything a family member can read — in particular, never in the web bundle.
 """
 
 import httpx

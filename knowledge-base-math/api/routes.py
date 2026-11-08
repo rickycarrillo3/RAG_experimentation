@@ -54,6 +54,7 @@ from .settings import (
     MEMORY_TOKENS,
     QUERY_REWRITE,
     RELEVANCE_FLOOR,
+    SHOW_DIAGNOSTICS,
     SANDBOX_TIMEOUT_S,
     SHOW_TOOL_CODE,
     TIR_ENABLED,
@@ -139,6 +140,7 @@ async def _chat_stream(user: str, req: ChatRequest):
     # the question, and an UnboundLocalError inside an exception handler would replace
     # the real error with a useless one.
     rquery, rewritten = req.message, False
+    pass_log: list[dict] = []  # same reason: the error path logs the passes that did run
 
     # The history this turn's prompt is actually built from. Starts as a copy of the
     # client-held req.history (never mutated — it is the client's) and, when a photo is
@@ -342,9 +344,16 @@ async def _chat_stream(user: str, req: ChatRequest):
         # answers "did it use the tool"; this answers "what did it actually do", which is
         # the question you have when an answer is wrong.
         tool_log: list[dict] = []
+        # `pass_log` (bound above the try) gets one record per generation pass, with
+        # Ollama's own token counts and durations, for the observability dashboard.
+        # prefill_ms per pass is the cost that Information_files/LATENCY.md's prefix-cache
+        # rule exists to cut.
 
         def _log_tool(name: str, ok: bool, ms: float, **fields) -> None:
+            # `at_ms` is when the call STARTED, relative to the request, so the dashboard
+            # can place it on the same timeline as the generation passes.
             entry = {"n": len(tool_log) + 1, "tool": name, "ok": ok,
+                     "at_ms": round((time.perf_counter() - t_start - ms) * 1000, 1),
                      "ms": round(ms * 1000, 1), **fields}
             tool_log.append(entry)
             # Also to the server log, at INFO. Only failures were visible before, so a
@@ -404,8 +413,12 @@ async def _chat_stream(user: str, req: ChatRequest):
             seen_calls: set[tuple] = set()
 
             stream = (models.llm_tools if models.tools_enabled else models.llm)
+            t_pass = time.perf_counter()
+            meta: dict = {}
             async for chunk in stream.astream(messages, stop=stop_words):
                 done_reason = chunk.response_metadata.get("done_reason") or done_reason
+                if "eval_count" in chunk.response_metadata:
+                    meta = chunk.response_metadata
                 for tc in (getattr(chunk, "tool_calls", None) or []):
                     # Deduped on (name, args) and NEVER on id: langchain_ollama mints a
                     # fresh uuid4 every time it parses a response (chat_models.py:218), so
@@ -435,6 +448,8 @@ async def _chat_stream(user: str, req: ChatRequest):
                 yield _sse("token", TokenEvent(text=visible))
 
             generated += produced
+            pass_log.append(_pass_record(meta, t_pass - t_start, time.perf_counter() - t_pass,
+                                       done_reason, len(calls)))
 
             # Three independent stop conditions, all required. Without `not produced` a
             # model that immediately emits EOS-at-length would spin to the cap emitting
@@ -789,6 +804,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             memories_recalled=memories_recalled,
             protocol=models.protocol,
         ))
+        tokens = _token_totals(pass_log)
         # Telemetry logs every RETRIEVED chunk, not just the ones that cleared the floor.
         # The floor can be re-applied offline, but a chunk that was dropped and never
         # logged is gone — and re-calibrating the floor against real family questions is
@@ -805,6 +821,7 @@ async def _chat_stream(user: str, req: ChatRequest):
             late_sources=[s.model_dump() for s in chatmod.to_sources(late_results)],
             retrieval_query=rquery if rewritten else None,
             memories_recalled=memories_recalled,
+            passes=pass_log, tokens=tokens,
         )
 
     except Exception as e:  # noqa: BLE001 - surfaced to the client as an SSE error frame
@@ -814,7 +831,49 @@ async def _chat_stream(user: str, req: ChatRequest):
             sources=[], timings=timings, model=OLLAMA_MODEL,
             n_completion_chars=len(answer), error=str(e),
             retrieval_query=rquery if rewritten else None,
+            passes=pass_log, tokens=_token_totals(pass_log),
         )
+
+
+def _pass_record(meta: dict, at_s: float, wall_s: float, done_reason, n_calls: int) -> dict:
+    """One generation pass, from Ollama's final-chunk metadata (durations are ns).
+
+    Missing keys stay None rather than 0: a path that reports nothing must not drag the
+    dashboard's averages toward zero.
+    """
+    def ms(key):
+        v = meta.get(key)
+        return round(v / 1e6, 1) if isinstance(v, (int, float)) else None
+
+    return {
+        "at_ms": round(at_s * 1000, 1),
+        "ms": round(wall_s * 1000, 1),
+        "prompt_tokens": meta.get("prompt_eval_count"),
+        "output_tokens": meta.get("eval_count"),
+        "prefill_ms": ms("prompt_eval_duration"),
+        "decode_ms": ms("eval_duration"),
+        "load_ms": ms("load_duration"),
+        "done_reason": done_reason,
+        "tool_calls": n_calls,
+    }
+
+
+def _token_totals(passes: list[dict]) -> dict:
+    """Request-level token totals and MTPT (mean ms per output token, Ollama decode time)."""
+    def total(key):
+        vals = [p[key] for p in passes if p.get(key) is not None]
+        return sum(vals) if vals else None
+
+    out, decode = total("output_tokens"), total("decode_ms")
+    rate = decode / out if out and decode else None
+    return {
+        "prompt": total("prompt_tokens"),
+        "output": out,
+        "prefill_ms": total("prefill_ms"),
+        "decode_ms": decode,
+        "mtpt_ms": round(rate, 2) if rate else None,
+        "tok_s": round(1000 / rate, 1) if rate else None,
+    }
 
 
 def _timings_model(t: dict):
@@ -981,7 +1040,7 @@ async def get_job(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown job id.")
-    return job
+    return job if SHOW_DIAGNOSTICS else job.model_copy(update={"diagnostic": None})
 
 
 # ── Users, feedback, health ───────────────────────────────────────────────────
@@ -996,6 +1055,17 @@ async def user_status(user: str):
 @router.post("/feedback", status_code=status.HTTP_204_NO_CONTENT)
 async def feedback(fb: Feedback):
     telemetry.log_feedback(fb.event_id, fb.rating, fb.note)
+
+
+@router.get("/telemetry/events")
+async def telemetry_events(limit: int = 500):
+    """The last `limit` telemetry rows, raw, for the observability dashboard (web/#/dashboard).
+
+    Behind require_token like every route on this router: the rows carry the family's
+    questions. Raw dicts rather than a schema, so rows from before a field existed still
+    pass through untouched.
+    """
+    return await anyio.to_thread.run_sync(telemetry.read_events, max(1, min(limit, 5000)))
 
 
 @router.get("/healthz", response_model=Health)
