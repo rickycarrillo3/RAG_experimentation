@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { Chat } from './components/Chat'
+import { Dashboard } from './components/Dashboard'
 import { health } from './lib/sse'
 import type { Health } from './lib/types'
 
@@ -15,9 +16,15 @@ export default function App() {
   const [user, setUser] = useState(() => localStorage.getItem(USER_KEY) ?? '')
   const [draft, setDraft] = useState(user)
   const [status, setStatus] = useState<Health | null | 'loading'>('loading')
+  // Hash, not a router: one extra page doesn't earn a dependency.
+  const [hash, setHash] = useState(location.hash)
+  const dashboard = hash === '#/dashboard'
 
   useEffect(() => {
     health().then(setStatus)
+    const onHash = () => setHash(location.hash)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   function commitUser(next: string) {
@@ -38,6 +45,12 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
+          <a
+            href={dashboard ? '#/' : '#/dashboard'}
+            className="text-[0.78rem] text-ink-dim underline-offset-2 hover:text-accent hover:underline"
+          >
+            {dashboard ? '← chat' : 'monitoring'}
+          </a>
           <ServerStatus status={status} />
           <input
             value={draft}
@@ -52,7 +65,9 @@ export default function App() {
         </div>
       </header>
 
-      {user ? (
+      {dashboard ? (
+        <Dashboard />
+      ) : user ? (
         // Keyed on the user: switching name switches to a different index, and carrying
         // the previous conversation across that boundary would be misleading.
         <Chat key={user} user={user} />

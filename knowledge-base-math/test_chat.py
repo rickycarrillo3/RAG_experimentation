@@ -129,6 +129,27 @@ def selftest() -> int:
     check("forget removes by id", kbm_memory.forget("kid", fact_id) is True)
     check("forget on a missing id is False", kbm_memory.forget("kid", "deadbeef") is False)
 
+    print("telemetry — the dashboard's reader and token math")
+    from api.routes import _pass_record, _token_totals
+    from kbm.telemetry import read_events
+
+    log_path = os.path.join(tempfile.mkdtemp(prefix="kbm_selftest_tel_"), "events.jsonl")
+    check("missing log reads as empty", read_events(10, log_path) == [])
+    with open(log_path, "w") as fh:
+        fh.write('{"n": 1}\nnot json\n{"n": 2}\n{"n": 3}\n')
+    check("tail keeps the newest, skips malformed", read_events(3, log_path) == [{"n": 2}, {"n": 3}])
+    check("all rows oldest-first", [r["n"] for r in read_events(10, log_path)] == [1, 2, 3])
+    p1 = _pass_record({"prompt_eval_count": 900, "eval_count": 100,
+                       "eval_duration": 2_000_000_000}, 0.5, 2.5, "stop", 1)
+    p2 = _pass_record({"prompt_eval_count": 40, "eval_count": 100,
+                       "eval_duration": 3_000_000_000}, 3.0, 3.1, "stop", 0)
+    t = _token_totals([p1, p2])
+    check("token totals sum across passes", (t["prompt"], t["output"]) == (940, 200))
+    check("mtpt = decode ms / output tokens", t["mtpt_ms"] == 25.0 and t["tok_s"] == 40.0)
+    empty = _token_totals([_pass_record({}, 0, 1, None, 0)])
+    check("no metadata -> None, not zero or a ZeroDivisionError",
+          empty["output"] is None and empty["mtpt_ms"] is None)
+
     print()
     if failures:
         print(f"{len(failures)} check(s) FAILED: {', '.join(failures)}")
