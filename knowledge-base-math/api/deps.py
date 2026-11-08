@@ -7,6 +7,7 @@ per request would dominate every other cost in the system.
 """
 
 import hmac
+import re
 import logging
 import os
 import pickle
@@ -251,8 +252,12 @@ def normalize_user(user: str) -> str:
     u = user.strip().lower()
     if not u:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Username is required.")
-    if any(c in u for c in "/\\.\0") or u in (".", ".."):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Username may not contain path characters.")
+    # Chroma collection names must be [a-zA-Z0-9._-] and end alphanumeric ("user_" covers
+    # the start); dots are excluded too because the name also lands in filenames. A space
+    # used to pass here and then crash ingest after the BM25 pickle was already written.
+    # Keep in sync with USER_RE in web/src/App.tsx.
+    if not re.fullmatch(r"[a-z0-9_-]*[a-z0-9]", u):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Names can only use letters, numbers, - and _ (no spaces or accents), and must end with a letter or number.")
     return u
 
 
