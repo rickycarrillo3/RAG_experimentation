@@ -11,9 +11,15 @@ import type { Health } from './lib/types'
  */
 const USER_KEY = 'kbm.user'
 
+// Mirrors api/deps.normalize_user (Chroma's collection-name rule); the API enforces it.
+const USER_RE = /^[a-z0-9_-]*[a-z0-9]$/
+const USER_RULE =
+  'Names can only use letters, numbers, - and _ (no spaces or accents), and must end with a letter or number.'
+
 export default function App() {
   const [user, setUser] = useState(() => localStorage.getItem(USER_KEY) ?? '')
   const [draft, setDraft] = useState(user)
+  const [nameError, setNameError] = useState('')
   const [status, setStatus] = useState<Health | null | 'loading'>('loading')
 
   useEffect(() => {
@@ -22,6 +28,11 @@ export default function App() {
 
   function commitUser(next: string) {
     const clean = next.trim().toLowerCase()
+    if (clean && !USER_RE.test(clean)) {
+      setNameError(USER_RULE)
+      return
+    }
+    setNameError('')
     setUser(clean)
     setDraft(clean)
     localStorage.setItem(USER_KEY, clean)
@@ -46,11 +57,19 @@ export default function App() {
             onKeyDown={(e) => e.key === 'Enter' && commitUser(draft)}
             placeholder="your name"
             aria-label="Your name"
+            aria-invalid={!!nameError}
+            aria-describedby={nameError ? 'name-error' : undefined}
             className="w-36 rounded-lg border border-edge bg-surface-2 px-3 py-1.5 text-sm
               outline-none placeholder:text-ink-faint focus:border-accent"
           />
         </div>
       </header>
+
+      {nameError && (
+        <p id="name-error" role="alert" className="text-right text-[0.8rem] text-warn">
+          {nameError}
+        </p>
+      )}
 
       {user ? (
         // Keyed on the user: switching name switches to a different index, and carrying

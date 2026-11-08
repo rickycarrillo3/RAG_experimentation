@@ -17,6 +17,7 @@ than porting it.
 import json
 import logging
 import os
+import re
 import time
 
 import gradio as gr
@@ -31,6 +32,11 @@ API_URL = os.environ.get("KBM_API_URL", "http://127.0.0.1:8000")
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "")
 # Generation of a full answer runs to tens of seconds; the default httpx timeout would
 # abort mid-stream. Read timeout is the one that matters for SSE.
+# Mirrors api/deps.normalize_user (Chroma's collection-name rule). Checked here so the
+# family gets the reason before an upload, not after; the API still enforces it.
+USER_RE = re.compile(r"[a-z0-9_-]*[a-z0-9]")
+USER_RULE = "Names can only use letters, numbers, - and _ (no spaces or accents), and must end with a letter or number."
+
 TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0)
 
 
@@ -167,6 +173,9 @@ def handle_upload(pdf_file, username: str, last_ingested):
     running on the server.
     """
     username = (username or "").strip().lower()
+    if username and not USER_RE.fullmatch(username):
+        yield USER_RULE, last_ingested, gr.update()
+        return
 
     if pdf_file is None:
         # Also the "clear" path: forget what we ingested so re-selecting it works.
@@ -282,6 +291,9 @@ def handle_chat(message: str, history: list, clean_history: list, username: str)
     username = (username or "").strip().lower()
     if not username:
         yield "", history + [_msg("user", message), _msg("assistant", "Please enter your name first.")], clean_history, None
+        return
+    if not USER_RE.fullmatch(username):
+        yield "", history + [_msg("user", message), _msg("assistant", USER_RULE)], clean_history, None
         return
     if not message.strip():
         yield "", history, clean_history, None
