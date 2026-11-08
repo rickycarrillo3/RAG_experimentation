@@ -107,6 +107,12 @@ pip install --force-reinstall \
     torch==2.11.0+cu128 torchvision==0.26.0+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
+# --force-reinstall re-resolves torch's dependencies too and drags in the newest Pillow,
+# clobbering requirements.txt's pin: "marker-pdf ... requires Pillow<11.0.0, but you have
+# pillow 13.0.0". Restore it. Quote it — unquoted, bash reads `<` as a redirect.
+# (docker/Dockerfile.gpu does the same step.)
+pip install "pillow<11.0.0"
+
 # ── Confirm torch sees the GPU AFTER installing ───────────────────────────────
 # The one check worth doing by hand; startup.sh and REQUIRE_GPU also enforce it.
 python -c "import torch, torchvision; print(torch.cuda.is_available(), torch.version.cuda, torchvision.__version__)"
