@@ -18,7 +18,6 @@ from langchain_ollama import ChatOllama
 
 from kbm import retrieval
 from kbm.config import OLLAMA_BASE_URL, VISION_OLLAMA_MODEL, VISION_PROFILE
-from kbm.config import normalize_user as _normalize_user
 from kbm.retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 from kbm.tools import agent
 
@@ -243,15 +242,18 @@ def index_summary(user: str) -> tuple[int, list[str]]:
 
 
 def normalize_user(user: str) -> str:
-    """kbm.config.normalize_user, as a 400. This is the *entire* isolation mechanism
-    (CLAUDE.md: "per-username directory naming, not real auth"), so the rule itself lives
-    in exactly one place, where the CLI and kbm/memory.py use it too.
+    """Usernames are lowercased and stripped — the same rule app.py applied.
+
+    This is the *entire* isolation mechanism (CLAUDE.md: "per-username directory naming,
+    not real auth"), so it must be applied in exactly one place. Path separators are
+    rejected because the username lands in a filename.
     """
-    try:
-        return _normalize_user(user)
-    except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "Username may only use letters, digits, spaces, '-' or '_'.")
+    u = user.strip().lower()
+    if not u:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Username is required.")
+    if any(c in u for c in "/\\.\0") or u in (".", ".."):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Username may not contain path characters.")
+    return u
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

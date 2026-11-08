@@ -35,7 +35,6 @@ from kbm.images import add_images, caption_image
 # Index locations come from kbm/retrieval.py, not a local copy: if ingest wrote to one
 # directory while retrieval read from another, every query would return nothing and
 # the indexes would look empty rather than misplaced.
-from kbm.config import normalize_user
 from kbm.retrieval import BM25_DIR, CHROMA_DIR, EMBED_MODEL, chunk_id, load_embeddings
 
 
@@ -288,7 +287,7 @@ def ingest(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest .mmd files into per-user BM25 + ChromaDB indexes.")
-    parser.add_argument("--user", required=True, type=normalize_user, help="Username (determines which collection to write to)")
+    parser.add_argument("--user", required=True, help="Username (determines which collection to write to)")
     parser.add_argument("inputs", nargs="+", help=".mmd file(s) or directory containing .mmd files")
     parser.add_argument("--chunker", default="baseline", choices=list(CHUNKERS),
                         help="Chunking strategy (default: baseline)")
