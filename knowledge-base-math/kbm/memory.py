@@ -45,7 +45,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from kbm.config import MEMORY_DIR
+from kbm.config import MEMORY_DIR, normalize_user
 
 log = logging.getLogger(__name__)
 
@@ -66,21 +66,8 @@ _CHARS_PER_TOKEN = 4
 _DEFAULT_FLOOR = 0.15
 
 
-def _safe_user(user: str) -> str:
-    """Lowercased, stripped, and safe to drop into a filename.
-
-    The API hands this an already-normalized user (api/deps.normalize_user); this repeats
-    the parts that matter for a path so the CLI is held to the same rule. Not a full copy
-    of normalize_user — kbm/ cannot import it — just the filename-safety subset.
-    """
-    u = (user or "").strip().lower()
-    if not u or u in (".", "..") or any(c in u for c in "/\\\0"):
-        raise ValueError(f"unusable user name: {user!r}")
-    return u
-
-
 def _path(user: str) -> str:
-    return os.path.join(MEMORY_DIR, f"user_{_safe_user(user)}.jsonl")
+    return os.path.join(MEMORY_DIR, f"user_{normalize_user(user)}.jsonl")
 
 
 def _norm(text: str) -> str:
@@ -132,7 +119,7 @@ def add(user: str, fact: str, *, pinned: bool = False, source: str = "cli") -> b
         record = {
             "id": uuid.uuid4().hex,
             "ts": datetime.now(timezone.utc).isoformat(),
-            "user": _safe_user(user),
+            "user": normalize_user(user),
             "fact": fact,
             "pinned": bool(pinned),
             "source": source,

@@ -313,4 +313,5 @@ The same trap caught the index paths: `CHROMA_DIR`/`BM25_DIR` were declared in *
 - Math retrieval quality (notation, proofs, formulas) is a primary concern — consider math-aware chunking/embeddings over generic RAG defaults.
 - User wants the option to fine-tune models themselves (embedding and/or generation LLM) down the line.
 - Multi-user isolation is per-username directory/collection naming, not real auth — keep this in mind before suggesting security-sensitive changes.
+  - ⚠️ **Known HIGH-severity security flaw:** `kbm.config.normalize_user` maps whitespace to `_`, so `John Smith` and `john_smith` are the **same user** (same indexes, same memory). See `Information_files/DEPLOYMENT.md §4`.
 - `chroma_db/`, `bm25_indexes/`, PDFs, and extracted `.mmd` files under `docs/raw`/`docs/extracted` are all gitignored (private user document data) — don't try to commit them.

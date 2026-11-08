@@ -20,7 +20,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
-from kbm.config import KEEP_ALIVE, NUM_CTX, NUM_PREDICT, OLLAMA_BASE_URL, THINK
+from kbm.config import KEEP_ALIVE, NUM_CTX, NUM_PREDICT, OLLAMA_BASE_URL, THINK, normalize_user
 from kbm.retrieval import (
     EMBED_MODEL,
     OLLAMA_MODEL,
@@ -81,7 +81,7 @@ def print_retrieved(results, reranked: bool = True) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Query the math RAG system.")
-    parser.add_argument("--user", required=True, help="Username (determines which index to search)")
+    parser.add_argument("--user", required=True, type=normalize_user, help="Username (determines which index to search)")
     parser.add_argument("--retrieval-only", action="store_true", help="Print retrieved chunks only, skip LLM")
     parser.add_argument("--no-bm25", action="store_true", help="Disable BM25 (dense only)")
     parser.add_argument("--no-dense", action="store_true", help="Disable dense search (BM25 only)")

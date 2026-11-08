@@ -159,6 +159,13 @@ Per-user isolation is a **lowercased username string**, with no verification
 authenticate anyone. On a public URL with no token, anyone who finds the host can read
 every uploaded document by guessing a name.
 
+⚠️ **SECURITY FLAW (HIGH): usernames collide.** `kbm.config.normalize_user` lowercases
+and turns whitespace into `_`, so `John Smith`, `john  smith` and `john_smith` are **one
+user** with one set of documents and one memory file. Guessing a name is already enough;
+this widens it to guessing any spelling variant, and two family members who pick names
+that happen to normalize the same way silently share an index. Accepted only because
+isolation was never auth — real per-user auth is the fix, not a different normalization.
+
 There are **two locks on two different doors**, and both must be set:
 
 - **`APP_AUTH`** gates the Gradio login page (`config.app_auth()`).
