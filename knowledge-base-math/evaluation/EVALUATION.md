@@ -30,8 +30,8 @@ something, it isn't measuring, it's cheerleading.
 
 ```
 PDF ─→ extract.py ─→ .mmd (Markdown + LaTeX) ─→ ingest.py ─→ ┬─ BM25 index  (bm25_indexes/user_<name>.pkl)
-       └─ Marker (Surya models) if math                       └─ Chroma      (chroma_db/, collection user_<name>)
-          pymupdf4llm otherwise / on failure                     chunk 400 chars, overlap 80
+       └─ Marker (Surya models); fails if Marker fails        └─ Chroma      (chroma_db/, collection user_<name>)
+                                                                 chunk 400 chars, overlap 80
 ```
 
 **Query (online)**

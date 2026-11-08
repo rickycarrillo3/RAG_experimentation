@@ -1,17 +1,15 @@
 """
 extract.py - PDF extraction for math documents.
 
-Marker is the default: it is the only extractor here that produces faithful LaTeX,
-and this is a math RAG system. pymupdf4llm is used only when explicitly asked for
-(--force-pymupdf) or as a fallback when Marker fails.
+Marker is the only extractor: it is the only one that produces faithful LaTeX, and
+this is a math RAG system. If Marker fails, extraction FAILS — there is no fallback.
 
-There is deliberately NO math auto-detection. The old `_has_math()` sampled the PDF
-with pymupdf4llm and grepped the text for LaTeX tokens (`\frac`, `$$`, …), which
-cannot work: pymupdf4llm never emits LaTeX. Measured on OpenStax Calculus Vol 1 —
-a *calculus textbook* — that check finds zero LaTeX tokens and routes the document
-to the wrong extractor. Unicode-glyph detection fails on the same document too,
-because the equations are embedded images that pymupdf hands to Tesseract. You
-cannot tell whether a PDF contains math by reading text that has already lost it.
+pymupdf4llm used to be the fallback (and, before that, the choice for "non-math"
+PDFs). Both were removed. A fallback that flattens equations to Unicode indexes
+"successfully" and quietly ruins retrieval for that document, which is worse than an
+error the family can see and retry. And "non-math" could not be detected: pymupdf4llm
+never emits LaTeX, and on OpenStax Calculus Vol 1 the equations are embedded images,
+so neither LaTeX-token nor Unicode-glyph checks found any math in a calculus textbook.
 
 Also extracts page-bearing figures (Information_files/IMAGE_DESIGN.md), as two
 artifacts alongside the .mmd:
@@ -26,7 +24,6 @@ artifacts alongside the .mmd:
 
 Usage:
     python extract.py docs/raw/textbook.pdf
-    python extract.py docs/raw/textbook.pdf --force-pymupdf
 """
 
 import argparse
@@ -36,9 +33,6 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, field
-
-import pymupdf4llm
 
 
 EXTRACTED_DIR = "docs/extracted"
@@ -69,7 +63,7 @@ def extract_marker(pdf_path: str, out_dir: str) -> tuple[str, list[dict]]:
     are downloaded to the HuggingFace cache on first run and reused thereafter;
     on a GPU pod this is fast, on CPU it is slow but correct.
     """
-    # Imported lazily so --force-pymupdf runs don't pay Marker's heavy import.
+    # Imported lazily so importing this module (e.g. by api/routes.py) stays cheap.
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
     from marker.output import text_from_rendered
@@ -91,8 +85,7 @@ def extract_marker(pdf_path: str, out_dir: str) -> tuple[str, list[dict]]:
     text, _, images = text_from_rendered(rendered)
 
     # Marker's page-break line looks like "{3}------------------------------------------".
-    # Replace it with our own sentinel so chunking.py has one marker format to parse
-    # regardless of which extractor produced the .mmd.
+    # Replace it with our own sentinel, the one format chunking.py parses.
     text = re.sub(r"\{(\d+)\}-+", lambda m: f"<!-- page:{m.group(1)} -->", text)
 
     raw_images: list[dict] = []
@@ -116,120 +109,31 @@ def extract_marker(pdf_path: str, out_dir: str) -> tuple[str, list[dict]]:
     return out_path, raw_images
 
 
-def extract_pymupdf(pdf_path: str, out_dir: str) -> tuple[str, list[dict]]:
-    """Extract with pymupdf4llm and save as .mmd (plain markdown, no LaTeX fix).
+def extract(pdf_path: str, out_dir: str = EXTRACTED_DIR) -> str:
+    """Extract a PDF with Marker; return the .mmd path. Raises if Marker fails.
 
-    Returns (.mmd path, raw images [{"page", "bytes_b64"}]) — same shape as
-    extract_marker, so ingest.py sees one uniform interface regardless of extractor.
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    image_dir = os.path.join(out_dir, "_pymupdf_images")
-    pages = pymupdf4llm.to_markdown(
-        pdf_path, page_chunks=True, write_images=True,
-        image_path=image_dir, image_format="png",
-    )
-
-    parts = []
-    raw_images: list[dict] = []
-    for i, p in enumerate(pages):
-        page_no = p.get("metadata", {}).get("page", i)
-        parts.append(f"<!-- page:{page_no} -->\n\n{p['text']}")
-        for img in p.get("images") or []:
-            path = img.get("file")
-            if not path or not os.path.exists(path):
-                continue
-            try:
-                with open(path, "rb") as f:
-                    raw_images.append({
-                        "page": page_no,
-                        "bytes_b64": base64.b64encode(f.read()).decode("ascii"),
-                    })
-            except OSError as e:
-                print(f"WARNING: could not read extracted image {path}: {e}")
-    text = "\n\n".join(parts)
-
-    stem = os.path.splitext(os.path.basename(pdf_path))[0]
-    out_path = os.path.join(out_dir, f"{stem}.mmd")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(text)
-    return out_path, raw_images
-
-
-@dataclass(frozen=True)
-class ExtractResult:
-    """What came out, and which extractor produced it.
-
-    The second field is the point. `extract()` used to return a bare path on both the
-    Marker path and the pymupdf4llm fallback, so no caller could tell them apart — and
-    since the fallback does not raise, an ingest whose equations had been flattened to
-    Unicode reported "Indexed. N total chunks" like any success. A return type that
-    cannot express degradation guarantees the caller will report success.
-    """
-
-    path: str
-    extractor: str                      # "marker" | "pymupdf4llm"
-    marker_error: str | None = None     # why Marker was skipped, when it was tried and failed
-    images: list[dict] = field(default_factory=list)  # [{"page": int|None, "bytes_b64": str}]
-
-    @property
-    def degraded(self) -> bool:
-        """True when the text contains no LaTeX, whatever the reason.
-
-        `--force-pymupdf` is a deliberate choice rather than a failure, but the chunks
-        are equally unusable for math either way, so it counts as degraded too. Why it
-        happened is `marker_error`'s job, not this flag's.
-        """
-        return self.extractor != "marker"
-
-
-def extract_detailed(
-    pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR
-) -> ExtractResult:
-    """Extract, reporting which extractor won. See `extract()` for the plain-path form.
-
-    Mirrors the retrieve()/retrieve_detailed() split in kbm/retrieval.py: the simple entry
-    point stays simple, and the caller that needs to act on the details asks for them.
+    Also writes `<stem>.images.raw.json` beside the .mmd for ingest.py's figure sidecar.
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    if not force_pymupdf:
-        print(f"[marker] Extracting {os.path.basename(pdf_path)} (LaTeX-faithful; slow on CPU)...")
-        try:
-            out_path, raw_images = extract_marker(pdf_path, out_dir)
-            print(f"Saved to {out_path}")
-            _write_raw_images(out_path, raw_images)
-            return ExtractResult(path=out_path, extractor="marker", images=raw_images)
-        except Exception as e:
-            # pymupdf flattens equations, so this is a degraded result, not an equivalent one.
-            print(f"WARNING: Marker failed ({e}).")
-            print("Falling back to pymupdf4llm — EQUATIONS WILL BE MANGLED. Re-run once Marker works.")
-            marker_error = str(e)
-    else:
-        marker_error = None
-
-    print(f"[pymupdf4llm] Extracting {os.path.basename(pdf_path)}...")
-    out_path, raw_images = extract_pymupdf(pdf_path, out_dir)
-    print(f"Saved to {out_path}")
+    print(f"[marker] Extracting {os.path.basename(pdf_path)} (LaTeX-faithful; slow on CPU)...")
+    try:
+        out_path, raw_images = extract_marker(pdf_path, out_dir)
+    except Exception as e:
+        raise RuntimeError(f"Marker failed: {type(e).__name__}: {e}") from e
     _write_raw_images(out_path, raw_images)
-    return ExtractResult(
-        path=out_path, extractor="pymupdf4llm", marker_error=marker_error, images=raw_images
-    )
-
-
-def extract(pdf_path: str, force_pymupdf: bool = False, out_dir: str = EXTRACTED_DIR) -> str:
-    """Extract and return the .mmd path. Unchanged signature for the CLI and eval scripts."""
-    return extract_detailed(pdf_path, force_pymupdf=force_pymupdf, out_dir=out_dir).path
+    print(f"Saved to {out_path}")
+    return out_path
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract PDF to markdown for RAG ingestion.")
     parser.add_argument("pdf", help="Path to the PDF file")
-    parser.add_argument("--force-pymupdf", action="store_true", help="Skip Marker, use pymupdf4llm directly")
     args = parser.parse_args()
 
     try:
-        result = extract(args.pdf, force_pymupdf=args.force_pymupdf)
+        result = extract(args.pdf)
         print(f"\nDone. Output: {result}")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

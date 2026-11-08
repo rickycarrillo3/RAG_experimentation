@@ -19,7 +19,7 @@ export function buildHistory(turns: Turn[]): Message[] {
 
   for (const turn of turns) {
     if (turn.role === 'user') {
-      pendingUser = { role: 'user', content: turn.clean }
+      pendingUser = { role: 'user', content: turn.clean, type: 'text' }
       continue
     }
     if (turn.failed || !turn.clean.trim()) {
@@ -27,7 +27,7 @@ export function buildHistory(turns: Turn[]): Message[] {
       continue
     }
     if (pendingUser) out.push(pendingUser)
-    out.push({ role: 'assistant', content: turn.clean })
+    out.push({ role: 'assistant', content: turn.clean, type: 'text' })
     pendingUser = null
   }
   return out
