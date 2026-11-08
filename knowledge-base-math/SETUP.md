@@ -30,15 +30,27 @@ docker push ghcr.io/<owner>/kbm-gpu:latest
 docker push ghcr.io/<owner>/kbm-ui:latest
 ```
 
-Then, once, in the RunPod dashboard:
+Then, once, in the RunPod dashboard. **The deployed layout is one GPU pod** (both halves,
+~$20/mo — `Information_files/DEPLOYMENT.md §2`); the split is the planned next step,
+with the UI moving to Azure for Students credit.
+
+**One pod (current):**
 
 1. **Templates → New Template** → container image `ghcr.io/<owner>/kbm-gpu:latest`,
-   expose HTTP port `8000`, volume mount path `/workspace`, and the environment
-   variables from the table at the end of §1. That template is the thing you reuse.
-2. **Templates → New Template** for `kbm-ui`, HTTP port `7860`, no volume, with
-   `KBM_API_URL`, `KBM_API_TOKEN`, `APP_AUTH`, `RUNPOD_API_KEY`, `RUNPOD_POD_ID`.
-3. Deploy a GPU pod from the first template with your network volume attached, and a
-   CPU pod from the second.
+   **no start command**, expose HTTP port **`7860` only** (8000 stays on loopback),
+   volume mount path `/workspace`, and the environment variables from the table at the
+   end of §1. The ones that must not be skipped:
+   - `APP_AUTH` and `KBM_API_TOKEN` — the two locks (`DEPLOYMENT.md §4`).
+   - `KBM_IDLE_STOP_MINUTES` (e.g. `15`) **and** `RUNPOD_API_KEY` + `RUNPOD_POD_ID`.
+     It defaults to `0` = never stop, and without the credentials it only warns. This
+     is the whole budget: a pod that never stops is ~$115/mo.
+2. Deploy a GPU pod from it with your network volume attached. Waking it is manual —
+   the RunPod console or app → Start; the Gradio page sleeps with the pod, so there is
+   nothing to auto-wake from until the UI moves off it.
+
+**Split (later):** the same GPU template with start command `--api-only` and HTTP port
+`8000` instead of `7860`, plus a `kbm-ui` template/host (HTTP `7860`, no volume) with
+`KBM_API_URL`, `KBM_API_TOKEN`, `APP_AUTH`, `RUNPOD_API_KEY`, `RUNPOD_POD_ID`.
 
 Creating a replacement pod after that is: pick the template, attach the volume, start.
 
@@ -203,7 +215,8 @@ So every future session inherits them without re-exporting:
 ## 2. Every session
 
 **From the image (§0) there is no "every session" step** — the entrypoint is
-`startup.sh --api-only` or `--ui-only` and it runs when the container starts. What
+`startup.sh` (plus `--api-only` from the start command on a split GPU host, `--ui-only`
+in the CPU image) and it runs when the container starts. What
 follows is the manual path, and the reference for what those entrypoints do.
 
 ```bash

@@ -107,8 +107,14 @@ ENV WORKSPACE=/workspace \
     API_PORT=8000 \
     REQUIRE_GPU=1
 
-EXPOSE 8000
+EXPOSE 7860 8000
 
 # Ollama's own port is deliberately NOT exposed. It is unauthenticated: a public 11434
 # lets anyone run inference on the GPU you are paying for (Information_files/DEPLOYMENT.md §4).
-ENTRYPOINT ["bash", "startup.sh", "--api-only"]
+#
+# No layout flag here: the default is the single-pod layout (API on loopback + Gradio on
+# 7860), which is what is deployed. For the split, set the RunPod start command to
+# `--api-only` — Docker appends it to this exec-form ENTRYPOINT. Baking `--api-only` in
+# made the single-pod layout unreachable from the image, since a start command can add
+# flags but never remove one.
+ENTRYPOINT ["bash", "startup.sh"]
