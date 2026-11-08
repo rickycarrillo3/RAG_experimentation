@@ -28,8 +28,8 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
                                             ↓
                    api/  ←  hybrid retrieval → RRF → cross-encoder rerank → LLM
                     ↑                                        ↑
-                 app.py                          (agent mode: the model can
-              (HTTP client)                       search again, and run Python)
+               web/ (React)                      (agent mode: the model can
+          served by api/ itself                   search again, and run Python)
 ```
 
 - **Extraction** — Marker (LaTeX-faithful), falling back to pymupdf4llm
@@ -40,7 +40,7 @@ PDF → extract.py → .mmd → ingest.py → BM25 + Chroma (per user)
 - **Tools** — the default generator is tool-capable, so out of the box the model runs
   Python in a sandbox and decides when to search the documents again
   ([`AGENT.md`](knowledge-base-math/Information_files/AGENT.md))
-- **Serving** — `api/` is the deployable unit; `app.py` is an HTTP client of it
+- **Serving** — `api/` is the deployable unit, and it also serves the React UI (`web/dist`)
 - **Isolation** — per-username indexes (a naming convention, **not real auth**), which is
   load-bearing once the model can search: see [`DEPLOYMENT.md §8`](knowledge-base-math/Information_files/DEPLOYMENT.md)
 
@@ -56,13 +56,12 @@ ollama pull t1c/deepseek-math-7b-rl:Q4  # optional: the previous default, no too
 
 python prefetch_models.py              # warm the HF cache (~6GB, one time)
 
-# app.py is a CLIENT of the API, not a standalone app — start the API first,
-# in its own shell, or the UI comes up and cannot answer anything.
-uvicorn api.main:app --port 8000        # shell 1
-python app.py                           # shell 2 → http://localhost:7860
+(cd web && npm ci && npm run build)    # the UI, served by the API from web/dist
+uvicorn api.main:app --port 8000        # → http://localhost:8000
+# or, while editing the UI: `cd web && npm run dev` → http://localhost:5173 (hot reload)
 ```
 
-Agent mode is one variable: `KBM_LLM_MODEL=qwen3:8b`, on both shells.
+If `KBM_API_TOKEN` is set, the UI asks for it once per device as the "family password".
 
 Running on a remote GPU box: see **[`knowledge-base-math/SETUP.md`](knowledge-base-math/SETUP.md)**.
 

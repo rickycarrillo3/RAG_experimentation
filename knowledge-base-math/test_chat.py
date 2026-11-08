@@ -157,7 +157,7 @@ def main():
     print(f"\nLoading embedding model...")
     # Via load_embeddings, not a second HuggingFaceEmbeddings(...) — the smoke test is
     # only worth anything if it exercises the same loader (and so the same device
-    # pinning and LaTeX-normalization behaviour) that app.py and query.py use.
+    # pinning and LaTeX-normalization behaviour) that api/ and query.py use.
     embeddings = load_embeddings(EMBED_MODEL)
 
     answer_chain = None

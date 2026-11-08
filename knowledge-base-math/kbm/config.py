@@ -20,9 +20,6 @@ Env vars
     KBM_IMAGES_DIR    override the figure-sidecar dir     (default: $DATA_DIR/doc_images)
     KBM_VISION_MODEL  the captioner's Ollama tag           (default: qwen2.5vl:7b)
     OLLAMA_BASE_URL   where Ollama is served              (default: http://localhost:11434)
-    APP_HOST          Gradio bind address                 (default: 0.0.0.0)
-    APP_PORT          Gradio port                         (default: 7860)
-    APP_AUTH          "user:pass" pairs, comma-separated  (default: unset = no auth)
     REQUIRE_GPU       1 = refuse to run on CPU            (default: unset = allow CPU)
     KBM_LLM_MODEL     the generator's Ollama tag          (default: qwen3:8b)
     KBM_NUM_PREDICT   decode cap, in tokens               (default: per llm_profiles)
@@ -194,46 +191,6 @@ TELEMETRY_PATH = os.environ.get(
 # the pod; the default makes hashes non-portable between machines, which is fine —
 # they only ever need to be consistent within one deployment.
 TELEMETRY_SALT = os.environ.get("KBM_TELEMETRY_SALT", "kbm-local-dev-salt")
-
-
-# ── Serving ────────────────────────────────────────────────────────────────────
-APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
-APP_PORT = int(os.environ.get("APP_PORT", "7860"))
-
-
-def app_auth() -> list[tuple[str, str]] | None:
-    """Parse APP_AUTH into Gradio's auth format, or None if unset.
-
-    Format: "alice:secret,bob:hunter2". Returned as a list of tuples, which is what
-    `Blocks.launch(auth=...)` expects; None disables the login page entirely.
-
-    This is a front door lock, not real authentication — it gates *access to the app*,
-    but the per-user document isolation behind it is still just a lowercased username
-    string typed into a textbox. Anyone who gets in can read any user's documents by
-    typing their name. Worth knowing before sharing the URL beyond the family.
-    """
-    raw = os.environ.get("APP_AUTH", "").strip()
-    if not raw:
-        return None
-
-    pairs = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if ":" not in entry:
-            raise ValueError(
-                f"APP_AUTH entry {entry!r} is not 'user:pass'. "
-                "Format: APP_AUTH='alice:secret,bob:hunter2'"
-            )
-        user, password = entry.split(":", 1)
-        if not user or not password:
-            raise ValueError(f"APP_AUTH entry {entry!r} has an empty username or password.")
-        pairs.append((user, password))
-
-    if not pairs:
-        return None
-    return pairs
 
 
 # ── Device ─────────────────────────────────────────────────────────────────────

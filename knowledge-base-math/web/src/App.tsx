@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { Chat } from './components/Chat'
-import { health } from './lib/sse'
+import { health, setToken } from './lib/sse'
 import type { Health } from './lib/types'
 
 /**
@@ -11,20 +11,40 @@ import type { Health } from './lib/types'
  */
 const USER_KEY = 'kbm.user'
 
+const storedUser = () => {
+  try {
+    return localStorage.getItem(USER_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 export default function App() {
-  const [user, setUser] = useState(() => localStorage.getItem(USER_KEY) ?? '')
+  const [user, setUser] = useState(storedUser)
   const [draft, setDraft] = useState(user)
-  const [status, setStatus] = useState<Health | null | 'loading'>('loading')
+  const [status, setStatus] = useState<Health | null | 'auth' | 'loading'>('loading')
+  const [password, setPassword] = useState('')
 
   useEffect(() => {
     health().then(setStatus)
   }, [])
 
+  function submitPassword() {
+    setToken(password.trim())
+    setPassword('')
+    setStatus('loading')
+    health().then(setStatus)
+  }
+
   function commitUser(next: string) {
     const clean = next.trim().toLowerCase()
     setUser(clean)
     setDraft(clean)
-    localStorage.setItem(USER_KEY, clean)
+    try {
+      localStorage.setItem(USER_KEY, clean)
+    } catch {
+      /* private window: remembered for this page load only */
+    }
   }
 
   return (
@@ -52,7 +72,32 @@ export default function App() {
         </div>
       </header>
 
-      {user ? (
+      {status === 'auth' ? (
+        // The server has KBM_API_TOKEN set and this device has not sent it (or sent an
+        // old one). Nothing else on the page can work until it does.
+        <form
+          className="mx-auto mt-16 flex w-72 flex-col gap-2 text-sm"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submitPassword()
+          }}
+        >
+          <label htmlFor="pw" className="text-ink-dim">
+            Family password
+          </label>
+          <input
+            id="pw"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 outline-none focus:border-accent"
+          />
+          <button type="submit" disabled={!password.trim()} className="rounded-lg bg-accent px-3 py-1.5 font-semibold text-surface disabled:opacity-40">
+            Continue
+          </button>
+        </form>
+      ) : user ? (
         // Keyed on the user: switching name switches to a different index, and carrying
         // the previous conversation across that boundary would be misleading.
         <Chat key={user} user={user} />
@@ -65,8 +110,9 @@ export default function App() {
   )
 }
 
-function ServerStatus({ status }: { status: Health | null | 'loading' }) {
+function ServerStatus({ status }: { status: Health | null | 'auth' | 'loading' }) {
   if (status === 'loading') return <span className="text-[0.78rem] text-ink-faint">checking…</span>
+  if (status === 'auth') return <span className="text-[0.78rem] text-warn">password needed</span>
   if (status === null) {
     return (
       <span className="text-[0.78rem] text-warn" title="Nothing answered /healthz.">

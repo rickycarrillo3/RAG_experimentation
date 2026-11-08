@@ -24,33 +24,18 @@ cannot come out subtly different from the last one.
 
 ```bash
 # Build and push (from knowledge-base-math/, or let .github/workflows/build.yml do it)
-docker build -f docker/Dockerfile.gpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest .
-docker build -f docker/Dockerfile.cpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-ui:latest  .
-docker push ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest
-docker push ghcr.io/rickycarrillo3/rag_experimentation/kbm-ui:latest
+# The image includes the React UI: a Node build stage writes web/dist into it.
+docker build -f docker/Dockerfile.gpu -t ghcr.io/<owner>/kbm-gpu:latest .
+docker push ghcr.io/<owner>/kbm-gpu:latest
 ```
 
-Then, once, in the RunPod dashboard. **The deployed layout is one GPU pod** (both halves,
-~$20/mo — `Information_files/DEPLOYMENT.md §2`); the split is the planned next step,
-with the UI moving to Azure for Students credit.
+Then, once, in the RunPod dashboard:
 
-**One pod (current):**
-
-1. **Templates → New Template** → container image `ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest`,
-   **no start command**, expose HTTP port **`7860` only** (8000 stays on loopback),
-   volume mount path `/workspace`, and the environment variables from the table at the
-   end of §1. The ones that must not be skipped:
-   - `APP_AUTH` and `KBM_API_TOKEN` — the two locks (`DEPLOYMENT.md §4`).
-   - `KBM_IDLE_STOP_MINUTES` (e.g. `15`) **and** `RUNPOD_API_KEY` + `RUNPOD_POD_ID`.
-     It defaults to `0` = never stop, and without the credentials it only warns. This
-     is the whole budget: a pod that never stops is ~$115/mo.
-2. Deploy a GPU pod from it with your network volume attached. Waking it is manual —
-   the RunPod console or app → Start; the Gradio page sleeps with the pod, so there is
-   nothing to auto-wake from until the UI moves off it.
-
-**Split (later):** the same GPU template with start command `--api-only` and HTTP port
-`8000` instead of `7860`, plus a `kbm-ui` template/host (HTTP `7860`, no volume) with
-`KBM_API_URL`, `KBM_API_TOKEN`, `APP_AUTH`, `RUNPOD_API_KEY`, `RUNPOD_POD_ID`.
+1. **Templates → New Template** → container image `ghcr.io/<owner>/kbm-gpu:latest`,
+   expose HTTP port `8000`, volume mount path `/workspace`, and the environment
+   variables from the table at the end of §1. That template is the thing you reuse.
+2. Deploy a GPU pod from it with your network volume attached. Port 8000 serves both
+   the web UI (at `/`) and the API.
 
 Creating a replacement pod after that is: pick the template, attach the volume, start.
 
@@ -68,7 +53,7 @@ After the image, that splits cleanly in two:
 
 | On the volume | If you land somewhere new |
 |---|---|
-| Ollama weights (~5GB), HF models (~6GB) | re-downloaded **automatically** by `startup.sh` stages 3–4 — bandwidth, not decisions |
+| Ollama weights (~5GB), HF models (~6GB) | re-downloaded **automatically** by `startup.sh` stages 2–3 — bandwidth, not decisions |
 | `chroma_db/` + `bm25_indexes/` | **the only irreplaceable thing** — restore from `ops/backup_indexes.py`, which is why it exists |
 
 So a migration becomes: launch the template in the new region, restore one archive, wait
@@ -205,7 +190,7 @@ So every future session inherits them without re-exporting:
 | `OLLAMA_MODELS` | `/workspace/ollama-models` | else a ~5GB re-pull every restart |
 | `HF_HOME` | `/workspace/.cache/huggingface` | else a ~6GB re-download every restart |
 | `DATA_DIR` | `/workspace/kb-data` | **else every uploaded document is lost on restart** |
-| `APP_AUTH` | `alice:somepassword,bob:another` | else the pod URL is open to anyone who has it |
+| `KBM_API_TOKEN` | a long random string | **the family password** — the web UI asks for it once per device. Unset, the pod URL is open to anyone who has it |
 | `REQUIRE_GPU` | `1` | turns a silent CPU fallback into a startup error |
 | `KBM_LLM_MODEL` | *(optional)* `t1c/deepseek-math-7b-rl:Q4` | the generator to pull **and** serve; leave unset for the repo default, `qwen3:8b`. Set it only to run a different arm. This is the only channel `startup.sh` has for model selection |
 | `KBM_TOOLS` | *(optional)* `1` / `0` | force native tool calling on or off, overriding the model's profile. Takes precedence over `KBM_TIR` |
@@ -215,8 +200,7 @@ So every future session inherits them without re-exporting:
 ## 2. Every session
 
 **From the image (§0) there is no "every session" step** — the entrypoint is
-`startup.sh` (plus `--api-only` from the start command on a split GPU host, `--ui-only`
-in the CPU image) and it runs when the container starts. What
+`startup.sh` and it runs when the container starts. What
 follows is the manual path, and the reference for what those entrypoints do.
 
 ```bash
@@ -225,34 +209,26 @@ bash startup.sh                             # default generator (qwen3:8b, agent
 KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh   # the previous default, no tools
 ```
 
-One script, three layouts. The flags select which halves of the app this box is
-responsible for; passing neither is the original single-pod behaviour:
+**On the manual path, build the UI once** — the pod has no Node by default, and without
+`web/dist` uvicorn serves the API alone (`startup.sh` warns). Either install Node on the
+pod, or build on your laptop and copy the folder over:
 
 ```bash
-bash startup.sh              # both — API on :8000 (loopback) + Gradio on :7860
-bash startup.sh --api-only   # GPU host: Ollama + uvicorn. No Gradio.
-KBM_API_URL=https://<gpu-host>:8000 \
-  bash startup.sh --ui-only  # UI host: Gradio only. No GPU, Ollama or prefetch.
+(cd web && npm ci && npm run build)    # writes web/dist/
 ```
 
-`--ui-only` **refuses to start** if `KBM_API_URL` is still the loopback default: on a
-host with no API behind it, every action would otherwise fail as a bare connection error
-with nothing naming the cause.
-
-You do **not** need to `ollama pull` first — stage 3 pulls whatever `KBM_LLM_MODEL` names.
+You do **not** need to `ollama pull` first — stage 2 pulls whatever `KBM_LLM_MODEL` names.
 And if a bare `ollama …` gives you `command not found`, the `~/.bashrc` line from §1 is
 missing on this pod; `startup.sh` itself is unaffected either way. **From the image that
 cannot happen** — `docker/Dockerfile.gpu` installs Ollama to `/usr/local/bin`, which is
 correct there precisely because the container filesystem is the artifact and comes back
 on every start.
 
-`startup.sh` starts Ollama (if not already up), then the **API** on port 8000 and the
-Gradio client on 7860. Open the public URL in your browser:
-- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `7860`
+`startup.sh` starts Ollama (if not already up), then uvicorn on port 8000, serving the
+web UI and the API together. Open the public URL in your browser:
+- RunPod dashboard → your pod → **Connect** → **HTTP Service** → port `8000`
 
-**Expose HTTP port `7860` only.** The Gradio client reaches the API over loopback inside
-the container, so 8000 never needs to be public — and 11434 (Ollama, unauthenticated)
-must never be. To poke the API, SSH in and use `localhost:8000`. `/docs` is *off*
+**Expose HTTP port `8000` only.** 11434 (Ollama, unauthenticated) must never be public. `/docs` is *off*
 whenever `KBM_API_TOKEN` is set — those routes sit outside the token — so add
 `KBM_ENABLE_DOCS=1` if you need them, and only over the SSH tunnel. Full reasoning in
 `Information_files/DEPLOYMENT.md §4`.
@@ -265,7 +241,7 @@ if you see that on a fresh clone, check the install before you blame the pod.
 To run it automatically on every pod start, set RunPod's **Container Start Command** —
 see `Information_files/DEPLOYMENT.md §5`.
 
-> **Set `KBM_API_TOKEN` before exposing either port.** Without it the API is open and the
+> **Set `KBM_API_TOKEN` before exposing the port.** Without it the API is open and the
 > per-username "isolation" is just a guessable string — anyone who finds the host reads
 > every uploaded document. See `Information_files/DEPLOYMENT.md §4`.
 
@@ -284,14 +260,14 @@ nothing changes until you set one.
 | `DATA_DIR` | `.` | base dir for `chroma_db/` and `bm25_indexes/` |
 | `CHROMA_DIR` / `BM25_DIR` | `$DATA_DIR/...` | override either index path outright |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | point the app at an Ollama on another host |
-| `APP_HOST` / `APP_PORT` | `0.0.0.0` / `7860` | bind address and port |
-| `APP_AUTH` | unset (no login) | `user:pass` pairs, comma-separated |
+| `API_PORT` | `8000` | the one port: web UI + API |
 | `REQUIRE_GPU` | unset | `1` = refuse to start without CUDA |
 | `KBM_LLM_MODEL` | `qwen3:8b` (from `kbm/config.py`) | which generator to pull and serve. Naming a model also configures it — window, decode budget and tool capability come from `kbm/llm_profiles.py`. `startup.sh` reads the default out of `config.py` rather than repeating the tag, so the pod cannot serve a model the repo no longer defaults to |
 | `KBM_TOOLS` | from the model's profile | `1`/`0` forces native tool calling (`search_documents`, `run_python`, `list_documents`). Wins over `KBM_TIR` |
 | `KBM_TIR` | from the model's profile | `1`/`0` forces the ` ```python ` text protocol. Forced off whenever tools are on |
 | `KBM_NUM_CTX` / `KBM_NUM_PREDICT` | from the model's profile | window and decode cap; override only to test |
-| `KBM_API_TOKEN` | unset (**API is open**) | bearer token for `api/`. Different lock from `APP_AUTH` — see `Information_files/DEPLOYMENT.md §4` |
+| `KBM_API_TOKEN` | unset (**app is open**) | bearer token for `api/`, typed into the web UI as the "family password" — see `Information_files/DEPLOYMENT.md §4` |
+| `KBM_SHOW_DIAGNOSTICS` | unset | `1` = upload errors show their technical cause in the web UI |
 
 **Agent mode is the default.** The default generator has a tools template, so `bash
 startup.sh` already gives you the arm where the model searches the documents and runs
@@ -301,15 +277,15 @@ Python. To get back to a generator with no tool protocol:
 KBM_LLM_MODEL=t1c/deepseek-math-7b-rl:Q4 bash startup.sh
 ```
 
-Stage 5 prints which protocol actually came up (`native tool calling`, `tool-integrated
+Stage 4 prints which protocol actually came up (`native tool calling`, `tool-integrated
 reasoning`, or `no tool protocol`) — if you asked for one and see "no tool protocol", the
 model was not pulled or has no tools template, and the log above says which.
 `Information_files/DEPLOYMENT.md §3` is the full variable list.
 
-**On `APP_AUTH`:** it is a front door lock, not real authentication. It controls *access to
-the app*. Behind it, users are still just lowercased strings typed into a textbox — anyone
-who logs in can read any user's documents by typing their name. Fine for family; not fine
-for a link shared more widely.
+**On the family password:** it is one shared front-door lock, not real authentication.
+Behind it, users are still just lowercased strings typed into a textbox — anyone who has
+the password can read any user's documents by typing their name. Fine for family; not
+fine for a link shared more widely.
 
 ---
 
@@ -408,16 +384,6 @@ pull never touches them.
 
 ## 7. Syncing an existing local venv
 
-**`requirements.txt` pins `gradio==6.17.3`, and `app.py` targets Gradio 6.** That pin is
-the contract: a venv on 5.x will fail on Gradio-6 API changes, and vice versa. The two
-that bite are `theme` (moved from `Blocks` to `launch()` in 6.0) and `Chatbot`'s `type`
-argument (removed — messages is now the only format).
-
-This mattered because the Mac and the pod drifted apart: the Mac had 5.x while the pod
-installed the pin, so `app.py` could only work on one of them at a time. If you
-hit a `TypeError` on a `Chatbot` or `Blocks` argument, sync the environment rather than
-editing the code:
-
 ```bash
 cd knowledge-base-math
 source venv/bin/activate
@@ -425,17 +391,10 @@ pip install -r requirements.txt
 pip check          # should print "No broken requirements found."
 ```
 
-**Why 6.17.3 and not something newer.** Gradio raised its `huggingface-hub` floor to
-`>=1.2.0` in **6.18.0**, and `marker-pdf<2.0` caps `transformers<5.0.0`, which in turn caps
-`huggingface-hub<1.0`. Those cannot both hold, so 6.18.0 makes the install unresolvable —
-see the comment block in `requirements.txt` and the Information_files/ERRORS.md entry. 6.17.3 is the newest
-release still accepting `hub>=0.33.5`, and it is still Gradio 6, so the API changes above
-are unaffected.
-
-`pip check` is worth running once after installing; it should print "No broken
-requirements found." An install that reports a `huggingface-hub` version outside a
-package's declared range is inconsistent in a way pip's resolver would never produce from
-scratch, which is exactly what pinning is meant to prevent.
+An install that reports a package version outside another's declared range is
+inconsistent in a way pip's resolver would never produce from scratch, which is exactly
+what pinning is meant to prevent. (Gradio is no longer a dependency; `pip uninstall
+gradio` in an old venv is optional and harmless.)
 
 ---
 
@@ -475,15 +434,14 @@ were written to the container filesystem instead of `/workspace`. Set it in the 
 env vars (§1) and re-ingest.
 
 **Nothing appears in the log file** — `startup.sh` exports `PYTHONUNBUFFERED=1` for exactly
-this reason; if you launch `python app.py` directly and redirect output, add it yourself or
+this reason; if you launch uvicorn directly and redirect output, add it yourself or
 Python buffers the diagnostics until the process exits.
 
-**Can't reach the app** — `APP_HOST` must stay `0.0.0.0` for RunPod's HTTP proxy to reach
-it; `127.0.0.1` will bind successfully and be unreachable from outside.
+**Can't reach the app** — uvicorn must bind `0.0.0.0` (`startup.sh` does) for RunPod's
+HTTP proxy to reach it; `127.0.0.1` binds successfully and is unreachable from outside.
 
-**`Chatbot.__init__() got an unexpected keyword argument 'type'`** — the environment is on
-gradio **5.x** while the code targets the pinned 6.17.3. `pip install -r requirements.txt`.
-A `UserWarning` about `theme` moving to `launch()` just above it is the same mismatch. See §7.
+**The page asks for a password** — that is `KBM_API_TOKEN`. It is stored per browser; a
+wrong one shows the form again.
 
 **`ValueError: ... 'hf_transfer' package is not available`** during `prefetch_models.py`
 (usually followed by the reranker failing with "Can't load the configuration of
@@ -494,5 +452,5 @@ hf_transfer` in the venv (it is in `requirements.txt`, so `pip install -r
 requirements.txt` also fixes it) and re-run. See `Information_files/ERRORS.md 2026-08-19`.
 
 **`ResolutionImpossible` when installing** — something has been added or bumped that
-re-opens the gradio/`marker-pdf` conflict. Check the constraint chain in the
+re-opens a dependency conflict (historically gradio vs `marker-pdf`). Check the constraint chain in the
 `requirements.txt` header before loosening a pin to make the error go away.

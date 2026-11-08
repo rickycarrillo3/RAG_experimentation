@@ -1,7 +1,7 @@
 """
 query.py - CLI for the math RAG system.
 
-Retrieval lives in kbm/retrieval.py (shared with app.py and eval.py); this file is the
+Retrieval lives in kbm/retrieval.py (shared with api/ and eval.py); this file is the
 interactive shell around it plus DeepSeek-Math generation.
 
 Usage:

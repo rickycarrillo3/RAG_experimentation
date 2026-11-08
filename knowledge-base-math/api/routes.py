@@ -54,6 +54,7 @@ from .settings import (
     MEMORY_TOKENS,
     QUERY_REWRITE,
     RELEVANCE_FLOOR,
+    SHOW_DIAGNOSTICS,
     SANDBOX_TIMEOUT_S,
     SHOW_TOOL_CODE,
     TIR_ENABLED,
@@ -981,7 +982,7 @@ async def get_job(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown job id.")
-    return job
+    return job if SHOW_DIAGNOSTICS else job.model_copy(update={"diagnostic": None})
 
 
 # ── Users, feedback, health ───────────────────────────────────────────────────

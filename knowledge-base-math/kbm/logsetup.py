@@ -1,21 +1,17 @@
 """
 kbm/logsetup.py - The one place logging is configured.
 
-There were two configurations before this, and they disagreed. api/main.py set a level
-from KBM_LOG_LEVEL with a "%(levelname)s:     %(name)s - %(message)s" format; app.py set
-a hardcoded INFO with a "[app] %(message)s" format, and only under `if __name__ ==
-"__main__"`, so an imported app.py had no configuration at all. Two spellings of one
+There were two configurations before this (api/main.py and the since-removed Gradio
+app.py), and they disagreed on level and format. Two spellings of one
 decision is the same trap CLAUDE.md records for CHROMA_DIR and for the decode budget:
 the reader and the writer drift, and raising the level in one place silently leaves the
 other alone.
 
 This lives in kbm/ rather than api/ for exactly the reason TELEMETRY_PATH does — see the
-comment in kbm/config.py: app.py and ops/ need it, and kbm/ must not import from api/.
+comment in kbm/config.py: ops/ needs it, and kbm/ must not import from api/.
 
-It also imports nothing from this repo, not even kbm.config. That is deliberate: the
-CPU/UI image (docker/Dockerfile.cpu) copies an explicit, short file list and carries no
-torch and no pipeline, so anything this module reached for would have to be copied in
-beside it.
+It also imports nothing from this repo, not even kbm.config, so any small host that
+copies a short file list (as the old CPU/UI image did) can carry it alone.
 
 Env vars
 --------
