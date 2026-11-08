@@ -1,8 +1,8 @@
 # Pinned <2.0 deliberately. marker-pdf 2.0.0 (2026-07-20) stopped running Surya
 # in-process: it now spawns an inference server on first use — vLLM **in Docker** on
 # NVIDIA GPUs. A RunPod pod is itself a container with no Docker daemon, so every
-# extraction dies with "docker binary not found" and falls back to pymupdf4llm, which
-# produces NO LaTeX (CLAUDE.md). It surfaces only on the first upload: prefetch's
+# extraction dies with "docker binary not found" (and, with no fallback extractor, every
+# upload fails). It surfaces only on the first upload: prefetch's
 # create_model_dict() succeeds because the Docker spawn happens at conversion time,
 # not at model load. See Information_files/ERRORS.md.
 marker-pdf<2.0
@@ -13,7 +13,6 @@ marker-pdf<2.0
 # "surya-ocr ... has requirement pillow<11.0.0 ... but you have pillow 12.3.0". Pin to
 # marker-pdf/surya-ocr's own ceiling so the resolver can't wander past it.
 pillow<11.0.0
-pymupdf4llm
 langchain-core
 langchain-community
 langchain-text-splitters

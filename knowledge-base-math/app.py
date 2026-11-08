@@ -226,11 +226,8 @@ def handle_upload(pdf_file, username: str, last_ingested):
 
                 if status == "done":
                     # `detail` is the user-facing sentence and `diagnostic` is the
-                    # technical cause; only the first belongs on screen. A Marker failure
-                    # still lands here — the pymupdf4llm fallback indexes fine, it just
-                    # produces no LaTeX — so the warning prefix is what distinguishes it.
-                    prefix = "⚠️ " if job.get("degraded") else "✅ "
-                    yield prefix + job["detail"] + _diagnostic(job), pdf_file.name, gr.update()
+                    # technical cause; only the first belongs on screen.
+                    yield "✅ " + job["detail"] + _diagnostic(job), pdf_file.name, gr.update()
                     return
                 if status == "failed":
                     yield (

@@ -33,7 +33,7 @@ class MessageType(str, Enum):
     """What kind of turn this is, for history that is no longer text-only.
 
     Defaults to TEXT so every existing client/request body keeps working byte-for-byte
-    (same additive-field discipline as Job.degraded/Job.extractor). IMAGE marks a turn
+    (an optional field is ignored by clients that predate it; a new enum member is not). IMAGE marks a turn
     whose `content` is a caption the server produced for a chat-uploaded photo — see
     Information_files/IMAGE_DESIGN.md and api/chat.py's is_image_turns/
     most_recent_image/resolve_image_reference, which filter history to this type.
@@ -236,20 +236,6 @@ class Job(BaseModel):
     user: str
     detail: str = ""
     n_chunks: int | None = None
-    # Added rather than encoded as a new JobStatus member on purpose: adding an enum
-    # variant breaks an exhaustive switch in the generated TS client, while an optional
-    # field is ignored by clients that predate it. A half-good ingest is `status=done`
-    # plus `degraded=true`, never a fifth status.
-    extractor: str | None = Field(
-        None,
-        description="Which extractor produced the text: 'marker' (LaTeX-faithful) or "
-                    "'pymupdf4llm' (equations flattened to Unicode)",
-    )
-    degraded: bool = Field(
-        False,
-        description="Indexed, but at lower fidelity than intended — currently means Marker "
-                    "failed and pymupdf4llm was used, so the chunks contain no LaTeX",
-    )
     stage: str | None = Field(
         None, description="Pipeline stage in progress, or the stage that failed: extract | chunk | index | backup"
     )

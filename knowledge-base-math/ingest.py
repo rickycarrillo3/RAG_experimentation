@@ -144,7 +144,7 @@ def build_image_sidecar(
     the same string chunking.assign_chunk_ids uses for `source`.
     mmd_path: path to the .mmd this document was ingested from, used to find the raw
     image bytes extract.py wrote alongside it (<stem>.images.raw.json) — ingest.py never
-    re-runs Marker/pymupdf4llm just to get images back.
+    re-runs Marker just to get images back.
     doc_chunks: this document's own chunks (already id-stamped), used to resolve
     nearby_chunk_id by nearest same-or-preceding page.
 
