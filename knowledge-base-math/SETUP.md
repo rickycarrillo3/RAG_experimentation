@@ -24,10 +24,10 @@ cannot come out subtly different from the last one.
 
 ```bash
 # Build and push (from knowledge-base-math/, or let .github/workflows/build.yml do it)
-docker build -f docker/Dockerfile.gpu -t ghcr.io/<owner>/kbm-gpu:latest .
-docker build -f docker/Dockerfile.cpu -t ghcr.io/<owner>/kbm-ui:latest  .
-docker push ghcr.io/<owner>/kbm-gpu:latest
-docker push ghcr.io/<owner>/kbm-ui:latest
+docker build -f docker/Dockerfile.gpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest .
+docker build -f docker/Dockerfile.cpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-ui:latest  .
+docker push ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest
+docker push ghcr.io/rickycarrillo3/rag_experimentation/kbm-ui:latest
 ```
 
 Then, once, in the RunPod dashboard. **The deployed layout is one GPU pod** (both halves,
@@ -36,7 +36,7 @@ with the UI moving to Azure for Students credit.
 
 **One pod (current):**
 
-1. **Templates → New Template** → container image `ghcr.io/<owner>/kbm-gpu:latest`,
+1. **Templates → New Template** → container image `ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest`,
    **no start command**, expose HTTP port **`7860` only** (8000 stays on loopback),
    volume mount path `/workspace`, and the environment variables from the table at the
    end of §1. The ones that must not be skipped:
