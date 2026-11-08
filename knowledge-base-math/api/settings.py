@@ -33,6 +33,12 @@ from kbm.config import (  # noqa: F401  (re-exported for callers)
 # "private URL" and "readable by anything that finds the host".
 API_TOKEN = os.environ.get("KBM_API_TOKEN", "").strip()
 
+# The operator's token for the monitoring page (/monitor/ and GET /telemetry/events),
+# sent as `X-Admin-Token`. Separate from the family password on purpose: telemetry rows
+# carry EVERY family member's questions, and the family password is shared by all of
+# them. Unset with KBM_API_TOKEN set = monitoring is off; both unset = a laptop, open.
+ADMIN_TOKEN = os.environ.get("KBM_ADMIN_TOKEN", "").strip()
+
 # Whether to serve the interactive OpenAPI docs (/docs, /redoc, /openapi.json).
 #
 # Those routes are mounted by FastAPI on the *app*, while require_token is a dependency of

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { apiFetch } from '../lib/sse'
-
 /**
  * Operator dashboard over kbm/telemetry.py's JSONL log (GET /telemetry/events).
+ *
+ * Its own page (/monitor/, entry web/monitor/index.html) and its own credential (the
+ * admin token, sent as X-Admin-Token): nothing here imports from the family app, and the
+ * family app links to none of it.
  *
  * Rows are raw dicts, not generated types: the log is append-only and older rows lack
  * newer fields (`passes`, `tokens`, `at_ms`), so every field here is optional and a
@@ -71,7 +73,7 @@ const FLOOR = 0.15 // KBM_RELEVANCE_FLOOR default; see api/settings.py
 
 const RETRIEVAL_STAGES = ['bm25_ms', 'dense_ms', 'rrf_ms', 'rerank_ms'] as const
 
-export function Dashboard() {
+export function Dashboard({ token, onAuthFail }: { token: string; onAuthFail: (why: string) => void }) {
   const [rows, setRows] = useState<QueryRow[]>([])
   const [ratings, setRatings] = useState<Record<string, 'up' | 'down'>>({})
   const [err, setErr] = useState<string | null>(null)
@@ -81,7 +83,14 @@ export function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const res = await apiFetch('/telemetry/events?limit=2000')
+      const res = await fetch('/api/telemetry/events?limit=2000', {
+        headers: token ? { 'x-admin-token': token } : {},
+      })
+      if (res.status === 401 || res.status === 403) {
+        const body = await res.json().catch(() => ({}))
+        onAuthFail(body.detail ?? `API returned ${res.status}`)
+        return
+      }
       if (!res.ok) throw new Error(`API returned ${res.status}`)
       const events: (QueryRow | FeedbackRow)[] = await res.json()
       const r: Record<string, 'up' | 'down'> = {}
@@ -93,7 +102,7 @@ export function Dashboard() {
     } catch (e) {
       setErr(String(e))
     }
-  }, [])
+  }, [token, onAuthFail])
 
   useEffect(() => {
     load()

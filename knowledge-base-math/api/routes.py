@@ -31,7 +31,7 @@ from ops.backup_indexes import backup_indexes
 from ops.backup_indexes import enabled as backup_enabled
 
 from . import chat as chatmod
-from .deps import has_index, index_summary, models, normalize_user, require_token
+from .deps import has_index, index_summary, models, normalize_user, require_admin, require_token
 from .schemas import (
     ChatEvent,
     ChatRequest,
@@ -63,6 +63,10 @@ from .settings import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_token)])
+# The operator's routes: the admin token only, NOT the family password (see
+# settings.ADMIN_TOKEN). Kept out of the schema, so the family app's generated types
+# never mention them.
+admin_router = APIRouter(dependencies=[Depends(require_admin)], include_in_schema=False)
 
 # Ingest is GPU-heavy (Marker/Surya) and must not run concurrently with itself, or two
 # uploads will fight over VRAM that the generator and reranker are already holding —
@@ -1057,11 +1061,11 @@ async def feedback(fb: Feedback):
     telemetry.log_feedback(fb.event_id, fb.rating, fb.note)
 
 
-@router.get("/telemetry/events")
+@admin_router.get("/telemetry/events")
 async def telemetry_events(limit: int = 500):
-    """The last `limit` telemetry rows, raw, for the observability dashboard (web/#/dashboard).
+    """The last `limit` telemetry rows, raw, for the monitoring page (web/monitor/).
 
-    Behind require_token like every route on this router: the rows carry the family's
+    Behind require_admin, not the family password: the rows carry every family member's
     questions. Raw dicts rather than a schema, so rows from before a field existed still
     pass through untouched.
     """

@@ -1,5 +1,6 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 
 // The API host. Read from the real environment, NOT from a VITE_-prefixed variable:
@@ -10,6 +11,16 @@ const API_TOKEN = process.env.KBM_API_TOKEN ?? ''
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Two pages, two bundles: the family app at / and the operator's monitoring page at
+  // /monitor/. Neither imports the other, so the family bundle carries no dashboard code.
+  build: {
+    rolldownOptions: {
+      input: {
+        main: fileURLToPath(new URL('index.html', import.meta.url)),
+        monitor: fileURLToPath(new URL('monitor/index.html', import.meta.url)),
+      },
+    },
+  },
   server: {
     proxy: {
       // The browser talks to one origin, so CORS never applies in development and the

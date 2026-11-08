@@ -22,6 +22,7 @@ from kbm.retrieval import BM25_DIR, OLLAMA_MODEL, load_embeddings, load_reranker
 from kbm.tools import agent
 
 from .settings import (
+    ADMIN_TOKEN,
     API_TOKEN,
     KEEP_ALIVE,
     NUM_CTX,
@@ -281,3 +282,20 @@ async def require_token(authorization: str = Header(default="")) -> None:
             "Invalid or missing bearer token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+async def require_admin(x_admin_token: str = Header(default="")) -> None:
+    """Operator gate for the monitoring routes. See settings.ADMIN_TOKEN.
+
+    Its own header rather than `Authorization`, so it never collides with the family
+    bearer token (which the Vite dev proxy injects into every /api request).
+    """
+    if not ADMIN_TOKEN:
+        if API_TOKEN:
+            # A deployed pod that never set an admin token: monitoring stays off rather
+            # than silently falling back to the family password.
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "Monitoring is disabled: set KBM_ADMIN_TOKEN on the server.")
+        return
+    if not hmac.compare_digest(x_admin_token.encode("utf-8"), ADMIN_TOKEN.encode("utf-8")):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing admin token.")

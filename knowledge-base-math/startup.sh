@@ -23,6 +23,8 @@
 #     KBM_TIR         1/0 force the ```python text protocol; KBM_TOOLS wins over it
 #     KBM_API_TOKEN   the family password: bearer token for the API, typed once per
 #                     device in the web UI (leave unset and the app is OPEN)
+#     KBM_ADMIN_TOKEN the operator's token for the monitoring page at /monitor/ (separate
+#                     from the family password; unset on a pod = monitoring is off)
 #
 # Agent mode (the model searches your documents and runs Python itself) needs a generator
 # with a tools template, and the default qwen3:8b has one — so agent mode is now ON by

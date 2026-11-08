@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from kbm.logsetup import configure_logging
 
 from .deps import models
-from .routes import router
+from .routes import admin_router, router
 from .settings import API_TOKEN, CORS_ORIGINS, DATA_DIR, ENABLE_DOCS, IDLE_STOP_MINUTES
 
 # Give the application's loggers a handler and a level, before anything else runs. The
@@ -82,6 +82,8 @@ app.add_middleware(
 # TS types are generated once, not twice.
 app.include_router(router)
 app.include_router(router, prefix="/api", include_in_schema=False)
+app.include_router(admin_router)
+app.include_router(admin_router, prefix="/api")
 
 # The React build (web/dist, from `npm run build` or docker/Dockerfile.gpu), served by
 # this process so one pod and one port is the whole deployment. Mounted LAST: a mount at
