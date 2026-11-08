@@ -81,7 +81,7 @@ def prefetch_marker() -> list[str]:
         return []
     except Exception as e:
         print(f"    FAILED: {type(e).__name__}: {e}")
-        print("    PDF upload will fall back to pymupdf4llm, which mangles equations.")
+        print("    PDF upload will fail until Marker loads (there is no fallback extractor).")
         return ["marker/surya"]
 
 

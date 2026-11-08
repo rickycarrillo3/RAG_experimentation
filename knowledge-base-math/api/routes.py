@@ -885,7 +885,7 @@ def _mark_crashed(job_id: str, fut: Future) -> None:
 
 def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
     """The same sequence app.py's handle_upload ran, moved off the request thread."""
-    from extract import extract_detailed
+    from extract import extract
     from ingest import build_bm25, build_chroma, build_image_sidecar, load_mmd_files, load_vision_llm, merge_chunks
     from kbm.chunking import split_baseline
 
@@ -905,18 +905,16 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         #   - EVALUATION.md's "freeze the .mmd" rule is about the repo-relative eval
         #     corpus built by the extract.py CLI, which this does not touch.
         job.stage = "extract"
-        result = extract_detailed(pdf_path, out_dir=tmp_dir)
-        job.extractor = result.extractor
-        job.degraded = result.degraded
+        mmd_path = extract(pdf_path, out_dir=tmp_dir)  # raises if Marker fails — no fallback
 
         job.stage = "chunk"
-        docs = load_mmd_files([result.path])
+        docs = load_mmd_files([mmd_path])
         # TextLoader stamps the full path as `source`, which is now a temp dir that will
         # not exist by the time anyone reads the index. Chunk ids are basename-derived
         # (chunking.assign_chunk_ids), so this is id-neutral — it just stops the stored
         # metadata naming a file that never existed on the volume.
         for d in docs:
-            d.metadata["source"] = os.path.basename(result.path)
+            d.metadata["source"] = os.path.basename(mmd_path)
         chunks = split_baseline(docs)
         doc_chunks = chunks  # this document's own chunks, before the merge below
 
@@ -939,9 +937,9 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         # effort — a captioning failure must not fail an ingest that already took
         # minutes of Marker OCR.
         try:
-            doc_source = os.path.basename(result.path)
+            doc_source = os.path.basename(mmd_path)
             vision_llm = load_vision_llm()
-            build_image_sidecar(doc_source, result.path, doc_chunks, vision_llm)
+            build_image_sidecar(doc_source, mmd_path, doc_chunks, vision_llm)
         except Exception as e:  # noqa: BLE001 - figures are best-effort, see above
             log.warning("ingest job %s: figure captioning skipped: %s", job_id, e)
 
@@ -965,24 +963,7 @@ def _run_ingest(job_id: str, pdf_path: str, tmp_dir: str, user: str) -> None:
         job.n_chunks = len(chunks)
         n = len(chunks)
         counted = f"{n} section{'' if n == 1 else 's'} indexed"
-        # `detail` is read by a family member, `diagnostic` by whoever runs the pod. The
-        # two used to be one string, so a Marker failure put a raw exception — install
-        # URLs and all — into the box that says the upload worked. Say what it means for
-        # them here; put the cause where it is useful, in the log and in `diagnostic`.
-        if result.degraded:
-            job.detail = (
-                f"Added {job.filename}, but without proper equation formatting — "
-                f"maths questions about it may not find the right sections. Worth "
-                f"uploading again once that is fixed. {counted}."
-            )
-            job.diagnostic = (
-                f"Marker unavailable, fell back to pymupdf4llm: {result.marker_error}"
-                if result.marker_error
-                else "pymupdf4llm was requested explicitly (--force-pymupdf)"
-            )
-            log.warning("ingest job %s degraded: %s", job_id, job.diagnostic)
-        else:
-            job.detail = f"Added {job.filename} — {counted} and ready to search."
+        job.detail = f"Added {job.filename} — {counted} and ready to search."
     except Exception as e:  # noqa: BLE001 - reported through the job record
         # A bare str(e) was all this used to record: no indication of which stage raised
         # it, and no traceback anywhere. Log both.

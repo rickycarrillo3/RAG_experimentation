@@ -19,7 +19,7 @@ export interface paths {
          *
          *     Sources are emitted *before* generation starts, not bundled into the final payload,
          *     so the UI can show what it found during the seconds the model spends decoding —
-         *     generation is ~95% of query time (LATENCY.md), and that window is otherwise dead.
+         *     generation is ~95% of query time (Information_files/LATENCY.md), and that window is otherwise dead.
          */
         post: operations["chat_chat_post"];
         delete?: never;
@@ -156,6 +156,11 @@ export interface components {
             message: string;
             /** History */
             history?: components["schemas"]["Message"][];
+            /**
+             * Image B64
+             * @description Base64-encoded image attached to THIS turn, if any. Captioned once and discarded — no bytes are retained anywhere, not even a temp file (Information_files/IMAGE_DESIGN.md). An optional field rather than switching /chat to multipart, so every text-only client is unaffected.
+             */
+            image_b64?: string | null;
         };
         /** DoneEvent */
         DoneEvent: {
@@ -300,17 +305,6 @@ export interface components {
             /** N Chunks */
             n_chunks?: number | null;
             /**
-             * Extractor
-             * @description Which extractor produced the text: 'marker' (LaTeX-faithful) or 'pymupdf4llm' (equations flattened to Unicode)
-             */
-            extractor?: string | null;
-            /**
-             * Degraded
-             * @description Indexed, but at lower fidelity than intended — currently means Marker failed and pymupdf4llm was used, so the chunks contain no LaTeX
-             * @default false
-             */
-            degraded: boolean;
-            /**
              * Stage
              * @description Pipeline stage in progress, or the stage that failed: extract | chunk | index | backup
              */
@@ -331,7 +325,21 @@ export interface components {
             role: components["schemas"]["Role"];
             /** Content */
             content: string;
+            /** @default text */
+            type: components["schemas"]["MessageType"];
         };
+        /**
+         * MessageType
+         * @description What kind of turn this is, for history that is no longer text-only.
+         *
+         *     Defaults to TEXT so every existing client/request body keeps working byte-for-byte
+         *     (an optional field is ignored by clients that predate it; a new enum member is not). IMAGE marks a turn
+         *     whose `content` is a caption the server produced for a chat-uploaded photo — see
+         *     Information_files/IMAGE_DESIGN.md and api/chat.py's is_image_turns/
+         *     most_recent_image/resolve_image_reference, which filter history to this type.
+         * @enum {string}
+         */
+        MessageType: "text" | "image";
         /**
          * Mode
          * @description Where an answer's content came from.
