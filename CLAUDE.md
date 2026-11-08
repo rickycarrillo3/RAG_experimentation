@@ -110,8 +110,8 @@ which half. See `SETUP.md §0` and `Information_files/DEPLOYMENT.md §1`.
 
 ```bash
 # Build (from knowledge-base-math/). CI does this too — .github/workflows/build.yml
-docker build -f docker/Dockerfile.gpu -t ghcr.io/<owner>/kbm-gpu:latest .
-docker build -f docker/Dockerfile.cpu -t ghcr.io/<owner>/kbm-ui:latest  .
+docker build -f docker/Dockerfile.gpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-gpu:latest .
+docker build -f docker/Dockerfile.cpu -t ghcr.io/rickycarrillo3/rag_experimentation/kbm-ui:latest  .
 
 # The same script, three layouts. Neither flag = the original single-pod behaviour.
 bash startup.sh              # both halves on one box
